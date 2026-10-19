@@ -29,7 +29,7 @@ scope:
   action: Modify
   purpose: >-
     NEW numbered Decision N (origin/main max + 1 at build time; 229 at plan time), amends [81, 213, 216], at most 6,144
-    bytes (about 5,990 as pinned), text pinned verbatim in execution step 3; dated trailing annotations on Decisions 216,
+    bytes (about 6,045 as pinned with N = 229), text pinned verbatim in execution step 3; dated trailing annotations on Decisions 216,
     213 and 81 naming it (Decision 177 dialect; their text is not rewritten).
 - file: docs/decisions-index.json
   action: Modify
@@ -37,59 +37,79 @@ scope:
 - file: src/common/ducklake_runtime.py
   action: Modify
   purpose: >-
-    Two constants beside SMOKE_META_SCHEMA and SMOKE_DATA_PATH, no behaviour change: TELEMETRY_PROD_META_SCHEMA =
-    "ducklake_telemetry" and TELEMETRY_PROD_DATA_PATH = "s3://agent-platform-data-lake/ducklake-telemetry/" (the later
-    slice 2c plans import them). A comment states the data prefix is a sibling of ducklake/, never inside it, so the ops
-    catalog's catalog-wide orphan cleanup never sees telemetry Parquet.
+    Two constants beside SMOKE_META_SCHEMA and SMOKE_DATA_PATH: TELEMETRY_PROD_META_SCHEMA = "ducklake_telemetry" and
+    TELEMETRY_PROD_DATA_PATH = "s3://agent-platform-data-lake/ducklake-telemetry/" (the later slice 2c plans import
+    them). A comment states the data prefix is a sibling of ducklake/, never inside it, so the ops catalog's
+    catalog-wide orphan cleanup never sees telemetry Parquet. open_connection gains keyword-only read_only: bool = False;
+    when True the ATTACH option list gains READ_ONLY, and the default keeps today's ATTACH byte for byte. It is here (not
+    in PLAN-telemetry-reader-and-smoke-twin) because the reader login's live probe (login_actions) is its first caller;
+    that plan consumes it unchanged.
 - file: src/common/ducklake_telemetry_provision.py
   action: Modify
   purpose: >-
     (1) OwnershipReport keeps its four positional fields and gains schema_owner_held (current_user IS the schema owner or
-    can SET ROLE to it, pg_has_role(current_user, owner, 'SET')) and schema_owner (the owner role's name, an identifier,
-    never a host), so a check can tell "held through ducklake_smoke_owner" from "still owned by the login itself".
-    schema_owner_is_current_user stays as an informational field. (2) ownership_report takes scoped_logins: tuple[str,
-    ...] (default (SCOPED_LOGIN,)) and reports scoped_create_on_schema / scoped_create_on_public as true when ANY listed
-    login holds CREATE, every name passing the existing identifier guard. (3) provision_telemetry_catalog's absent-tables
-    refusal names both owner steps (maintenance-smoke create_telemetry_tables on smoke, provision_telemetry_catalog on
-    production). Nothing else changes; stays under 500 SLOC (280 today).
+    can SET ROLE to it, pg_has_role(current_user, nspowner, 'SET')) and schema_owner (nspowner::regrole, the owner role's
+    name, an identifier, never a host), so a check can tell "held through ducklake_smoke_owner" from "still owned by the
+    login itself". schema_owner_is_current_user stays as an informational field. (2) ownership_report takes
+    scoped_logins: tuple[str, ...] (default (SCOPED_LOGIN,)) and reports scoped_create_on_schema /
+    scoped_create_on_public as true when ANY listed login holds CREATE, every name passing the existing identifier guard.
+    Each listed login is resolved with to_regrole and read through the oid form, COALESCE(has_schema_privilege(
+    to_regrole('<login>'), '<schema>', 'CREATE'), false), so a login that does not exist yet holds no CREATE instead of
+    raising 42704: provision_telemetry_catalog (VP 21) reports before any production login exists. (3)
+    provision_telemetry_catalog's absent-tables refusal names both owner steps (maintenance-smoke create_telemetry_tables
+    on smoke, provision_telemetry_catalog on production). Nothing else changes; stays under 500 SLOC (280 today).
 - file: src/lambdas/ducklake_maintenance/catalog_logins.py
   action: Create
   purpose: >-
     The one closed table (Decision N cl.3, cl.4). OWNER_ROLES = {"ducklake_smoke": "ducklake_smoke_owner",
-    "ducklake_telemetry": "ducklake_telemetry_owner"}. LOGINS, a mapping of frozen Login records {name, secret_id,
+    "ducklake_telemetry": "ducklake_telemetry_owner"}. DATA_PATHS = {"ducklake_smoke": rt.SMOKE_DATA_PATH,
+    "ducklake_telemetry": rt.TELEMETRY_PROD_DATA_PATH}. LOGINS, a mapping of frozen Login records {name, secret_id,
     template, schema, owner_role, connection_limit, kind, expected_scope}: ducklake_telemetry_writer (secret
     agent-platform-ducklake-telemetry-writer-dsn, writer template, ducklake_smoke, limit 20 = 2 x (writer 5 + smoke twin
     5) reserved concurrency while both bind smoke), ducklake_telemetry_writer_prod
     (agent-platform-ducklake-telemetry-writer-prod-dsn, writer template, ducklake_telemetry, limit 10),
     ducklake_telemetry_reader (agent-platform-ducklake-telemetry-reader-dsn, reader template, ducklake_telemetry, limit
     10 = 2 x the reader's reserved concurrency 5), ducklake_smoke_maintainer (agent-platform-ducklake-smoke-maintainer-dsn,
-    maintainer template, ducklake_smoke, limit 2 = 2 x reserved concurrency 1). render_login_sql(name) and
-    render_owner_sql(meta_schema) format ONLY values from these tables into the bundled templates (str.format, the
-    catalog_stats_index.sql precedent) after the identifier guard; any other name raises DuckLakeRuntimeError before any
-    SQL is built. template_sha256(name) hashes the template FILE bytes (what the procedure's check compares against the
-    merged file). No I/O beyond reading the bundled SQL files.
+    maintainer template, ducklake_smoke, limit 2 = 2 x reserved concurrency 1). Each expected_scope is independent of
+    sitting order: its only true entries are on the login's own schema and its own owner role, which provisioning
+    refuses to run without, and every entry on another catalog is false whether that catalog or role exists yet or
+    not. Its current_user entry is the login's own name, except ducklake_smoke_maintainer's, which is
+    ducklake_smoke_owner (the session-role default, proven live at VP 25 before the switch merges).
+    render_login_sql(name) and render_owner_sql(meta_schema, mode) format ONLY values from these tables into the bundled
+    templates (str.format, the catalog_stats_index.sql precedent) after the identifier guard; any other name or mode
+    raises DuckLakeRuntimeError before any SQL is built. Every rendered template opens its transaction with SET LOCAL
+    lock_timeout = '5s': the owner and login statements take ACCESS EXCLUSIVE locks on live smoke relations, so a lock
+    held by an in-flight capture commit (CommitLatencyMs p50 572-855 ms on smoke) fails the whole transaction atomically (SQLSTATE 55P03) and the
+    verb is simply re-run, instead of queueing every smoke writer behind it. template_sha256(name) hashes the template
+    FILE bytes (what the procedure's check compares against the merged file). No I/O beyond reading the bundled SQL
+    files.
 - file: src/lambdas/ducklake_maintenance/catalog_actions.py
   action: Create
   purpose: >-
     Two OPERATIONAL verbs (Decision N cl.4), each refusing before any connection unless its closed preconditions hold,
     each raising only DuckLakeRuntimeError (never DuckLakeMaintenanceError, so no MaintenanceBreakerTrip datapoint) and
-    emitting no metric. action_provision_catalog_owner {meta_schema in OWNER_ROLES, confirm == meta_schema, adopt
-    (boolean, default true)}: as the owner login (psycopg2, rt.fetch_dsn()), one transaction runs
-    render_owner_sql(meta_schema): create the NOLOGIN role if absent under SET LOCAL createrole_self_grant = 'set,
-    inherit' plus an idempotent GRANT role TO CURRENT_USER WITH INHERIT TRUE, SET TRUE; with adopt false it stops there
-    (the role exists, the schema is untouched); with adopt true, CREATE SCHEMA IF NOT EXISTS ... AUTHORIZATION role, and
-    for an existing schema owned by another role GRANT CREATE ON DATABASE to the role, ALTER SCHEMA ... OWNER TO it and
-    REVOKE that CREATE again; then normalise: every relation (relkind r, p, S, v, m) in the schema not owned by the role is
-    re-owned with its relkind's ALTER ... OWNER TO. Response {ok, meta_schema, owner_role, adopt, schema_created,
-    schema_adopted, relations_reowned, owner_sql_sha256, member_inherit, member_set}, counts and booleans only.
-    action_provision_telemetry_catalog {meta_schema == rt.TELEMETRY_PROD_META_SCHEMA, data_path ==
-    rt.TELEMETRY_PROD_DATA_PATH, confirm == meta_schema}: the owner step with adopt true; a DuckDB connection as the
+    emitting no metric. action_provision_catalog_owner {meta_schema in OWNER_ROLES, confirm == meta_schema, mode in
+    {adopt (default), role_only, release}}: as the owner login (psycopg2, rt.fetch_dsn()), one transaction (SET LOCAL
+    lock_timeout = '5s' first) runs render_owner_sql(meta_schema, mode). role_only and adopt: create the NOLOGIN role if
+    absent under SET LOCAL createrole_self_grant = 'set, inherit' plus an idempotent GRANT role TO CURRENT_USER WITH
+    INHERIT TRUE, SET TRUE; role_only stops there (the role exists, the schema is untouched); adopt goes on to CREATE
+    SCHEMA IF NOT EXISTS ... AUTHORIZATION role, and for an existing schema owned by another role GRANT CREATE ON
+    DATABASE to the role, ALTER SCHEMA ... OWNER TO it and REVOKE that CREATE again; then normalise: every relation
+    (relkind r, p, S, v, m) in the schema not owned by the role is re-owned with its relkind's ALTER ... OWNER TO.
+    release (Decision N cl.4, the named un-adopt step; refused before any connection unless meta_schema is
+    ducklake_smoke): ALTER SCHEMA ducklake_smoke OWNER TO CURRENT_USER, then every relation in it not owned by
+    CURRENT_USER is re-owned to it, so the shared owner login owns the smoke catalog again exactly as before adoption; the
+    role and its memberships stay (nothing is dropped). Response {ok, meta_schema, owner_role, mode, schema_created,
+    schema_adopted, schema_released, relations_reowned, owner_sql_sha256, member_inherit, member_set}, counts and booleans
+    only. action_provision_telemetry_catalog {meta_schema == rt.TELEMETRY_PROD_META_SCHEMA, data_path ==
+    rt.TELEMETRY_PROD_DATA_PATH, confirm == meta_schema}: the owner step in adopt mode; a DuckDB connection as the
     owner login on (data_path, meta_schema), which initialises the DuckLake metadata on first attach; normalisation;
     run_telemetry_txn(create_telemetry_tables) (create-if-absent plus the Decision 222 additive leg, which makes a re-run
     the production column add); normalisation; run_telemetry_txn(provision_telemetry_catalog) (verify and seed the
     counters, the catalog's first write); then ownership_report(scoped_logins=(ducklake_telemetry_writer_prod,
     ducklake_telemetry_reader)) refusing unless foreign_owned is 0, schema_owner equals ducklake_telemetry_owner,
-    schema_owner_held is true and no scoped CREATE. It never builds the stats index (Decision 214 cl.2) and never runs
+    schema_owner_held is true and no scoped CREATE (the two logins do not exist yet at VP 21, so the to_regrole guard
+    reads them as holding none; their own scope probe at VP 22 proves it). It never builds the stats index (Decision 214 cl.2) and never runs
     merge or GC. Response {ok, meta_schema, tables, created, added, counters, ownership, owner_sql_sha256, elapsed_ms}.
     Every psycopg2 or duckdb error after the precondition checks is re-raised as DuckLakeRuntimeError naming only its class
     (and SQLSTATE for psycopg2), so no host or path reaches a response. Module docstring cites "(Decision N, amending
@@ -101,13 +121,19 @@ scope:
     before any connection); before the migration it refuses with a typed error naming the missing object unless the
     login's owner role and schema exist (the procedure's order); it renders that login's template, applies it as the
     owner, reads THAT login's secret (refused unless username equals the login, host and dbname equal the owner's and
-    sslmode is require), sets the password as a bound parameter, then probes as the login. The scope probe reads, for
-    ducklake_ops, ducklake_smoke and ducklake_telemetry (to_regnamespace-guarded), USAGE and CREATE (current_user), public
-    and database CREATE, the session login's connection limit (session_user, so a login whose session role is an owner
-    role still reports its own), membership of each owner role, whether default_transaction_read_only is on, and INSERT on
-    <schema>.ducklake_snapshot; metadata_readable reads <schema>.ducklake_metadata. Response adds login and
-    migration_sha256 = template_sha256. TELEMETRY_LOGIN and TELEMETRY_DSN_SECRET_ID stay as aliases of the smoke writer's
-    entry for existing importers.
+    sslmode is require), sets the password as a bound parameter, then probes as the login. The scope probe reads
+    current_user and session_user; for ducklake_ops, ducklake_smoke and ducklake_telemetry, USAGE and CREATE as
+    current_user, each through COALESCE(has_schema_privilege(current_user, to_regnamespace('<schema>'), ...), false);
+    public and database CREATE; the session login's connection limit (session_user, so a login whose session role is an
+    owner role still reports its own); membership of each owner role through COALESCE(pg_has_role(session_user,
+    to_regrole('<role>'), 'MEMBER'), false), so ducklake_smoke_owner not existing yet (sitting 1 provisions the
+    production logins, sitting 2 creates it) reads as not a member instead of raising 42704; whether
+    default_transaction_read_only is on; and INSERT on <schema>.ducklake_snapshot. metadata_readable reads
+    <schema>.ducklake_metadata. For the reader login only, the probe then opens rt.open_connection(read_only=True) as
+    that login on (DATA_PATHS[schema], schema) and reads one count from a telemetry table, reporting read_only_attach
+    "accepted", or "refused" with the error class only; it never raises for that outcome (VP 22 records it). Response
+    adds login, read_only_attach (reader only) and migration_sha256 = template_sha256. TELEMETRY_LOGIN and
+    TELEMETRY_DSN_SECRET_ID stay as aliases of the smoke writer's entry for existing importers.
 - file: src/lambdas/ducklake_maintenance/handler.py
   action: Modify
   purpose: >-
@@ -124,8 +150,8 @@ scope:
 - file: src/lambdas/ducklake_maintenance/ducklake_telemetry_writer_role.sql
   action: Modify
   purpose: >-
-    Becomes the writer TEMPLATE ({login}, {schema}, {owner_role}, {connection_limit}) used by both writer logins. Create
-    the role NOLOGIN if absent; ALTER ROLE ... LOGIN NOINHERIT NOCREATEDB NOCREATEROLE CONNECTION LIMIT
+    Becomes the writer TEMPLATE ({login}, {schema}, {owner_role}, {connection_limit}) used by both writer logins. SET
+    LOCAL lock_timeout = '5s'; create the role NOLOGIN if absent; ALTER ROLE ... LOGIN NOINHERIT NOCREATEDB NOCREATEROLE CONNECTION LIMIT
     {connection_limit}; statement_timeout 60s; CONNECT on ducklake_ops; USAGE on {schema}; REVOKE ALL on all tables and
     sequences in {schema} and REVOKE the earlier broad default privileges; then GRANT the MEASURED set from execution step
     4 in two shapes: one GRANT line per DuckLake catalog table with a fixed name (ducklake_snapshot, ducklake_data_file,
@@ -139,14 +165,14 @@ scope:
 - file: src/lambdas/ducklake_maintenance/ducklake_telemetry_reader_role.sql
   action: Create
   purpose: >-
-    Reader TEMPLATE: role NOLOGIN if absent; LOGIN NOINHERIT NOCREATEDB NOCREATEROLE CONNECTION LIMIT
+    Reader TEMPLATE: SET LOCAL lock_timeout = '5s'; role NOLOGIN if absent; LOGIN NOINHERIT NOCREATEDB NOCREATEROLE CONNECTION LIMIT
     {connection_limit}; statement_timeout 100s (below the reader function's 120 s); default_transaction_read_only on;
     CONNECT on ducklake_ops; USAGE on {schema}; REVOKE ALL then GRANT SELECT ON ALL TABLES IN SCHEMA {schema}; default
     privileges SELECT ON TABLES FOR ROLE ducklake_ops and FOR ROLE {owner_role}. Nothing on any other schema or public.
 - file: src/lambdas/ducklake_maintenance/ducklake_catalog_maintainer_role.sql
   action: Create
   purpose: >-
-    Maintainer TEMPLATE: role NOLOGIN if absent; LOGIN INHERIT NOCREATEDB NOCREATEROLE CONNECTION LIMIT
+    Maintainer TEMPLATE: SET LOCAL lock_timeout = '5s'; role NOLOGIN if absent; LOGIN INHERIT NOCREATEDB NOCREATEROLE CONNECTION LIMIT
     {connection_limit}; GRANT CONNECT ON DATABASE ducklake_ops; GRANT {owner_role} TO {login} WITH INHERIT TRUE, SET
     TRUE; ALTER ROLE {login} SET role = '{owner_role}', so every connection it opens, DuckLake's included, runs DDL as
     the catalog's owner role and that role's default privileges apply. Membership of exactly one owner role; nothing
@@ -154,9 +180,11 @@ scope:
 - file: src/lambdas/ducklake_maintenance/ducklake_catalog_owner.sql
   action: Create
   purpose: >-
-    Owner TEMPLATE ({owner_role}, {schema}, {adopt}) applied by both catalog verbs: the create-role step always, the
-    create-or-adopt and normalise steps only when adopt is true, idempotent (every statement is a no-op on a converged
-    catalog), in DO blocks that build each ALTER with format('%I') from pg_catalog names.
+    Owner TEMPLATE ({owner_role}, {schema}) in three named sections that render_owner_sql selects by mode: role (create
+    the role and the membership), adopt (create-or-adopt the schema, then normalise every relation to the role), release
+    (ducklake_smoke only: the schema and every relation back to CURRENT_USER). Each rendering starts with SET LOCAL
+    lock_timeout = '5s'; each is idempotent (every statement is a no-op on a converged catalog), in DO blocks that build
+    each ALTER with format('%I') from pg_catalog names.
 - file: src/lambdas/ducklake_maintenance/manifest.yaml
   action: Modify
   purpose: >-
@@ -168,7 +196,8 @@ scope:
 - file: src/lambdas/ducklake_maintenance_smoke/handler.py
   action: Modify
   purpose: >-
-    _open_connection fetches the DSN named by env DUCKLAKE_DSN_SECRET_ID, defaulting to rt.DSN_SECRET_ID (no behaviour
+    A module constant DSN_SECRET_ID = os.environ.get("DUCKLAKE_DSN_SECRET_ID", rt.DSN_SECRET_ID) beside the other
+    env-pinned constants (no raise at import), and _open_connection calls rt.fetch_dsn(DSN_SECRET_ID) (no behaviour
     change until the switch PR's Terraform sets the env). The default is not a widening path: the switch PR removes the
     function's grant on the shared secret, so a missing env fails closed on AccessDenied.
 - file: src/lambdas/ducklake_maintenance_smoke/telemetry_actions.py
@@ -176,8 +205,10 @@ scope:
   purpose: >-
     _check requires schema_owner_held (not schema_owner_is_current_user), so the step passes when the smoke schema is
     owned by ducklake_smoke_owner and the session is the smoke maintainer (whose session role is the owner role) or the
-    shared owner login (a member); the ownership block in the response gains schema_owner_held and schema_owner. The env
-    pin, the event being unread and the class-only error rule are unchanged.
+    shared owner login (a member, or the owner again after a release); the ownership block in the response gains
+    schema_owner_held and schema_owner. The module docstring's "smoke-only migrator login is slice 2c's" names
+    ducklake_smoke_maintainer and Decision N. The env pin, the event being unread and the class-only error rule are
+    unchanged.
 - file: scripts/ducklake_smoke/lambda_maintenance_gates.py
   action: Modify
   purpose: >-
@@ -223,10 +254,11 @@ scope:
 - file: terraform/personal/ducklake_maintenance_smoke.tf
   action: Modify
   purpose: >-
-    SWITCH PR only (execution step 12): env DUCKLAKE_DSN_SECRET_ID = aws_secretsmanager_secret.ducklake_smoke_maintainer_dsn.name,
-    and NeonDsnRead names that secret ONLY (the shared owner secret dropped), so the CI-reachable function holds no
-    credential that reaches another catalog (Decision N cl.2). In-budget inline-policy and env update; it changes no
-    source, so it triggers no DuckLake deploy.
+    SWITCH PR only (PR 3, execution step 12; its whole diff is this change and its pin node): env DUCKLAKE_DSN_SECRET_ID =
+    aws_secretsmanager_secret.ducklake_smoke_maintainer_dsn.name, and NeonDsnRead names that secret ONLY (the shared owner
+    secret dropped), so the CI-reachable function holds no credential that reaches another catalog (Decision N cl.2).
+    In-budget inline-policy and env update; it changes no source, so it triggers no DuckLake deploy, and a revert of it
+    restores the prior credential in one apply.
 - file: terraform/bootstrap/github_ci_apply_boundary.tf
   action: Modify
   purpose: >-
@@ -239,7 +271,9 @@ scope:
     writer, telemetry reader and admin maintenance roles); DenyTelemetryBlobPut (PutObject on telemetry-blobs/*, ArnNotLike
     the telemetry writer and smoke twin roles; presigned PUTs execute as the signing writer role); DenyTelemetryBlobDelete
     (DeleteObject on telemetry-blobs/*, ArnNotLike the admin maintenance role); DenyTelemetryVersionDelete
-    (DeleteObjectVersion on telemetry-blobs/* and ducklake-telemetry/*, unconditioned). Role ARNs built from
+    (DeleteObjectVersion on telemetry-blobs/* and ducklake-telemetry/*, unconditioned). These two fix the blob sweep as
+    a plain DeleteObject from the admin maintenance role, never a delete by VersionId: rec-4033 was annotated to that
+    effect on 2026-10-19 per the 2c design, and the bucket's noncurrent-version lifecycle reclaims the bytes. Role ARNs built from
     ${var.account_id} like the existing statements; the roles may not exist yet, which IAM accepts. Minified size about
     4,710 bytes against the 6,144-byte precondition (VP 16 prints the real number).
 - file: terraform/bootstrap/platform_security_trail.tf
@@ -276,10 +310,12 @@ scope:
 - file: docs/contracts/ducklake_maintenance.yaml
   action: Modify
   purpose: >-
-    verbs gain provision_catalog_owner and provision_telemetry_catalog (payload, closed preconditions, response, typed
-    errors, a pointer to deploy-paths.yaml's procedure); provision_telemetry_login's entry names the closed four-login
-    table and the widened scope block; catalog_stats' entry says it emits only for the ops catalog; governance actor lists
-    and the ADMIN-container carve-out invariant add the two verbs (Decision N); the stats-index invariant names
+    verbs gain provision_catalog_owner (its three modes, release refused for any catalog but ducklake_smoke) and
+    provision_telemetry_catalog (payload, closed preconditions, response, typed errors, a pointer to deploy-paths.yaml's
+    procedure); provision_telemetry_login's entry names the closed four-login table, the widened scope block and the
+    reader's read_only_attach field; catalog_stats' entry says it emits only for the ops catalog; governance actor lists
+    and the ADMIN-container carve-out invariant add the two verbs (Decision N), while catalog_stats and
+    ensure_catalog_indexes stay human-invoked only (principal_classes and admin_only_features unchanged); the stats-index invariant names
     provision_telemetry_catalog as never building it (Decision 214 cl.2); amendment_log entry. Budget: 434 of 500
     effective lines today, about 490 after; if it would pass 500, the verb entries keep payload, response and errors and
     point at deploy-paths.yaml for the walk, never a raise.
@@ -293,14 +329,23 @@ scope:
     provision_catalog_owner for both catalogs (it re-owns any relation an extension migration created under the owner
     login), the logins, and the writer-grant re-measure (Decision N measured-grants-drift). NEW sibling block
     production_catalog_provisioning: description (Decision N cl.4 carve-out, the one home of the procedure), the record
-    file /mnt/project-files/telemetry-slice2c/ADMIN-SESSION-RECORD.md and its keys, and an ordered procedure in two
-    sittings, each step a command and a counts-only check. Sitting 1: bootstrap apply and simulate; measure (MEASUREMENT.md
-    keys); provision_telemetry_catalog; the production writer and reader secret values and logins;
-    ensure_catalog_indexes. Sitting 2 (deploys held by the coordinator from its first step to its last): adopt smoke;
-    the maintainer secret value and login; merge the switch PR and wait for its apply; re-run
+    file /mnt/project-files/telemetry-slice2c/ADMIN-SESSION-RECORD.md and its keys, and two independent sittings, each
+    an ordered list of steps with an actor (operator, or admin_agent acting on explicit human direction), a command and a
+    counts-only check. Sitting 2 needs
+    only PR 1's deploy, not sitting 1, so either may run first. Sitting 1: bootstrap apply (human-directed) and simulate;
+    measure (MEASUREMENT.md keys; catalog_stats is operator-run and the agent records its counts); provision_telemetry_catalog;
+    the production writer and reader secret values and logins (the reader's read_only_attach recorded); ensure_catalog_indexes
+    (operator-run, the agent records the result and the StatsIndexValid read). Sitting 2 (deploys held by the
+    coordinator from its first step to its last; Benjamin's word on the switch PR already given with PR 1's, so the hold
+    spans only the switch PR's merge and apply): adopt smoke; the maintainer secret value and login, its scope showing
+    current_user ducklake_smoke_owner; merge the switch PR and wait for its apply; re-run
     provision_catalog_owner(ducklake_smoke) expecting relations_reowned 0; narrow the smoke writer with an immediate live
-    telemetry gate; release the hold; a dispatched deploy run as the live proof. No merge_ops or gc_ops on
-    ducklake_telemetry here (PLAN-telemetry-production-maintenance runs them once its MetaSchema series are live).
+    telemetry gate; release the hold; a dispatched deploy run as the live proof. A rollback sub-block for sitting 2: keep
+    the hold; revert the switch PR (its apply restores the shared credential); provision_catalog_owner(ducklake_smoke,
+    mode release); the coordinator dispatches one deploy run and its create-telemetry gate must pass; then release the
+    hold. No merge_ops or gc_ops on ducklake_telemetry here (PLAN-telemetry-production-maintenance runs them once its
+    MetaSchema series are live). Budget: 361 of 500 effective lines today; the block stays under 120 lines (each step one
+    flow-style line plus its check), else steps drop their prose and keep command and check, never a raise.
 - file: docs/contracts/ducklake_telemetry_writer.yaml
   action: Modify
   purpose: >-
@@ -321,10 +366,13 @@ scope:
   action: Modify
   purpose: >-
     PR 1: telemetry_tables gains ingestion_shape: per_request_commit pointing at
-    ducklake_telemetry_writer.yaml#ingestion_shape (rec-4218's acceptance); an amendment_log entry. SWITCH PR (after VP 21
-    proved the catalog): telemetry_tables status not_provisioned -> transitional, note and reason reworded to "created and
-    owned in the production telemetry catalog (Decision N), empty until PLAN-telemetry-production-flip moves the writer"
-    (mechanical status edit, no meaning change); an amendment_log entry.
+    ducklake_telemetry_writer.yaml#ingestion_shape (rec-4218's acceptance); an amendment_log entry. BOOKKEEPING PR (PR 2,
+    after sitting 1 proved the catalog, VP 19-23): telemetry_tables status not_provisioned -> transitional; the note's
+    "No telemetry table is provisioned in production today ... created in the isolated ducklake_smoke catalog only ...
+    production residency lands with the Phase 4 rebuild (slice 2c)" and the reason's "no telemetry table exists in the
+    production catalog" become "created and owned in the production telemetry catalog ducklake_telemetry (Decision N),
+    empty until PLAN-telemetry-production-flip moves the writer; ducklake_smoke keeps the smoke rows" (mechanical status
+    edit, no meaning change); an amendment_log entry.
 - file: docs/contracts/tenant-id.yaml
   action: Modify
   purpose: >-
@@ -339,77 +387,88 @@ scope:
     The six telemetry registry entries (four event tables, ops_tenants, ops_projects) KEEP status pre_production and
     reconcile_scope exempt; only their exempt_reason and the comment block above them are reworded: the tables live in the
     production telemetry catalog ducklake_telemetry created by provision_telemetry_catalog (Decision N), not in
-    ducklake_ops; a declared column reaches it by re-running that verb under the owner login (Decision 222 cl.3); and
-    reconcile_columns never targets them. No "slice 2c" owner text remains. Not a status flip: live would make
-    control_health expect their counter rows in ducklake_ops (src/common/ducklake_control_health.py) and route added
-    columns to reconcile_columns (validate_reconcile_pending_gate), both wrong for a second catalog. exempt_reason is
-    sidecar-only and does not reach the generated field_semantics.yaml.
+    ducklake_ops; a declared column reaches it by re-running that verb under the owner login (Decision 222 cl.3);
+    reconcile_columns never targets them; and the status vocabulary for a table in a non-ops catalog is rec-4483's (the
+    owned residual). No "slice 2c" owner text remains. Not a status flip, and no vocabulary edit: live would make
+    control_health expect their counter rows in ducklake_ops (src/common/ducklake_control_health.py:72) and route added
+    columns to reconcile_columns (validate_reconcile_pending_gate), both wrong for a second catalog, and redefining
+    pre_production is rec-4483's question. exempt_reason is sidecar-only and does not reach the generated
+    field_semantics.yaml.
 - file: docs/contracts/ops_tenants.yaml
   action: Modify
   purpose: >-
-    governance_notes' first sentence: it stays status pre_production while it is not provisioned in ducklake_ops, its
-    registry entry's exempt_reason names where it is provisioned and its column path; replaces "slice 2c flips it to live
-    when production provisioning lands". An amendment_log entry (governance_note_add, semantic_break false).
-- file: docs/contracts/data-modeling-standard.yaml
-  action: Modify
-  purpose: >-
-    status_pre_production.reserved_meaning's parenthetical drops "until slice 2c" and names no catalog (the vocabulary's
-    own do_not_use_for forbids a catalog statement); the phrase "provisioned in production" stays (pinned by
-    test_telemetry_dimension_contracts). An amendment_log entry.
+    governance_notes' first sentence: it stays status pre_production and exempt, its registry entry's exempt_reason names
+    the production catalog and its column path, and its status vocabulary is rec-4483's; replaces "slice 2c flips it to
+    live when production provisioning lands". An amendment_log entry (governance_note_add, semantic_break false).
 - file: docs/contracts/telemetry_sessions.yaml
   action: Modify
   purpose: >-
-    SWITCH PR: the two "Not provisioned in production (slice 2c)" statements (header comment and governance text) become
-    "Provisioned in the production telemetry catalog (Decision N); production writes begin at
-    PLAN-telemetry-production-flip". Mechanical status edit, no meaning change (the 2026-10-16 mechanical-edit rule);
-    amendment_log entry, semantic_break false.
+    BOOKKEEPING PR (PR 2): the two statements that production provisioning is slice 2c's (the header's GREENFIELD
+    sentence, lines 10-11, and the governance text, line 460) become "Provisioned in the production telemetry catalog (Decision N); production writes
+    begin at PLAN-telemetry-production-flip", each replaced in place. Mechanical status edit, no meaning change (the
+    2026-10-16 mechanical-edit rule); a one-line flow-style amendment_log entry, semantic_break false (477 of 500
+    effective lines today).
 - file: docs/contracts/telemetry_observations.yaml
   action: Modify
-  purpose: SWITCH PR -- the same two-line status edit as telemetry_sessions.yaml.
+  purpose: >-
+    BOOKKEEPING PR (PR 2) -- the same in-place status edit as telemetry_sessions.yaml, on its two statements (lines 481
+    and 488). Budget: 497 of 500 effective lines today; the edits replace lines in
+    place and the amendment_log entry is one flow-style line, so 498 after; if the structural check reports more, the
+    entry's summary shortens, never a raise.
 - file: docs/contracts/telemetry_transcripts.yaml
   action: Modify
-  purpose: SWITCH PR -- the same two-line status edit as telemetry_sessions.yaml.
+  purpose: BOOKKEEPING PR (PR 2) -- the same in-place status edit (lines 329 and 342; 414 of 500 effective lines).
 - file: docs/contracts/telemetry_agents.yaml
   action: Modify
-  purpose: SWITCH PR -- the same two-line status edit as telemetry_sessions.yaml.
+  purpose: BOOKKEEPING PR (PR 2) -- the same in-place status edit (lines 319 and 332; 396 of 500 effective lines).
 - file: docs/contracts/ops_entity_counters.yaml
   action: Modify
   purpose: >-
-    SWITCH PR: write_boundary gains one sentence -- in the production telemetry catalog the two telemetry counter rows are
+    BOOKKEEPING PR (PR 2): write_boundary gains one sentence -- in the production telemetry catalog the two telemetry counter rows are
     seeded by provision_telemetry_catalog under the owner login (Decision N) and later locked by the production writer;
     amendment_log entry, semantic_break false. Historical amendment entries are untouched.
 - file: docs/ROADMAP-PLATFORM.yaml
   action: Modify
   purpose: >-
-    SWITCH PR bookkeeping only: T2.36 c1 open -> met with met_by telemetry-production-catalog and a dated progress_note
+    BOOKKEEPING PR (PR 2) only: T2.36 c1 open -> met with met_by telemetry-production-catalog and a dated progress_note
     sentence; no other criterion moves.
 - file: tests/checks/contracts/test_telemetry_registry_status.py
   action: Create
   purpose: >-
     test_telemetry_registry_stays_pre_production_with_the_production_column_path: the six entries are pre_production and
-    exempt, each exempt_reason names ducklake_telemetry and provision_telemetry_catalog and no longer "slice 2c";
-    ops_tenants.yaml's note and data-modeling-standard.yaml's vocabulary no longer promise a slice 2c flip and name no
-    catalog (VP 7).
+    exempt, each exempt_reason names ducklake_telemetry, provision_telemetry_catalog and rec-4483 and no longer "slice
+    2c"; ops_tenants.yaml's note names rec-4483 and no longer promises a slice 2c flip (VP 7).
 - file: tests/checks/contracts/test_telemetry_dimension_contracts.py
   action: Modify
   purpose: >-
-    SWITCH PR: test_substrate_rows_name_the_telemetry_writer expects status transitional and the production-catalog note
-    instead of not_provisioned and "ducklake_smoke catalog only"; every other assertion is unchanged.
+    BOOKKEEPING PR (PR 2): test_substrate_rows_name_the_telemetry_writer expects status transitional and the
+    production-catalog note instead of not_provisioned and "ducklake_smoke catalog only"; every other assertion is
+    unchanged.
 - file: tests/lambdas/ducklake_maintenance/test_catalog_logins.py
   action: Create
-  purpose: Fast-tier text and table proofs of the closed table and the four rendered templates (VP 1).
+  purpose: >-
+    Fast-tier text and table proofs of the closed table and the four rendered templates (VP 1), including
+    test_every_rendered_template_sets_a_local_lock_timeout, test_expected_scope_is_true_only_on_objects_the_preconditions_require
+    and test_maintainer_expected_scope_names_the_owner_role_as_current_user.
 - file: tests/lambdas/ducklake_maintenance/test_catalog_actions.py
   action: Create
   purpose: >-
-    Fast-tier proofs of both catalog verbs with psycopg2 stubbed and the DuckDB connection faked (VP 2), including
-    test_contract_documents_both_catalog_verbs (reads docs/contracts/ducklake_maintenance.yaml's verbs, the
-    test_index_actions.py precedent).
+    Fast-tier proofs of both catalog verbs with psycopg2 stubbed and the DuckDB connection faked (VP 2), including the
+    three owner modes (release refused before any connection for every catalog but ducklake_smoke), the report reading
+    not-yet-existing production logins through to_regrole, and test_contract_documents_both_catalog_verbs (reads
+    docs/contracts/ducklake_maintenance.yaml's verbs, the test_index_actions.py precedent).
 - file: tests/lambdas/ducklake_maintenance/test_login_actions.py
   action: Modify
   purpose: >-
-    New nodes for the closed table (VP 3). Existing nodes keep their names; test_owner_runs_the_sql_file_unparameterised_and_commits_and_hashes_it
-    asserts the RENDERED smoke writer text executed and the template file's hash (a planned change); the others move their
-    fixtures to the smoke writer's closed entry. Stays under 500 SLOC (172 today).
+    New nodes for the closed table (VP 3): the closed-login nodes, test_scope_probe_guards_every_role_and_schema_name,
+    test_scope_probe_reports_current_user_and_session_user and
+    test_reader_login_reports_its_read_only_attach_outcome_without_raising. Existing nodes keep their names. Planned
+    changes (listed in constraints): test_owner_runs_the_sql_file_unparameterised_and_commits_and_hashes_it asserts the
+    RENDERED smoke writer text executed (its file-hash assertion is unchanged, template_sha256 hashing the file bytes);
+    _SCOPE_ROW and _EXPECTED_SCOPE gain the new probe columns, which changes what
+    test_response_reports_scope_and_readability_without_host_or_password and
+    test_unreadable_metadata_is_reported_false_not_raised assert; _run and test_refused_secret_never_reaches_alter_role_or_the_scoped_connection
+    gain the precondition row in their owner fixture (no assertion changes). Stays under 500 SLOC (172 today).
 - file: tests/lambdas/ducklake_maintenance/test_health_actions.py
   action: Modify
   purpose: test_catalog_stats_emits_metrics_only_for_the_ops_catalog (VP 8).
@@ -421,25 +480,40 @@ scope:
   purpose: >-
     The maintenance handler's classification lists the two new verbs ("provisioning: owner role and ownership, no row";
     "provisioning: tables and counter seeds, no caller row"), so test_every_action_and_handler_is_classified stays exact.
+- file: tests/common/test_ducklake_runtime.py
+  action: Modify
+  purpose: >-
+    test_open_connection_read_only_adds_the_attach_option (VP 4): read_only=True adds READ_ONLY to the ATTACH options and
+    the default leaves today's ATTACH text unchanged. 379 SLOC today.
 - file: tests/common/test_ducklake_telemetry_provision.py
   action: Modify
-  purpose: Two nodes for schema_owner_held / schema_owner and the scoped-logins tuple (VP 4). Stays under 500 SLOC (310 today).
+  purpose: >-
+    Three nodes (VP 4): schema_owner_held / schema_owner, the scoped-logins tuple, and
+    test_ownership_report_treats_an_absent_scoped_login_as_holding_no_create (the SQL reads each login through
+    to_regrole and COALESCE). Planned changes: test_ownership_report_sql_and_fields (six-column row, scoped_logins=,
+    six-field equalities) and test_identifier_guard_refuses_unsafe_names (scoped_logins=(bad,)). Stays under 500 SLOC
+    (310 today).
 - file: tests/test_ducklake_maintenance_smoke_handler.py
   action: Modify
   purpose: >-
     test_open_connection_reads_the_secret_named_by_env and
-    test_create_telemetry_passes_when_the_owner_is_held_through_membership (VP 4). The registry-pinned
-    test_create_telemetry_owner_mismatch_refuses_before_any_ddl keeps its name; CLEAN and its dirty cases are rebuilt with
-    the two new fields, the "not held" case added (a planned change). 464 SLOC today: if the two nodes would pass 500, the
-    shared fakes move to tests/fixtures/ducklake_maintenance_handler.py (no split).
+    test_create_telemetry_passes_when_the_owner_is_held_through_membership (VP 4). Planned changes (listed in
+    constraints): test_open_connection_builds_connection_from_fetched_dsn (fetch_dsn now called with h.DSN_SECRET_ID);
+    the CLEAN constant and test_create_telemetry_owner_mismatch_refuses_before_any_ddl's dirty reports rebuilt with the
+    two new fields, a "not held" case added (the registry-pinned name kept);
+    test_create_telemetry_single_owner_violation_raises_with_report_fields_only (its post-DDL report);
+    test_create_telemetry_response_shape (the ownership dict gains schema_owner_held and schema_owner). 464 SLOC today:
+    if the two nodes would pass 500, the shared fakes move to tests/fixtures/ducklake_maintenance_handler.py (no split).
 - file: tests/fixtures/ducklake_maintenance_handler.py
   action: Modify
   purpose: Only if needed to keep tests/test_ducklake_maintenance_smoke_handler.py under 500 SLOC; no helper changes behaviour.
 - file: tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py
   action: Modify
   purpose: >-
-    test_create_telemetry_owner_held_through_membership_passes (VP 4); the registry-pinned
-    test_create_telemetry_schema_owner_mismatch_fails keeps its name and now feeds schema_owner_held false.
+    test_create_telemetry_owner_held_through_membership_passes (VP 4). Planned changes: _CLEAN_OWNERSHIP gains the two
+    fields; test_create_telemetry_ownership_failures' schema-owner case feeds schema_owner_held false and expects "owner
+    role is not held"; the registry-pinned test_create_telemetry_schema_owner_mismatch_fails keeps its name, feeds
+    schema_owner_held false and matches the new failure text.
 - file: tests/checks/iam_tf/test_url_only_invoke_guard.py
   action: Modify
   purpose: >-
@@ -451,7 +525,13 @@ scope:
     _dev_problems expects eight forms (the telemetry reader added; the twin is CI-only); sql_problems runs over each
     rendered login (test_real_role_sql_is_scoped renders the closed table, the writer and reader logins checked against
     their own schema; the maintainer checked for exactly one owner-role grant). Every mutation case is kept and the new
-    names get their own. Stays under 500 SLOC (331 today); if not, the new predicates move to test_telemetry_prefix_fence.py.
+    names get their own. Planned changes (listed in constraints): test_real_role_sql_is_scoped (renders the closed table
+    instead of reading the raw file); test_platform_dev_predicate_is_red_when_a_telemetry_writer_form_is_omitted (its
+    message names eight forms); the synthetic _GOOD_BOUNDARY, _TRAIL and _SQL_OK fixtures gain the new names, so
+    test_boundary_predicate_is_green_on_a_complete_synthetic_boundary_and_red_on_none,
+    test_boundary_predicate_is_red_on_each_mutation, test_trail_predicate_is_red_on_each_mutation and
+    test_sql_predicate_is_red_on_each_mutation (sql_problems now takes the login's schema) assert against them. Stays
+    under 500 SLOC (331 today); if not, the new predicates move to test_telemetry_prefix_fence.py.
 - file: tests/checks/iam_tf/test_telemetry_prefix_fence.py
   action: Create
   purpose: >-
@@ -481,21 +561,41 @@ scope:
     modules share it: refuses any non-local host, fails (never skips) when DUCKLAKE_TEST_PG_ADMIN_DSN is unset, an
     extension cannot load or duckdb differs from the pinned version, builds neon_superuser-like and owner roles with and
     without pg_read_all_data, creates ducklake_smoke and ducklake_telemetry, renders and applies the real templates
-    through catalog_logins, and returns DuckDB connections per login (READ_ONLY attach for the reader).
+    through catalog_logins, and returns DuckDB connections per login (READ_ONLY attach for the reader, through
+    rt.open_connection(read_only=True)). A bare mode builds only the Neon-shaped owner login and the catalog database,
+    so the live-order nodes create every schema, role and login through the real verbs (rt.fetch_dsn and the two data
+    paths pointed at the stage), in the order the sittings run them.
 - file: tests/common/test_ducklake_telemetry_catalog_ownership.py
   action: Modify
   purpose: >-
-    Uses the shared stage and the rendered smoke writer template; existing nodes keep their names (the OwnershipReport
-    equalities in test_owner_creates_then_scoped_login_verifies_seeds_and_writes gain the two new fields, a planned
-    change). New integration nodes (VP 11): test_owner_role_adopts_an_existing_smoke_schema_and_owner_paths_still_work
-    (after adoption every relation is owned by ducklake_smoke_owner, a whole-database pg_dump as the owner exits 0 without
-    pg_read_all_data, flush and merge run, the smoke writer still writes);
-    test_maintainer_force_recreate_after_adoption_leaves_no_foreign_owned_relation (as ducklake_smoke_maintainer, whose
-    session role is the owner role on every DuckDB connection, create_scd2_tables(force_recreate=True) then
-    ownership_report: foreign_owned 0, schema_owner ducklake_smoke_owner);
-    test_smoke_maintainer_ddl_is_owned_by_the_smoke_owner_role (a column add likewise);
-    test_provision_telemetry_catalog_on_a_fresh_schema_is_group_owned_and_seeded;
-    test_owner_login_builds_the_stats_index_on_a_group_owned_catalog.
+    Uses the shared stage and the rendered smoke writer template; existing nodes keep their names. Planned changes
+    (listed in constraints): the _report helper passes scoped_logins=(SCOPED,), and the OwnershipReport equalities in
+    test_owner_creates_then_scoped_login_verifies_seeds_and_writes, test_create_is_idempotent_and_refuses_drift and
+    test_owner_adds_a_missing_nullable_column_and_the_scoped_login_still_writes gain the two new fields. New integration
+    nodes (VP 11): test_provision_telemetry_catalog_on_a_fresh_schema_is_group_owned_and_seeded and
+    test_owner_login_builds_the_stats_index_on_a_group_owned_catalog. 212 SLOC today; the owner-role nodes live in
+    test_ducklake_catalog_owner_roles.py so this file stays under 500.
+- file: tests/common/test_ducklake_catalog_owner_roles.py
+  action: Create
+  purpose: >-
+    Integration nodes on the shared stage (VP 11), all pytest.mark.integration (real-engine CI gating is rec-4071's):
+    test_owner_role_adopts_an_existing_smoke_schema_and_owner_paths_still_work (after adoption every relation is owned by
+    ducklake_smoke_owner, a whole-database pg_dump as the owner exits 0 without pg_read_all_data, flush and merge run,
+    the smoke writer still writes); test_maintainer_session_role_is_the_smoke_owner_role (psycopg2 as
+    ducklake_smoke_maintainer reads current_user ducklake_smoke_owner, and its scope probe equals its expected_scope);
+    test_maintainer_force_recreate_after_adoption_leaves_no_foreign_owned_relation (as the maintainer on every DuckDB
+    connection, create_scd2_tables(force_recreate=True) then ownership_report: foreign_owned 0, schema_owner
+    ducklake_smoke_owner); test_smoke_maintainer_ddl_is_owned_by_the_smoke_owner_role (a column add likewise);
+    test_release_returns_an_adopted_smoke_schema_to_the_owner_login (adopt then release: schema_owner ducklake_ops,
+    foreign_owned 0, then create_scd2_tables(force_recreate=True) as the owner login and the create-telemetry _check
+    passes); test_live_order_catalog_verb_runs_before_any_production_login_exists (bare stage:
+    provision_telemetry_catalog's real path reports clean with neither production login present);
+    test_live_order_production_logins_provision_before_the_smoke_owner_exists (bare stage: the production writer and
+    reader logins provision, and their probes equal expected_scope, before ducklake_smoke_owner exists);
+    test_login_scopes_are_identical_in_either_sitting_order[sitting1_first|sitting2_first] (every probe equals its
+    expected_scope in both orders); test_owner_sql_waits_at_most_its_lock_timeout (a second session holding a lock on a
+    smoke relation makes provision_catalog_owner fail with SQLSTATE 55P03 and leave ownership unchanged, and a re-run
+    after the lock is released converges).
 - file: tests/common/test_ducklake_telemetry_writer_least_privilege.py
   action: Create
   purpose: >-
@@ -504,8 +604,9 @@ scope:
     append core succeed under the narrowed grants, after an owner-role column add as well, so the class-level inlined-table
     grant is exercised); test_scoped_login_cannot_drop_a_ducklake_table (a DuckLake DROP TABLE as either writer login
     fails at commit and the table is still there for the owner); test_scoped_login_cannot_delete_catalog_history;
-    test_reader_attaches_read_only_and_cannot_write (READ_ONLY attach reads all four tables and the dimensions; an INSERT
-    and a DuckLake CREATE TABLE fail); test_logins_cannot_reach_another_catalog.
+    test_reader_attaches_read_only_and_cannot_write (rt.open_connection(read_only=True) as the reader login reads all four
+    tables and the dimensions; an INSERT and a DuckLake CREATE TABLE fail; its outcome is VP 11's
+    reader_read_only_attach_stage record); test_logins_cannot_reach_another_catalog.
 - file: tests/checks/contracts/test_tenant_id_producer_identity_model.py
   action: Create
   purpose: >-
@@ -525,29 +626,33 @@ scope:
     test_decision_entry_and_annotations, the test_owner_provisioning_decision.py shape: N resolved from
     catalog_actions.py's docstring citation; size <= 6,144 bytes; envelope amends [81, 213, 216]; the heading names
     Decision 213 clauses 1, 3 and 5; five numbered clauses; the Coverage paragraph; tokens provision_catalog_owner,
-    provision_telemetry_catalog, ducklake_smoke_maintainer, catalog binding, agent-platform-ducklake-telemetry-*,
-    rec-4297, rec-4205, rec-4206, rec-4071; reversal ids owner-role-refused, measured-grants-drift, boundary-headroom; a
+    provision_telemetry_catalog, ducklake_smoke_maintainer, catalog binding, release mode,
+    agent-platform-ducklake-telemetry-*, rec-4297, rec-4205, rec-4206, rec-4071; reversal ids owner-role-refused, measured-grants-drift, boundary-headroom; a
     dated annotation on 216, 213 and 81 naming N.
 - file: tests/test_deploy_paths_admin_procedure.py
   action: Modify
   purpose: >-
-    test_production_catalog_provisioning_orders_its_two_sittings: the new block names ADMIN-SESSION-RECORD.md; sitting 1
-    measures before provision_telemetry_catalog, which precedes the production logins and ensure_catalog_indexes;
-    sitting 2 adopts smoke before the maintainer login, the switch merge, the clean owner re-run, the smoke writer
-    narrowing and the hold's release, in that order; no step invokes merge_ops or gc_ops; every step carries a command
-    and a check.
+    test_production_catalog_provisioning_orders_its_two_sittings: the new block names ADMIN-SESSION-RECORD.md; within
+    sitting 1, measurement precedes provision_telemetry_catalog, which precedes the production logins and
+    ensure_catalog_indexes; within sitting 2, adoption precedes the maintainer login, the switch merge, the clean owner
+    re-run, the smoke writer narrowing and the hold's release; neither sitting names the other as a prerequisite; the
+    catalog_stats and ensure_catalog_indexes steps carry actor operator and every carve-out verb step actor admin_agent;
+    the rollback sub-block keeps the hold, reverts the switch, runs provision_catalog_owner in release mode and gates on a
+    green create-telemetry run before the release; no step invokes merge_ops or gc_ops; every step carries a command and
+    a check.
 bundled_recommendations:
 - rec-4218
 - rec-4297
 - rec-4207
 followon_recs:
 - rec-4480
+- rec-4483
 infrastructure_dependencies:
 - >-
   terraform/personal (auto-apply at merge behind the guard): three Secrets Manager containers, one lifecycle rule, and
   in-budget inline-policy updates on the admin maintenance role and the planner role. No role, trust, function or destroy
-  change; nothing routes to tf-gated-apply. The switch PR adds an in-budget env and inline-policy update on
-  ducklake_maintenance_smoke.
+  change; nothing routes to tf-gated-apply. The switch PR (PR 3) adds an in-budget env and inline-policy update on
+  ducklake_maintenance_smoke and nothing else.
 - >-
   terraform/bootstrap (admin-only, Decision 126): pre-merge read-only plan at the PR head (VP 15-17, the
   pre_merge_live_plan rule), then a human-directed apply after merge, then the post-apply simulate. Expected plan: four
@@ -556,23 +661,30 @@ infrastructure_dependencies:
 - >-
   LAMBDA-DEPLOY (Decision 79/125/126): ducklake_runtime.py is in every DuckLake bundle, so PR 1's merge redeploys all six
   DuckLake functions through deploy-ducklake-lambdas and runs their smoke gates (VP 18). The new verbs are inert until
-  the admin session invokes them. The switch PR changes no source, so it triggers no DuckLake deploy.
+  the admin session invokes them. Neither the bookkeeping PR (PR 2) nor the switch PR (PR 3) changes source, so
+  neither triggers a DuckLake deploy.
 - >-
   LAMBDA-DEPLOY DEFERRED (CD.16 / Decision 79), data-pipeline: compute_affected_artifacts flags it through
-  docs/ROADMAP-PLATFORM.yaml, a manifest asset, in the switch PR. No build, deploy or smoke test is owed: its handlers
+  docs/ROADMAP-PLATFORM.yaml, a manifest asset, in the bookkeeping PR (PR 2). No build, deploy or smoke test is owed: its handlers
   never read the c1 flip, deploy-prod-lambdas.yml's path triggers do not include the file, and the artifact refreshes
   with its next governed deploy (the PLAN-telemetry-reader-verbs precedent).
 - >-
   Admin sitting 1, after PR 1's deploy and apply legs are green, in deploy-paths.yaml production_catalog_provisioning's
-  order: bootstrap apply and simulate; measurement BEFORE any create (Decision 88 cl.2); production catalog; the
-  production writer and reader logins; ensure_catalog_indexes. Each step appends counts-only results to
-  ADMIN-SESSION-RECORD.md.
+  order: bootstrap apply and simulate; measurement BEFORE any create (Decision 88 cl.2; Benjamin runs catalog_stats
+  himself as operator); production catalog; the production writer and reader logins; ensure_catalog_indexes (Benjamin
+  runs it himself as operator). catalog_stats and ensure_catalog_indexes stay human-invoked only
+  (ducklake_maintenance.yaml principal_classes and admin_only_features; index_actions.py "never agent-invoked"): the
+  agent records only their counts-only output. Each step appends counts-only results to ADMIN-SESSION-RECORD.md. The
+  bookkeeping PR (PR 2) merges after sitting 1 on Benjamin's word.
 - >-
-  Admin sitting 2 with DuckLake deploys held by the coordinator from adoption until the switch has applied and the smoke
-  writer is narrowed and proven: adopt smoke; maintainer login; merge the switch PR (Benjamin's word) and wait for its
-  apply; clean owner re-run; narrow the smoke writer and run the telemetry gate at once; release; one dispatched deploy
-  run. Scheduled smoke cadences in the window are safe: EventBridge passes only {action} to merge, gc and hot_merge,
-  which run no DDL; only the deploy gates pass force_recreate_tables, and they are held.
+  Admin sitting 2, independent of sitting 1 (it needs only PR 1's deploy), with DuckLake deploys held by the
+  coordinator from adoption until the switch has applied and the smoke writer is narrowed and proven: adopt smoke;
+  maintainer login; merge the switch PR (Benjamin's word given with PR 1's, so the hold spans only its merge and apply,
+  never his response time) and wait for its apply; clean owner re-run; narrow the smoke writer and run the telemetry
+  gate at once; release; one dispatched deploy run. Scheduled smoke cadences in the window are safe: EventBridge passes
+  only {action} to merge, gc and hot_merge, which run no DDL; only the deploy gates pass force_recreate_tables, and
+  they are held. Rollback keeps the hold: revert the switch PR, provision_catalog_owner(ducklake_smoke, mode release),
+  one dispatched deploy whose create-telemetry gate passes, then release.
 acceptance_criteria:
 - >-
   T2.36:c1 -- the production telemetry catalog ducklake_telemetry exists with the four event tables and the two
@@ -582,18 +694,23 @@ acceptance_criteria:
   0); the catalog stats index is valid on it (StatsIndexValid 1 for MetaSchema ducklake_telemetry).
 - >-
   rec-4297 -- the four logins are provisioned from the closed table and each probe equals its expected scope; neither
-  writer login can drop a DuckLake table or delete catalog history; the reader attaches read-only and cannot write
-  (real Postgres 16 proof before merge, live probes after); the narrowed smoke writer serves every writer verb live.
+  writer login can drop a DuckLake table or delete catalog history; the reader attaches READ_ONLY and cannot write
+  (real Postgres 16 proof before merge, live probes after), recorded as reader_read_only_attach accepted at both; every
+  probe equals its expected scope in either sitting order; the narrowed smoke writer serves every writer verb live.
 - >-
-  ducklake_smoke is owned by ducklake_smoke_owner; ducklake_maintenance_smoke connects as ducklake_smoke_maintainer and
-  holds no grant on the shared owner secret; the owner re-run after the switch reports nothing to re-own; and the
-  dispatched deploy run after the switch passes all five maintenance-smoke gates and the telemetry gate.
+  ducklake_smoke is owned by ducklake_smoke_owner; the smoke maintainer's session role is ducklake_smoke_owner, proven
+  live before the switch merges; ducklake_maintenance_smoke connects as ducklake_smoke_maintainer and holds no grant on
+  the shared owner secret; the owner re-run after the switch reports nothing to re-own; the dispatched deploy run after
+  the switch passes all five maintenance-smoke gates and the telemetry gate; and the switch has a named rollback
+  (release mode) proven on the stage.
 - >-
   The boundary carries the four fence statements and the telemetry-family pattern, its minified size is recorded and at
   most 6,144 bytes, the post-apply simulate rows all match, and PlatformDev holds URL-only invoke on the telemetry reader.
 - >-
   Decision N is on main in the pinned shape with its annotations; rec-4218's ingestion_shape, the production column set
-  and rec-4207's producer identity model are recorded; rec-4218, rec-4207 and rec-4297 are closed.
+  and rec-4207's producer identity model are recorded; rec-4218, rec-4207 and rec-4297 are closed; the six telemetry
+  registry entries stay pre_production and exempt with the production catalog and its column path in exempt_reason,
+  and the status-vocabulary gap is the owned residual rec-4483.
 - >-
   MEASUREMENT.md records the smoke baseline counts-only before provision_telemetry_catalog runs, including the per-day
   rates D and R the maintenance plan's thresholds use, and ADMIN-SESSION-RECORD.md carries every key the sibling plans
@@ -611,7 +728,11 @@ verification_plan:
     tests/lambdas/ducklake_maintenance/test_catalog_logins.py::test_reader_template_is_select_only_and_read_only
     tests/lambdas/ducklake_maintenance/test_catalog_logins.py::test_maintainer_template_joins_only_its_catalog_owner_role
     tests/lambdas/ducklake_maintenance/test_catalog_logins.py::test_render_refuses_any_name_outside_the_closed_table
-    tests/lambdas/ducklake_maintenance/test_catalog_logins.py::test_owner_sql_creates_or_adopts_and_normalises_every_relation -q
+    tests/lambdas/ducklake_maintenance/test_catalog_logins.py::test_owner_sql_creates_or_adopts_and_normalises_every_relation
+    tests/lambdas/ducklake_maintenance/test_catalog_logins.py::test_owner_sql_release_section_returns_smoke_to_current_user_only
+    tests/lambdas/ducklake_maintenance/test_catalog_logins.py::test_every_rendered_template_sets_a_local_lock_timeout
+    tests/lambdas/ducklake_maintenance/test_catalog_logins.py::test_expected_scope_is_true_only_on_objects_the_preconditions_require
+    tests/lambdas/ducklake_maintenance/test_catalog_logins.py::test_maintainer_expected_scope_names_the_owner_role_as_current_user -q
   expected: Exit 0, every node passes. Red before because the module and the nodes are absent.
   fix_if: >-
     A node fails -- fix the table or the template; never widen a login to make a node pass (Decision 213 cl.3 as amended).
@@ -629,8 +750,12 @@ verification_plan:
     tests/lambdas/ducklake_maintenance/test_catalog_actions.py::test_provision_telemetry_catalog_runs_owner_sql_create_seed_then_report_in_order
     tests/lambdas/ducklake_maintenance/test_catalog_actions.py::test_provision_telemetry_catalog_never_creates_the_stats_index
     tests/lambdas/ducklake_maintenance/test_catalog_actions.py::test_provision_telemetry_catalog_refuses_unless_the_owner_role_owns_the_schema
-    tests/lambdas/ducklake_maintenance/test_catalog_actions.py::test_provision_catalog_owner_without_adopt_leaves_the_schema_untouched
-    tests/lambdas/ducklake_maintenance/test_catalog_actions.py::test_provision_catalog_owner_refuses_an_unknown_catalog_and_wrong_confirm
+    tests/lambdas/ducklake_maintenance/test_catalog_actions.py::test_provision_catalog_owner_role_only_leaves_the_schema_untouched
+    tests/lambdas/ducklake_maintenance/test_catalog_actions.py::test_provision_catalog_owner_refuses_an_unknown_catalog_mode_or_wrong_confirm
+    tests/lambdas/ducklake_maintenance/test_catalog_actions.py::test_provision_catalog_owner_release_is_refused_for_any_catalog_but_smoke
+    tests/lambdas/ducklake_maintenance/test_catalog_actions.py::test_provision_catalog_owner_release_runs_the_release_section_and_reports_it
+    tests/lambdas/ducklake_maintenance/test_catalog_actions.py::test_provision_telemetry_catalog_reads_its_scoped_logins_through_to_regrole
+    tests/lambdas/ducklake_maintenance/test_catalog_actions.py::test_lock_timeout_surfaces_as_a_typed_error_with_sqlstate_55p03
     tests/lambdas/ducklake_maintenance/test_catalog_actions.py::test_catalog_verbs_emit_no_metric_and_report_counts_only
     tests/lambdas/ducklake_maintenance/test_catalog_actions.py::test_database_errors_surface_only_class_and_sqlstate
     tests/lambdas/ducklake_maintenance/test_catalog_actions.py::test_contract_documents_both_catalog_verbs
@@ -650,21 +775,28 @@ verification_plan:
     tests/lambdas/ducklake_maintenance/test_login_actions.py::test_each_closed_login_uses_its_own_secret_and_template
     tests/lambdas/ducklake_maintenance/test_login_actions.py::test_confirm_must_name_a_closed_login
     tests/lambdas/ducklake_maintenance/test_login_actions.py::test_scope_probe_matches_the_closed_table_expectation
-    tests/lambdas/ducklake_maintenance/test_login_actions.py::test_provisioning_refuses_until_the_owner_role_and_schema_exist -q
+    tests/lambdas/ducklake_maintenance/test_login_actions.py::test_provisioning_refuses_until_the_owner_role_and_schema_exist
+    tests/lambdas/ducklake_maintenance/test_login_actions.py::test_scope_probe_guards_every_role_and_schema_name
+    tests/lambdas/ducklake_maintenance/test_login_actions.py::test_scope_probe_reports_current_user_and_session_user
+    tests/lambdas/ducklake_maintenance/test_login_actions.py::test_reader_login_reports_its_read_only_attach_outcome_without_raising -q
   expected: Exit 0, every node passes. Red before because the nodes are absent.
-  fix_if: A scope mismatch -- the probe or the expectation is wrong; never relax an expected scope to match a probe.
+  fix_if: >-
+    A scope mismatch -- the probe or the expectation is wrong; never relax an expected scope to match a probe. A bare
+    role or schema name in pg_has_role or has_schema_privilege is the 42704 defect the guard node exists to catch.
   hermetic: true
   graduation: graduate
   graduation_check_id: telemetry-login-closed-table-provisioning
 - step: 4
   phase: pre-deploy
   action: >-
-    The ownership report names the owner role and holds it through membership, and the smoke step, its gate and the smoke
-    DSN source follow it.
+    The ownership report names the owner role, holds it through membership and reads a not-yet-existing login as holding
+    no CREATE; the smoke step, its gate and the smoke DSN source follow it; open_connection can attach READ_ONLY.
   command: >-
     bin/venv-python -m pytest
     tests/common/test_ducklake_telemetry_provision.py::test_ownership_report_names_and_holds_the_owner_through_role_membership
     tests/common/test_ducklake_telemetry_provision.py::test_ownership_report_flags_create_for_any_listed_scoped_login
+    tests/common/test_ducklake_telemetry_provision.py::test_ownership_report_treats_an_absent_scoped_login_as_holding_no_create
+    tests/common/test_ducklake_runtime.py::test_open_connection_read_only_adds_the_attach_option
     tests/test_ducklake_maintenance_smoke_handler.py::test_open_connection_reads_the_secret_named_by_env
     tests/test_ducklake_maintenance_smoke_handler.py::test_create_telemetry_passes_when_the_owner_is_held_through_membership
     tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py::test_create_telemetry_owner_held_through_membership_passes -q
@@ -759,7 +891,7 @@ verification_plan:
     tests/test_deploy_paths_admin_procedure.py tests/test_ducklake_maintenance_smoke_handler.py
     tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py tests/common/test_ducklake_telemetry_provision.py
     tests/lambdas/ducklake_maintenance/test_login_actions.py tests/lambdas/ducklake_maintenance/test_health_actions.py
-    tests/checks/contracts/test_telemetry_dimension_contracts.py -q
+    tests/checks/contracts/test_telemetry_dimension_contracts.py tests/common/test_ducklake_runtime.py -q
   expected: >-
     Exit 0. test_telemetry_infra_pins.py passes UNCHANGED (the writer and reader stay smoke-pinned until the flip);
     test_production_catalog_provisioning_orders_its_two_sittings passes.
@@ -772,21 +904,25 @@ verification_plan:
 - step: 11
   phase: pre-deploy
   action: >-
-    Real Postgres 16 with a Neon-shaped non-superuser owner, with and without pg_read_all_data -- adoption, the
-    maintainer's force-recreate and column add under its session role, the fresh production catalog, the stats index,
-    the measured writer grants and the read-only reader.
+    Real Postgres 16 with a Neon-shaped non-superuser owner, with and without pg_read_all_data -- adoption, release, the
+    maintainer's session role, force-recreate and column add, the fresh production catalog, the stats index, the live
+    sitting order on a bare stage, the lock timeout, the measured writer grants and the READ_ONLY reader. Then append
+    reader_read_only_attach_stage (accepted, from test_reader_attaches_read_only_and_cannot_write) to
+    /mnt/project-files/telemetry-slice2c/ADMIN-SESSION-RECORD.md.
   command: >-
     test -n "$DUCKLAKE_TEST_PG_ADMIN_DSN" && bin/venv-python -m pytest tests/common/test_ducklake_telemetry_catalog_ownership.py
-    tests/common/test_ducklake_telemetry_writer_least_privilege.py -m integration -q -rs 2>&1 | tee "${TMPDIR:-/tmp}/catalog_pg.log"
+    tests/common/test_ducklake_catalog_owner_roles.py tests/common/test_ducklake_telemetry_writer_least_privilege.py
+    -m integration -q -rs 2>&1 | tee "${TMPDIR:-/tmp}/catalog_pg.log"
     && ! grep -Eq "[0-9]+ (skipped|failed|error)" "${TMPDIR:-/tmp}/catalog_pg.log" && grep -Eq "[0-9]+ passed" "${TMPDIR:-/tmp}/catalog_pg.log"
   expected: >-
     Exit 0 with every node passing and none skipped (a skip is a FAIL, rec-4071); the log goes in the PR description with
-    the measured grant table from execution step 4.
+    the measured grant table from execution step 4; the record carries reader_read_only_attach_stage: accepted.
   fix_if: >-
-    The reader's READ_ONLY attach is refused by the pinned DuckLake -- attach without it and rely on the login, recorded
-    in the PR; a DuckLake write on attach under the SELECT-only login -- STOP and bring it back to planning (the reader
-    login design rests on it); membership, ownership transfer or the session-role default refused on PG16 -- Decision N's
-    owner-role-refused condition: STOP and escalate.
+    The reader's READ_ONLY attach is refused by the pinned DuckLake -- write reader_read_only_attach_stage: refused (and
+    reader_read_only_attach: refused) to the record and STOP for planning: never attach without READ_ONLY, never weaken
+    the node (PLAN-telemetry-reader-and-smoke-twin's step 1 reads the key and stops too); a DuckLake write on attach under
+    the SELECT-only login -- likewise STOP and bring it back to planning; membership, ownership transfer, release or the
+    session-role default refused on PG16 -- Decision N's owner-role-refused condition: STOP and escalate.
   hermetic: false
   graduation: waive
   graduation_waiver_reason: >-
@@ -799,7 +935,8 @@ verification_plan:
     changed modules reach 100% from their mapped tests; HCL is formatted; the simulate fixture stays in budget.
   command: >-
     bin/venv-python -m scripts.lambda_manifest --check-bundles && .venv/bin/lint-imports && bin/venv-python -m
-    scripts.test_coverage_checker --check-tests --check-coverage --files src/lambdas/ducklake_maintenance/catalog_logins.py
+    scripts.test_coverage_checker --check-tests --check-coverage --files src/common/ducklake_runtime.py
+    src/lambdas/ducklake_maintenance/catalog_logins.py
     src/lambdas/ducklake_maintenance/catalog_actions.py src/lambdas/ducklake_maintenance/login_actions.py
     src/lambdas/ducklake_maintenance/handler.py src/lambdas/ducklake_maintenance/health_actions.py
     src/common/ducklake_telemetry_provision.py src/lambdas/ducklake_maintenance_smoke/handler.py
@@ -933,16 +1070,17 @@ verification_plan:
   phase: post-deploy
   action: >-
     ADMIN sitting 1, human-directed -- apply terraform/bootstrap at the merge sha (terraform/bootstrap/CLAUDE.md runbook;
-    the plan again shows the four updates and nothing else), then the post-apply simulate fixture; append
-    bootstrap_applied_sha, bootstrap_plan_updates and simulate_triples / simulate_mismatches to ADMIN-SESSION-RECORD.md.
+    the plan again shows the four updates and nothing else), then the post-apply simulate fixture; only after the
+    command passes, append bootstrap_applied_sha, bootstrap_plan_updates, simulate_triples and simulate_mismatches to
+    ADMIN-SESSION-RECORD.md (VP 29 checks the keys).
   command: >-
     bin/venv-python -m scripts.ci.iam_simulate --profile agent_platform_admin --fixture docs/contracts/iam-simulate-fixture.yaml
     > "${TMPDIR:-/tmp}/simulate.log" 2>&1; tail -3 "${TMPDIR:-/tmp}/simulate.log"; grep -q "telemetry-prefix-get-denied"
-    "${TMPDIR:-/tmp}/simulate.log" && grep -q "PASS: every triple" "${TMPDIR:-/tmp}/simulate.log" && grep -q
-    "^simulate_mismatches: 0" /mnt/project-files/telemetry-slice2c/ADMIN-SESSION-RECORD.md && echo BOOTSTRAP_LIVE_OK
+    "${TMPDIR:-/tmp}/simulate.log" && grep -q "PASS: every triple" "${TMPDIR:-/tmp}/simulate.log" && echo BOOTSTRAP_LIVE_OK
   expected: >-
-    Every fixture row matches, the six new rows included, the record carries the four keys, then BOOTSTRAP_LIVE_OK; a
-    counts-only comment naming the applied sha goes on the merged PR (pre_merge_live_plan rule 3).
+    Every fixture row matches, the six new rows included, then BOOTSTRAP_LIVE_OK; then the four keys are appended
+    (simulate_mismatches 0); a counts-only comment naming the applied sha goes on the merged PR (pre_merge_live_plan
+    rule 3).
   fix_if: >-
     url-only-telemetry-family-denied allowed -- the pattern did not apply; telemetry-prefix-get-denied allowed -- the
     fence is missing; ops-prefix-get-allowed denied -- the fence is too wide: roll the bootstrap back to the prior sha and
@@ -956,7 +1094,8 @@ verification_plan:
     /mnt/project-files/telemetry-slice2c/MEASUREMENT.md with these exact keys: measured_at; window_start and window_end
     (the 7 days before measured_at); smoke_capture_since (2026-10-15) and smoke_age_days; catalog_metadata_bytes and
     file_column_stats_rows_est (catalog_stats on ducklake_smoke, ops_table_filter telemetry_%, which emits nothing for a
-    non-ops schema after VP 8); telemetry_data_files and telemetry_data_files_by_table (its per-table data_file_count);
+    non-ops schema after VP 8; catalog_stats is human-invoked only, so Benjamin runs it himself as operator and hands the
+    agent its counts-only body, which the agent records and never invokes); telemetry_data_files and telemetry_data_files_by_table (its per-table data_file_count);
     append_requests_7d and append_requests_per_day (writer EMF RequestCount, Verb append_telemetry); files_per_commit
     (data files added by one append commit, read from the writer probe's data_files on a fresh gate session); D_files_per_day
     = append_requests_per_day x files_per_commit, and D_crosscheck_files_per_day = telemetry_data_files / smoke_age_days;
@@ -967,7 +1106,7 @@ verification_plan:
     cold telemetry ATTACH log line over the window, or the literal production_watch when no line is found).
   command: >-
     test -s /mnt/project-files/telemetry-slice2c/MEASUREMENT.md && bin/venv-python -c "import re,sys;t=open('/mnt/project-files/telemetry-slice2c/MEASUREMENT.md').read();keys=['measured_at','window_start','window_end','smoke_capture_since','smoke_age_days','catalog_metadata_bytes','file_column_stats_rows_est','telemetry_data_files','telemetry_data_files_by_table','append_requests_7d','append_requests_per_day','files_per_commit','D_files_per_day','D_crosscheck_files_per_day','R_stats_rows_per_day','R_crosscheck_stats_rows_per_day','occ_retry_p95_7d','commit_latency_p50_ms_7d','commit_latency_p95_ms_7d','neon_storage_bytes','neon_data_transfer_bytes_7d','telemetry_attach_cold_ms'];miss=[k for k in keys if k+':' not in t];assert not miss,miss;assert not re.search(r'\b\d{12}\b|arn:aws|\.neon\.tech',t),'identifier in evidence';print('MEASUREMENT_OK')"
-  expected: MEASUREMENT_OK; measured_at is earlier than VP 21's provision time in ADMIN-SESSION-RECORD.md.
+  expected: MEASUREMENT_OK (VP 29 also checks measured_at is earlier than production_catalog_provisioned_at).
   fix_if: >-
     D and its cross-check differ by more than 2x -- record both and the reason (deploy-gate rows inflate the catalog count);
     the maintenance plan uses D. A missing key stops the walk; never invent a value.
@@ -985,35 +1124,45 @@ verification_plan:
     "$P" > /dev/null && bin/venv-python -c "import json,sys;r=json.load(open(sys.argv[1]));b=json.loads(r['body']);o=b['ownership'];print(len(b['tables']),len(b['created']),b['counters'],{k:o[k] for k in ('foreign_owned','schema_owner','schema_owner_held','schema_owner_is_current_user')});assert r['statusCode']==200 and b['ok'] is True and len(b['tables'])==9 and o['foreign_owned']==0 and o['schema_owner']=='ducklake_telemetry_owner' and o['schema_owner_held'] is True and o['schema_owner_is_current_user'] is False and o['scoped_create_on_schema'] is False and o['scoped_create_on_public'] is False;print('PRODUCTION_CATALOG_OK')" "$P"
   expected: >-
     PRODUCTION_CATALOG_OK with nine tables, the two counters seeded, ownership by ducklake_telemetry_owner held through
-    membership (not by the login itself).
-  fix_if: A drift or half-pair refusal on a fresh catalog is a create defect; the re-run is idempotent once fixed.
+    membership (not by the login itself); the scoped CREATE flags are false because neither production login exists yet
+    (the to_regrole guard), and VP 22's probes prove those logins hold no CREATE once they do.
+  fix_if: >-
+    A drift or half-pair refusal on a fresh catalog is a create defect; a 42704 (role does not exist) is the guard
+    missing from ownership_report; SQLSTATE 55P03 is the lock timeout (nothing changed, re-run). The re-run is idempotent
+    once fixed.
   hermetic: false
   graduation: not-applicable
 - step: 22
   phase: post-deploy
   action: >-
-    ADMIN sitting 1 -- write the production writer and reader secret values and provision both logins; append
-    login_ducklake_telemetry_writer_prod_connection_limit (10) and login_ducklake_telemetry_reader_connection_limit (10)
-    and their scope results to the record.
+    ADMIN sitting 1 -- write the production writer and reader secret values and provision both logins (ducklake_smoke_owner
+    may not exist yet; the guarded probe reads it as not a member); append
+    login_ducklake_telemetry_writer_prod_connection_limit (10), login_ducklake_telemetry_reader_connection_limit (10),
+    their scope results and reader_read_only_attach (the reader's live read_only_attach, accepted only when
+    reader_read_only_attach_stage is accepted too) to the record.
   command: >-
     for L in ducklake_telemetry_writer_prod ducklake_telemetry_reader; do P="${TMPDIR:-/tmp}/login-$L.json";
     AWS_MAX_ATTEMPTS=1 aws lambda invoke --profile agent_platform_admin --region eu-west-2 --cli-read-timeout 300
     --function-name agent-platform-ducklake-maintenance --cli-binary-format raw-in-base64-out --payload
-    "{\"action\":\"provision_telemetry_login\",\"confirm\":\"$L\"}" "$P" > /dev/null && bin/venv-python -c "import json,sys;from src.lambdas.ducklake_maintenance import catalog_logins as cl;L=sys.argv[2];r=json.load(open(sys.argv[1]));b=json.loads(r['body']);print(L,b.get('scope'));assert r['statusCode']==200 and b['ok'] is True and b['metadata_readable'] is True and b['scope']==cl.LOGINS[L].expected_scope and b['migration_sha256']==cl.template_sha256(L);print('LOGIN_OK',L)" "$P" "$L" || exit 1; done
-  expected: LOGIN_OK for both, each scope equal to its closed-table expectation; nothing live uses them yet.
-  fix_if: A scope mismatch is a template or expectation defect; fix forward in a PR (no live consumer exists yet).
+    "{\"action\":\"provision_telemetry_login\",\"confirm\":\"$L\"}" "$P" > /dev/null && bin/venv-python -c "import json,sys;from src.lambdas.ducklake_maintenance import catalog_logins as cl;L=sys.argv[2];r=json.load(open(sys.argv[1]));b=json.loads(r['body']);print(L,b.get('scope'),b.get('read_only_attach'));assert r['statusCode']==200 and b['ok'] is True and b['metadata_readable'] is True and b['scope']==cl.LOGINS[L].expected_scope and b['migration_sha256']==cl.template_sha256(L);assert L!='ducklake_telemetry_reader' or b['read_only_attach']=='accepted',b.get('read_only_attach');print('LOGIN_OK',L)" "$P" "$L" || exit 1; done
+  expected: >-
+    LOGIN_OK for both, each scope equal to its closed-table expectation, the reader's read_only_attach accepted; nothing
+    live uses them yet.
+  fix_if: >-
+    A scope mismatch is a template or expectation defect; fix forward in a PR (no live consumer exists yet). The
+    reader's read_only_attach refused -- write reader_read_only_attach: refused to the record and STOP for planning (the
+    reader plan's step 1 stops on it); never provision the reader to attach without READ_ONLY.
   hermetic: false
   graduation: not-applicable
 - step: 23
   phase: post-deploy
   action: >-
-    ADMIN sitting 1 -- ensure_catalog_indexes builds the stats index on ducklake_telemetry, then the next control_health
-    reports it valid; append stats_index_valid_ducklake_telemetry to the record.
+    ADMIN sitting 1 -- Benjamin runs ensure_catalog_indexes himself as operator (it is "operator-only, never
+    agent-invoked", Decision 81 cl.6, index_actions.py) and hands the agent its counts-only ducklake_telemetry entry
+    (ok, valid_after), which the agent saves as $IDX_RESULT_JSON; the agent then reads the next control_health's
+    StatsIndexValid and appends stats_index_valid_ducklake_telemetry to the record. The agent never invokes the verb.
   command: >-
-    P="${TMPDIR:-/tmp}/idx.json" && AWS_MAX_ATTEMPTS=1 aws lambda invoke --profile agent_platform_admin --region eu-west-2
-    --cli-read-timeout 900 --function-name agent-platform-ducklake-maintenance --cli-binary-format raw-in-base64-out
-    --payload '{"action":"ensure_catalog_indexes","confirm":"ducklake_file_column_stats"}' "$P" > /dev/null &&
-    bin/venv-python -c "import json,sys;b=json.loads(json.load(open(sys.argv[1]))['body']);s=b['schemas']['ducklake_telemetry'];print(s);assert b['ok'] is True and s['valid_after'] is True;print('INDEX_OK')" "$P"
+    test -s "$IDX_RESULT_JSON" && bin/venv-python -c "import json,sys;s=json.load(open(sys.argv[1]));print(s);assert s['ok'] is True and s['valid_after'] is True;print('INDEX_OK')" "$IDX_RESULT_JSON"
     && aws cloudwatch get-metric-statistics --profile agent_platform --region eu-west-2 --namespace DuckLakeMaintenance
     --metric-name StatsIndexValid --dimensions Name=MetaSchema,Value=ducklake_telemetry --start-time "$(date -u -d '-7 hours' +%FT%TZ)"
     --end-time "$(date -u +%FT%TZ)" --period 3600 --statistics Minimum --query 'Datapoints[].Minimum' --output text | grep -q '1.0'
@@ -1021,50 +1170,60 @@ verification_plan:
   expected: >-
     INDEX_OK then STATS_INDEX_VALID_OK (control_health runs every 6 hours and dimensions this metric by MetaSchema; wait for
     its next pass).
-  fix_if: Never create the index any other way (Decision 214 cl.2).
+  fix_if: >-
+    valid_after false -- Benjamin re-runs the verb; never create the index any other way (Decision 214 cl.2) and never
+    invoke it from the agent.
   hermetic: false
   graduation: not-applicable
 - step: 24
   phase: post-deploy
   action: >-
-    ADMIN sitting 2, deploys held by the coordinator -- adopt the smoke catalog; append smoke_adopted_relations_reowned to
-    the record.
+    ADMIN sitting 2 (independent of sitting 1), deploys held by the coordinator -- adopt the smoke catalog; append
+    smoke_adopted_relations_reowned to the record.
   command: >-
     P="${TMPDIR:-/tmp}/owner.json" && AWS_MAX_ATTEMPTS=1 aws lambda invoke --profile agent_platform_admin --region eu-west-2
     --cli-read-timeout 900 --function-name agent-platform-ducklake-maintenance --cli-binary-format raw-in-base64-out
-    --payload '{"action":"provision_catalog_owner","meta_schema":"ducklake_smoke","confirm":"ducklake_smoke","adopt":true}' "$P" >
-    /dev/null && bin/venv-python -c "import json,sys;r=json.load(open(sys.argv[1]));b=json.loads(r['body']);print({k:b.get(k) for k in ('ok','owner_role','schema_adopted','relations_reowned','member_inherit','member_set')});assert r['statusCode']==200 and b['ok'] is True and b['owner_role']=='ducklake_smoke_owner' and b['member_inherit'] is True and b['member_set'] is True;print('SMOKE_OWNER_OK')" "$P"
+    --payload '{"action":"provision_catalog_owner","meta_schema":"ducklake_smoke","confirm":"ducklake_smoke","mode":"adopt"}' "$P" >
+    /dev/null && bin/venv-python -c "import json,sys;r=json.load(open(sys.argv[1]));b=json.loads(r['body']);print({k:b.get(k) for k in ('ok','owner_role','mode','schema_adopted','relations_reowned','member_inherit','member_set')});assert r['statusCode']==200 and b['ok'] is True and b['mode']=='adopt' and b['owner_role']=='ducklake_smoke_owner' and b['member_inherit'] is True and b['member_set'] is True;print('SMOKE_OWNER_OK')" "$P"
   expected: SMOKE_OWNER_OK; schema_adopted true on the first run; relations_reowned a count.
   fix_if: >-
-    A membership or ownership refusal -- Decision N's owner-role-refused condition: STOP (the call is one transaction, so
-    smoke is untouched), release the hold, and bring it back to Benjamin.
+    SQLSTATE 55P03 -- a capture commit held a lock past the 5 s lock_timeout; the transaction rolled back whole, so re-run
+    it. A membership or ownership refusal -- Decision N's owner-role-refused condition: STOP (the call is one
+    transaction, so smoke is untouched), release the hold, and bring it back to Benjamin.
   hermetic: false
   graduation: not-applicable
 - step: 25
   phase: post-deploy
   action: >-
-    ADMIN sitting 2 -- write the smoke maintainer's secret value and provision its login; append
-    login_ducklake_smoke_maintainer_connection_limit (2) to the record.
+    ADMIN sitting 2 -- write the smoke maintainer's secret value and provision its login; its probe's current_user must
+    read ducklake_smoke_owner, proving the session-role default applies on Neon BEFORE the switch merges (the USAGE and
+    CREATE reads alone would look the same through INHERIT); append login_ducklake_smoke_maintainer_connection_limit (2)
+    and maintainer_current_user to the record.
   command: >-
     P="${TMPDIR:-/tmp}/login-m.json" && AWS_MAX_ATTEMPTS=1 aws lambda invoke --profile agent_platform_admin --region
     eu-west-2 --cli-read-timeout 300 --function-name agent-platform-ducklake-maintenance --cli-binary-format
     raw-in-base64-out --payload '{"action":"provision_telemetry_login","confirm":"ducklake_smoke_maintainer"}' "$P" >
-    /dev/null && bin/venv-python -c "import json,sys;from src.lambdas.ducklake_maintenance import catalog_logins as cl;r=json.load(open(sys.argv[1]));b=json.loads(r['body']);print(b.get('scope'));assert r['statusCode']==200 and b['ok'] is True and b['metadata_readable'] is True and b['scope']==cl.LOGINS['ducklake_smoke_maintainer'].expected_scope;print('MAINTAINER_LOGIN_OK')" "$P"
-  expected: MAINTAINER_LOGIN_OK (its scope shows the smoke owner role held and nothing on ducklake_ops or ducklake_telemetry).
-  fix_if: A scope mismatch -- STOP before the switch merges and release the hold; nothing points at this login yet.
+    /dev/null && bin/venv-python -c "import json,sys;from src.lambdas.ducklake_maintenance import catalog_logins as cl;r=json.load(open(sys.argv[1]));b=json.loads(r['body']);print(b.get('scope'));assert r['statusCode']==200 and b['ok'] is True and b['metadata_readable'] is True and b['scope']==cl.LOGINS['ducklake_smoke_maintainer'].expected_scope and b['scope']['current_user']=='ducklake_smoke_owner';print('MAINTAINER_LOGIN_OK')" "$P"
+  expected: >-
+    MAINTAINER_LOGIN_OK (current_user ducklake_smoke_owner, the smoke owner role held, nothing on ducklake_ops or
+    ducklake_telemetry).
+  fix_if: >-
+    current_user reads the login itself -- Neon did not apply ALTER ROLE ... SET role (owner-role-refused): STOP before the
+    switch merges, release the hold (nothing points at this login yet) and escalate; any other scope mismatch likewise
+    stops before the switch merges.
   hermetic: false
   graduation: not-applicable
 - step: 26
   phase: post-deploy
   action: >-
-    ADMIN sitting 2 -- the switch PR (execution step 12) is merged on Benjamin's word and its terraform apply has landed;
-    then provision_catalog_owner(ducklake_smoke) again finds nothing to re-own; append switch_applied_sha and
-    smoke_rerun_relations_reowned (0) to the record.
+    ADMIN sitting 2 -- the switch PR (PR 3, execution step 12) is merged under the word Benjamin gave with PR 1's, right
+    after VP 25 passed, and its terraform apply has landed; then provision_catalog_owner(ducklake_smoke) again finds
+    nothing to re-own; append switch_applied_sha and smoke_rerun_relations_reowned (0) to the record.
   command: >-
     bin/venv-python -m pytest tests/checks/iam_tf/test_telemetry_production_catalog_infra.py::test_maintenance_smoke_reads_only_the_smoke_maintainer_secret
     -q && P="${TMPDIR:-/tmp}/owner2.json" && AWS_MAX_ATTEMPTS=1 aws lambda invoke --profile agent_platform_admin --region
     eu-west-2 --cli-read-timeout 900 --function-name agent-platform-ducklake-maintenance --cli-binary-format
-    raw-in-base64-out --payload '{"action":"provision_catalog_owner","meta_schema":"ducklake_smoke","confirm":"ducklake_smoke","adopt":true}'
+    raw-in-base64-out --payload '{"action":"provision_catalog_owner","meta_schema":"ducklake_smoke","confirm":"ducklake_smoke","mode":"adopt"}'
     "$P" > /dev/null && bin/venv-python -c "import json,sys;b=json.loads(json.load(open(sys.argv[1]))['body']);print(b['relations_reowned']);assert b['ok'] is True and b['relations_reowned']==0 and b['schema_adopted'] is False;print('SMOKE_STILL_CLEAN')" "$P"
   expected: The pin node passes, then SMOKE_STILL_CLEAN (no relation appeared under another owner while deploys were held).
   fix_if: >-
@@ -1111,18 +1270,26 @@ verification_plan:
     SWITCH_LIVE_OK: all five maintenance-smoke gates pass as the maintainer (its force-recreated tables are owned by the
     smoke owner role) and the telemetry gate passes on the narrowed writer.
   fix_if: >-
-    A create-telemetry foreign_owned failure -- the maintainer's session role did not apply on Neon (owner-role-refused):
-    revert the switch PR in one change (env and grant together), re-run provision_catalog_owner, escalate.
+    A create-telemetry failure -- the coordinator re-imposes the hold, then the named rollback: revert the switch PR (a
+    terraform-only revert; its apply restores the shared credential and drops the maintainer env), run
+    provision_catalog_owner(ducklake_smoke, mode release) so the shared owner login owns the smoke schema and every
+    relation again, dispatch one deploy run and confirm its MAINTENANCE_CREATE_TELEMETRY OK line, then release the hold
+    and escalate (owner-role-refused if the session role is the cause). The bookkeeping PR's records are untouched by
+    this rollback.
   hermetic: false
   graduation: not-applicable
 - step: 29
   phase: post-deploy
-  action: T2.36 c1 reads met on origin/main from this plan, and the record carries every key the sibling plans read.
+  action: >-
+    T2.36 c1 reads met on origin/main from this plan's bookkeeping PR, the record carries every key the sibling plans
+    read, and the measurement preceded the production create.
   command: >-
     git fetch origin main --quiet && git show origin/main:docs/ROADMAP-PLATFORM.yaml | bin/venv-python -c "import sys,yaml;d=yaml.safe_load(sys.stdin);t=next(i for i in d['tier_items'] if i['id']=='T2.36');c=next(c for c in t['exit_criteria'] if c['id']=='c1');assert c['status']=='met' and c.get('met_by')=='telemetry-production-catalog',c;print('C1_MET')"
-    && bin/venv-python -c "import re;t=open('/mnt/project-files/telemetry-slice2c/ADMIN-SESSION-RECORD.md').read();keys=['bootstrap_applied_sha','bootstrap_plan_updates','simulate_triples','simulate_mismatches','production_catalog_tables','production_catalog_created','production_catalog_counters','production_catalog_owner','production_catalog_provisioned_at','login_ducklake_telemetry_writer_prod_connection_limit','login_ducklake_telemetry_reader_connection_limit','login_ducklake_smoke_maintainer_connection_limit','login_ducklake_telemetry_writer_connection_limit','stats_index_valid_ducklake_telemetry','smoke_adopted_relations_reowned','switch_applied_sha','smoke_rerun_relations_reowned','smoke_writer_narrowed_at','live_proof_run_conclusion'];miss=[k for k in keys if k+':' not in t];assert not miss,miss;assert not re.search(r'\b\d{12}\b|arn:aws|\.neon\.tech',t);print('RECORD_OK')"
+    && bin/venv-python -c "import re;t=open('/mnt/project-files/telemetry-slice2c/ADMIN-SESSION-RECORD.md').read();keys=['bootstrap_applied_sha','bootstrap_plan_updates','simulate_triples','simulate_mismatches','production_catalog_tables','production_catalog_created','production_catalog_counters','production_catalog_owner','production_catalog_provisioned_at','login_ducklake_telemetry_writer_prod_connection_limit','login_ducklake_telemetry_reader_connection_limit','login_ducklake_smoke_maintainer_connection_limit','login_ducklake_telemetry_writer_connection_limit','stats_index_valid_ducklake_telemetry','smoke_adopted_relations_reowned','switch_applied_sha','smoke_rerun_relations_reowned','smoke_writer_narrowed_at','live_proof_run_conclusion','reader_read_only_attach_stage','reader_read_only_attach','maintainer_current_user'];miss=[k for k in keys if k+':' not in t];assert not miss,miss;assert not re.search(r'\b\d{12}\b|arn:aws|\.neon\.tech',t);kv=lambda x:dict(l.split(':',1) for l in x.splitlines() if ':' in l);r=kv(t);m=kv(open('/mnt/project-files/telemetry-slice2c/MEASUREMENT.md').read());assert r['reader_read_only_attach'].strip()=='accepted';assert m['measured_at'].strip()<r['production_catalog_provisioned_at'].strip();print('RECORD_OK')"
   expected: C1_MET then RECORD_OK.
-  fix_if: The c1 flip lives only in the switch PR, after VP 21-23 passed; never earlier.
+  fix_if: >-
+    The c1 flip lives only in the bookkeeping PR (PR 2), merged after VP 19-23 passed; never earlier. measured_at not
+    earlier than the provision time breaks Decision 88 cl.2: record it and bring it back to Benjamin.
   hermetic: false
   graduation: not-applicable
 - step: 30
@@ -1138,10 +1305,10 @@ verification_plan:
   graduation: not-applicable
 test_obligations:
 - source: src/common/ducklake_runtime.py
-  behavior: The production telemetry catalog constants name a schema distinct from both existing catalogs and a data path that is a sibling of ducklake/.
-  verification_step: 6
-  test_selector: tests/checks/iam_tf/test_telemetry_production_catalog_infra.py::test_production_telemetry_prefix_is_a_sibling_of_the_ops_prefix
-  red_green_expectation: red before (node absent), green after
+  behavior: open_connection's read_only adds READ_ONLY to the ATTACH and the default leaves today's ATTACH unchanged.
+  verification_step: 4
+  test_selector: tests/common/test_ducklake_runtime.py::test_open_connection_read_only_adds_the_attach_option
+  red_green_expectation: red before (node absent; no read_only keyword), green after
 - source: src/common/ducklake_telemetry_provision.py
   behavior: The ownership report names the owner role, holds it through membership and flags CREATE for any listed scoped login.
   verification_step: 4
@@ -1251,12 +1418,16 @@ test_obligations:
   behavior: The trail logs data events for all five identity-trusting functions.
   verification_step: 10
   test_selector: tests/checks/iam_tf/test_url_only_invoke_guard.py::test_real_trail_logs_lambda_data_events
-  red_green_expectation: green before and after; the predicate's expected set grows with the HCL in the same PR
+  red_green_expectation: >-
+    red with the predicate's new five-ARN expected set over the unchanged HCL (the two new selector values absent), green
+    after the HCL change
 - source: terraform/bootstrap/platform_dev_policies.tf
   behavior: PlatformDev invokes the telemetry reader URL-only.
   verification_step: 10
   test_selector: tests/checks/iam_tf/test_url_only_invoke_guard.py::test_real_platform_dev_names_all_six_forms
-  red_green_expectation: green before and after; the expected form count moves from six to eight with the HCL
+  red_green_expectation: >-
+    red with the predicate's eight-form expectation over the unchanged HCL (the telemetry reader's two forms absent),
+    green after the HCL change
 - source: terraform/bootstrap/github_ci_apply_reads.tf
   behavior: The apply role can refresh-read the two roles the next plan creates.
   verification_step: 6
@@ -1273,7 +1444,10 @@ test_obligations:
   test_selector: tests/lambdas/ducklake_maintenance/test_catalog_actions.py::test_contract_documents_both_catalog_verbs
   red_green_expectation: red before (node absent), green after
 - source: docs/contracts/deploy-paths.yaml
-  behavior: The production provisioning procedure orders its two sittings, holds deploys across the smoke switch and never runs merge or GC.
+  behavior: >-
+    The production provisioning procedure orders each of its two independent sittings, names the operator for
+    catalog_stats and ensure_catalog_indexes, holds deploys across the smoke switch with a release-mode rollback, and
+    never runs merge or GC.
   verification_step: 10
   test_selector: tests/test_deploy_paths_admin_procedure.py::test_production_catalog_provisioning_orders_its_two_sittings
   red_green_expectation: red before (node absent), green after
@@ -1293,17 +1467,14 @@ test_obligations:
   test_selector: tests/checks/contracts/test_tenant_id_producer_identity_model.py::test_producer_identity_model_is_recorded
   red_green_expectation: red before (file and node absent), green after
 - source: config/lambda/ducklake/field_semantics.static.yaml
-  behavior: The six telemetry entries stay pre_production and exempt, with the production catalog and its owner-login column path named.
+  behavior: >-
+    The six telemetry entries stay pre_production and exempt, with the production catalog, its owner-login column path
+    and the residual's owner rec-4483 named in exempt_reason.
   verification_step: 7
   test_selector: tests/checks/contracts/test_telemetry_registry_status.py::test_telemetry_registry_stays_pre_production_with_the_production_column_path
   red_green_expectation: red before (file and node absent), green after
 - source: docs/contracts/ops_tenants.yaml
-  behavior: The dimension's note no longer promises a slice 2c flip and names no catalog.
-  verification_step: 7
-  test_selector: tests/checks/contracts/test_telemetry_registry_status.py::test_telemetry_registry_stays_pre_production_with_the_production_column_path
-  red_green_expectation: red before (file and node absent), green after
-- source: docs/contracts/data-modeling-standard.yaml
-  behavior: The pre_production vocabulary drops the slice 2c owner and names no catalog.
+  behavior: The dimension's note no longer promises a slice 2c flip and names rec-4483 as the owner of its status vocabulary.
   verification_step: 7
   test_selector: tests/checks/contracts/test_telemetry_registry_status.py::test_telemetry_registry_stays_pre_production_with_the_production_column_path
   red_green_expectation: red before (file and node absent), green after
@@ -1312,35 +1483,35 @@ test_obligations:
   verification_step: 10
   test_selector: tests/checks/contracts/test_telemetry_dimension_contracts.py
   waiver_reason: >-
-    Mechanical status-line edit in the switch PR (no meaning change); contract drift and the Class A header checks run in
+    Mechanical status-line edit in the bookkeeping PR (PR 2, no meaning change); contract drift and the Class A header checks run in
     that PR's CI, and the substrate pin in this file moves with it.
 - source: docs/contracts/telemetry_observations.yaml
   behavior: Its production status line follows the catalog's creation.
   verification_step: 10
   test_selector: tests/checks/contracts/test_telemetry_dimension_contracts.py
   waiver_reason: >-
-    Mechanical status-line edit in the switch PR (no meaning change); contract drift and the Class A header checks run in
+    Mechanical status-line edit in the bookkeeping PR (PR 2, no meaning change); contract drift and the Class A header checks run in
     that PR's CI.
 - source: docs/contracts/telemetry_transcripts.yaml
   behavior: Its production status line follows the catalog's creation.
   verification_step: 10
   test_selector: tests/checks/contracts/test_telemetry_dimension_contracts.py
   waiver_reason: >-
-    Mechanical status-line edit in the switch PR (no meaning change); contract drift and the Class A header checks run in
+    Mechanical status-line edit in the bookkeeping PR (PR 2, no meaning change); contract drift and the Class A header checks run in
     that PR's CI.
 - source: docs/contracts/telemetry_agents.yaml
   behavior: Its production status line follows the catalog's creation.
   verification_step: 10
   test_selector: tests/checks/contracts/test_telemetry_dimension_contracts.py
   waiver_reason: >-
-    Mechanical status-line edit in the switch PR (no meaning change); contract drift and the Class A header checks run in
+    Mechanical status-line edit in the bookkeeping PR (PR 2, no meaning change); contract drift and the Class A header checks run in
     that PR's CI.
 - source: docs/contracts/ops_entity_counters.yaml
   behavior: Its write boundary names the production seed by provision_telemetry_catalog.
   verification_step: 10
   test_selector: tests/checks/contracts/test_telemetry_dimension_contracts.py
   waiver_reason: >-
-    One-sentence governance addition in the switch PR; contract drift runs in that PR's CI and the counters' amendment
+    One-sentence governance addition in the bookkeeping PR (PR 2); contract drift runs in that PR's CI and the counters' amendment
     log is checked there.
 - source: docs/decisions-index.json
   behavior: The index carries Decision N.
@@ -1348,11 +1519,11 @@ test_obligations:
   command: bin/venv-python -m scripts.decisions_index --check
   red_green_expectation: red if the index is not regenerated after the entry lands, green after
 - source: docs/ROADMAP-PLATFORM.yaml
-  behavior: c1 flips to met by this plan only in the switch PR.
+  behavior: c1 flips to met by this plan only in the bookkeeping PR (PR 2), after sitting 1.
   verification_step: 29
   command: git show origin/main:docs/ROADMAP-PLATFORM.yaml
   waiver_reason: >-
-    Roadmap bookkeeping data in the switch PR, guarded by validate_platform_roadmap's closes_criteria and exit-criteria
+    Roadmap bookkeeping data in the bookkeeping PR (PR 2), guarded by validate_platform_roadmap's closes_criteria and exit-criteria
     ledger checks in that PR's CI; VP 29 reads the flip on main.
 constraints:
 - No rescue agents or workaround loops (Decision 55); a failed admin step stops the walk and comes back to the thread.
@@ -1379,28 +1550,64 @@ constraints:
   rec-4209), CI write narrowing (rec-4205, rec-4206).
 - "SLOC: every touched file stays under 500 (Decision 128); a file that would cross is decomposed, never raised."
 - >-
-  Planned weakening candidates on the implement PR (validate_weakening_candidates), each recorded as planned-change
-  citing Decision N: [assertion-changed] tests/checks/iam_tf/test_ducklake_maintenance_gc_rule_invariants.py::
-  test_maintenance_role_iam_is_not_widened (Sid list); tests/checks/iam_tf/test_url_only_invoke_guard.py's expected
-  boundary, trail and PlatformDev sets; tests/lambdas/ducklake_maintenance/test_login_actions.py::
-  test_owner_runs_the_sql_file_unparameterised_and_commits_and_hashes_it (rendered text, template hash);
-  tests/common/test_ducklake_telemetry_catalog_ownership.py::test_owner_creates_then_scoped_login_verifies_seeds_and_writes
-  (OwnershipReport equalities gain two fields); tests/test_ducklake_maintenance_smoke_handler.py's CLEAN constant,
-  test_create_telemetry_owner_mismatch_refuses_before_any_ddl and
-  test_create_telemetry_single_owner_violation_raises_with_report_fields_only (the owner field);
-  tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py::test_create_telemetry_schema_owner_mismatch_fails;
-  and, in the switch PR, tests/checks/contracts/test_telemetry_dimension_contracts.py::test_substrate_rows_name_the_telemetry_writer.
+  Planned weakening candidates (validate_weakening_candidates). On PR 1, the implementation_declared flip, each is a
+  weakening_dispositions entry with disposition planned-change citing the test_obligations[N] index of the source whose
+  behaviour it follows (validate_weakening_dispositions accepts only acceptance_criteria[N] or test_obligations[N]):
+  the maintenance IAM pin cites terraform/personal/ducklake_maintenance.tf's; the URL-guard boundary, trail, PlatformDev
+  and SQL nodes cite github_ci_apply_boundary.tf's, platform_security_trail.tf's, platform_dev_policies.tf's and
+  ducklake_telemetry_writer_role.sql's; login nodes login_actions.py's; provision and ownership nodes
+  ducklake_telemetry_provision.py's; the smoke DSN node the maintenance-smoke handler.py's; the other smoke-handler
+  nodes telemetry_actions.py's; the gates nodes lambda_maintenance_gates.py's. PR 2 flips nothing, so its one
+  candidate is report-only and review disposes it citing storage-substrate.yaml's. PR 1: tests/checks/iam_tf/test_ducklake_maintenance_gc_rule_invariants.py::
+  TestProductionGcRuleInvariants::test_maintenance_role_iam_is_not_widened (Sid list);
+  tests/checks/iam_tf/test_url_only_invoke_guard.py::test_real_role_sql_is_scoped (renders the closed table),
+  ::test_platform_dev_predicate_is_red_when_a_telemetry_writer_form_is_omitted (eight forms),
+  ::test_boundary_predicate_is_green_on_a_complete_synthetic_boundary_and_red_on_none,
+  ::test_boundary_predicate_is_red_on_each_mutation, ::test_trail_predicate_is_red_on_each_mutation and
+  ::test_sql_predicate_is_red_on_each_mutation (the synthetic _GOOD_BOUNDARY, _TRAIL and _SQL_OK fixtures gain the new
+  names; sql_problems takes the login's schema); tests/lambdas/ducklake_maintenance/test_login_actions.py::
+  test_owner_runs_the_sql_file_unparameterised_and_commits_and_hashes_it (rendered text),
+  ::test_response_reports_scope_and_readability_without_host_or_password and
+  ::test_unreadable_metadata_is_reported_false_not_raised (through _SCOPE_ROW and _EXPECTED_SCOPE, lines 58-67, which
+  gain the new probe columns); tests/common/test_ducklake_telemetry_provision.py::test_ownership_report_sql_and_fields
+  (six-column row, scoped_logins=, six-field equalities) and ::test_identifier_guard_refuses_unsafe_names
+  (scoped_logins=(bad,)); tests/common/test_ducklake_telemetry_catalog_ownership.py::
+  test_owner_creates_then_scoped_login_verifies_seeds_and_writes, ::test_create_is_idempotent_and_refuses_drift and
+  ::test_owner_adds_a_missing_nullable_column_and_the_scoped_login_still_writes (OwnershipReport equalities gain two
+  fields; the _report helper passes scoped_logins); tests/test_ducklake_maintenance_smoke_handler.py::
+  test_open_connection_builds_connection_from_fetched_dsn (fetch_dsn called with h.DSN_SECRET_ID),
+  ::test_create_telemetry_owner_mismatch_refuses_before_any_ddl (dirty reports gain two fields and a not-held case),
+  ::test_create_telemetry_single_owner_violation_raises_with_report_fields_only (post-DDL report) and
+  ::test_create_telemetry_response_shape (the ownership dict gains schema_owner_held and schema_owner), with the module
+  CLEAN constant (line 507); tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py::
+  test_create_telemetry_ownership_failures (the schema-owner case feeds schema_owner_held false and expects "owner role
+  is not held") and ::test_create_telemetry_schema_owner_mismatch_fails (the new failure text), with the module
+  _CLEAN_OWNERSHIP constant (lines 326-331). PR 2: tests/checks/contracts/test_telemetry_dimension_contracts.py::
+  test_substrate_rows_name_the_telemetry_writer (status transitional, the production-catalog note). Fixture-only, no
+  assertion change: test_login_actions.py's _run and test_refused_secret_never_reaches_alter_role_or_the_scoped_connection
+  gain the precondition row in their owner fixture. Any other candidate the check reports is a defect, not a planned change.
 - >-
-  Benjamin's word is needed before each merge of this plan's PRs: PR 1 carries a new Decision, role SQL, IAM and an
-  admin-only root; the switch PR changes a function's credential (IAM) and Class A status lines. Each admin sitting runs
-  only on his direction.
+  Owned residual (rec-4483, followon_recs): pre_production's reserved_meaning in data-modeling-standard.yaml, its "until
+  slice 2c" parenthetical included, is left as it is; once VP 21 provisions the six entries in ducklake_telemetry, the
+  vocabulary no longer describes them exactly, and the status for a table in a non-ops DuckLake catalog is rec-4483's
+  to define. No plan in slice 2c redefines pre_production or sets these entries live.
+- >-
+  Benjamin's word is needed before each merge. PR 1 (a new Decision, role SQL, IAM and an admin-only root) and PR 3, the
+  switch PR (a function's credential), are asked together at PR 1's merge: the word on PR 3 covers exactly its pinned
+  diff (execution step 12) and its merge in sitting 2 right after VP 25 passes, so the deploy hold never waits on a
+  reply; any other content in PR 3 re-asks. PR 2, the bookkeeping PR (Class A status lines, the substrate status and
+  c1), is asked after sitting 1 with the record's counts. Each admin sitting runs only on his direction, and he invokes
+  catalog_stats and ensure_catalog_indexes himself.
 context:
 - >-
   Decision-scout: FLAGS_FOUND, all dispositioned (/mnt/project-files/telemetry-slice2c/decision-scout-report.md and
   decision-scout-report-reads.md). CITE 213, 216, 214, 222, 81, 91, 126, 204, 143, 144, 223, 157, 88, 191, 192, 188,
   200, 209, 181. Decisions triaged: 180 of 180. Roadmap items intersected: 13; CONFLICT: 0; RELATED: 12.
-- 'gates: decision-scout=FLAGS_FOUND (dispositioned); plan-critique=REVISE after 1 round (round 2 of 3 pending)'
+- 'gates: decision-scout=FLAGS_FOUND (dispositioned); plan-critique=REVISE after 2 rounds (round 3 of 3 pending)'
 - 'red_overlap (2026-10-19): {"verdict": "clear", "slo_hours": 4, "reds": []}'
+- >-
+  Implementation flag: PR 1 flips implementation_declared with every pre-deploy node and the registry rows of graduate
+  steps VP 1-8 (red-before on the un-implemented tree); PR 2, PR 3 and the sittings follow it and graduate nothing.
 - >-
   V3 resolution: the posted pre-merge gate evidence for the current head (VP 14-17) substitutes for the pre-merge
   post-deploy evidence the implement V3 Merge Gate and the code-review V3 check require; the behavioural acceptance
@@ -1417,12 +1624,15 @@ context:
   ensure_catalog_indexes; production starts empty; the counter seed is the first write; smoke writer limit 20 while the
   twin shares it; one telemetry-* pattern keeps the boundary near 4,710 of 6,144 bytes; PlatformDev, CI and apply roles
   carry the boundary, so no per-role S3 Deny; the smoke switch is sequenced with deploys held (the shared login gets no
-  session role).
+  session role) and rolls back through the release mode; every template sets lock_timeout 5s; catalog_stats and
+  ensure_catalog_indexes stay Benjamin's to invoke; the blob sweep deletes by plain DeleteObject, never by VersionId
+  (rec-4033, annotated 2026-10-19).
 - >-
   Registry status: the six telemetry entries stay pre_production and exempt, the catalog named only in exempt_reason
-  (live means provisioned in ducklake_ops; control_health and the reconcile gate would misroute). The switch PR flips the
-  Class A "not provisioned in production" lines and the substrate status to transitional; the flip plan sets live.
-  Telemetry merge duration is a rec-4218 trigger, not a precondition. rec-4207's deferred half is rec-4480.
+  (live means provisioned in ducklake_ops; control_health and the reconcile gate would misroute). The status vocabulary
+  for a non-ops catalog is the owned residual rec-4483; no slice 2c plan sets live. The bookkeeping PR flips the Class A
+  production-status lines and the substrate status to transitional. Telemetry merge duration is a rec-4218 trigger,
+  not a precondition. rec-4207's deferred half is rec-4480.
 - >-
   Coordination: parallel threads own CI write narrowing, smoke maintenance with the blob sweep (maintenance IAM pin,
   telemetry-blobs grant) and query_ops retirement (shared reader); the second to land rebases. One DuckLake deploy or
@@ -1437,14 +1647,22 @@ pre_implementation_checklist:
 execution_steps:
 - >-
   1. Rebase onto origin/main. Re-read the scope files; confirm Decision N's number (origin/main max + 1); confirm Decision
-  216's telemetry-schema-churn and production-ci-ddl-mechanism conditions are still unfired (else stop and ask); confirm
-  no parallel 2c thread has landed edits to the shared files named in context (rebase over them if so).
+  216's telemetry-schema-churn and production-ci-ddl-mechanism conditions are still unfired (else stop and ask). This
+  plan's ducklake_smoke_maintainer is the first CI-invokable per-catalog DDL login, but it is smoke-scoped, and the
+  condition names a production-scoped DDL identity, so production-ci-ddl-mechanism stays unfired; the login makes
+  rec-4316's production migrator cheaper to build, which Decision 216 cl.3's text already anticipates. Confirm no
+  parallel 2c thread has landed edits to the shared files named in context (rebase over them if so).
+  PLAN-telemetry-reader-and-smoke-twin starts only after this plan's PR 1, so open_connection's read_only and its node
+  are absent on main when PR 1 is built (VP 4 stays red-before).
 - >-
-  2. Code (PR 1): ducklake_runtime.py constants; ducklake_telemetry_provision.py (schema_owner_held, schema_owner,
-  scoped_logins); catalog_logins.py; the four SQL templates (the writer template's measured lines filled by step 4);
-  catalog_actions.py; login_actions.py; handler.py dispatch and docstring; health_actions.py's ops-only emission;
-  manifest.yaml with the import closure; maintenance-smoke handler.py and telemetry_actions.py;
-  lambda_maintenance_gates.py. Then their tests (VP 1-4, 8, 10) and the shared stage fixture.
+  2. Code (PR 1): ducklake_runtime.py constants and open_connection's read_only; ducklake_telemetry_provision.py
+  (schema_owner_held, schema_owner, scoped_logins through to_regrole); catalog_logins.py (order-independent
+  expected_scope with current_user); the four SQL templates, each opening with SET LOCAL lock_timeout = '5s' (the writer
+  template's measured lines filled by step 4); catalog_actions.py (the three owner modes, release smoke-only);
+  login_actions.py (guarded probe, current_user and session_user, the reader's read_only_attach); handler.py dispatch and
+  docstring; health_actions.py's ops-only emission; manifest.yaml with the import closure; maintenance-smoke handler.py
+  and telemetry_actions.py; lambda_maintenance_gates.py. Then their tests (VP 1-4, 8, 10), the shared stage fixture with
+  its bare mode, and the owner-role integration file.
 - |-
   3. Decision N, verbatim except N, the date (the merge date) and the number in the reversal stanza; then dated trailing
   annotations on Decisions 216, 213 and 81 ("[Amendment YYYY-MM-DD, Decision N: ...]", one sentence each: 216 -- cl.1's
@@ -1464,21 +1682,21 @@ execution_steps:
   amends: [81, 213, 216]
   significance:
     value: numbered_decision
-    justification: "Durable catalog-identity and data-plane commitments with reversal conditions that amend Decision 216's owner rule and admin step and Decision 213's boundary naming, login model and carve-out; ducklake_maintenance.yaml and deploy-paths.yaml can index the procedures but cannot widen a ratified rule or carve-out, and an amendment_forms annotation cannot add one (Decision 204 cl.4 precedent)."
+    justification: "Durable catalog-identity and data-plane commitments that amend Decision 216's owner rule and admin step and Decision 213's boundary naming, login model and carve-out; ducklake_maintenance.yaml and deploy-paths.yaml can index the procedures but cannot widen a ratified rule or carve-out, and an amendment_forms annotation cannot add one (Decision 204 cl.4 precedent)."
   ```
 
   **Status:** Decided
   **Date:** YYYY-MM-DD
   **Warehouse ID:** dec-N (per Decision 84 backfill)
 
-  **Problem:** Real sessions have landed in the disposable smoke catalog since 2026-10-15. Production needs its own catalog, but Decision 216 left creating it an operator step with no carve-out, names one owner login that reaches every catalog, and leaves that login with the CI-reachable smoke maintenance function.
+  **Problem:** Real sessions land in the disposable smoke catalog; production needs its own, but Decision 216 left creating it an operator step with no carve-out, names one owner login that reaches every catalog, and leaves that login with the CI-reachable smoke maintenance function.
 
   **Decision:**
   1. Catalog. Production telemetry is its own DuckLake catalog: schema ducklake_telemetry in the existing catalog database, data under ducklake-telemetry/ (a sibling of ducklake/, never inside it) and blobs under telemetry-blobs/ducklake_telemetry/. It starts empty; smoke keeps its rows.
   2. Owner per catalog (amends Decision 216 cl.1). A schema's single owner is a NOLOGIN role per catalog (ducklake_telemetry_owner, ducklake_smoke_owner) owning the schema and every relation in it. The shared owner login is a member of each, and DDL it runs is normalised to the catalog's role in the same verb; a per-catalog DDL login takes that role as its session role. ducklake_maintenance_smoke moves to ducklake_smoke_maintainer, a member of the smoke role only, closing Decision 216's CI-path residual at the database layer.
   3. One login per catalog binding (amends Decision 213 cl.3): ducklake_telemetry_writer for the smoke binding (the writer until the flip, then its smoke twin) and ducklake_telemetry_writer_prod for production each hold, on their own schema only, the DML measured from the writer verbs (rec-4297; no UPDATE or DELETE on catalog structure, so a DuckLake DROP TABLE fails); ducklake_telemetry_reader holds SELECT on ducklake_telemetry only, read-only. Each has its own secret and connection limit, rendered from one closed table of versioned SQL templates.
-  4. Admin verbs (amends Decision 216 cl.3, Decision 213 cl.5 and, for these verbs, Decision 81 cl.6): ducklake_maintenance gains provision_catalog_owner (create or adopt a catalog's owner role; the two catalogs only) and provision_telemetry_catalog (ducklake_telemetry only: owner role, DuckLake initialisation, create_telemetry_tables, counter seed, ownership report; never the stats index, Decision 214 cl.2); provision_telemetry_login serves the closed table. Re-running provision_telemetry_catalog is Decision 222 cl.3's production column add. All are operator-invoked; an ADMIN-container agent may write a login's secret and invoke them only under explicit human direction, presenting each mutation (Decision 204 cl.2 shape).
-  5. Data-plane fence (amends Decision 213 cl.1's naming). The permissions boundary denies object reads, writes and deletes under the production telemetry prefixes to every bounded principal except the telemetry writer, telemetry reader and admin maintenance roles; PutObject under telemetry-blobs/ to all but the telemetry writer roles; DeleteObject there to all but admin maintenance; and DeleteObjectVersion under both to all. Decision 213 cl.1's denies name every telemetry function by one agent-platform-ducklake-telemetry-* pattern. PlatformAdmin stays the unbounded operator (Decision 144 cl.3). Decision 213's "before 2c" residuals rec-4205 and rec-4206 concern the shared ops writer, not the telemetry path, so nothing here waits on them; the CI write narrowing plan owns them.
+  4. Admin verbs (amends Decision 216 cl.3, Decision 213 cl.5 and, for these verbs, Decision 81 cl.6): ducklake_maintenance gains provision_catalog_owner (create or adopt a catalog's owner role, the two catalogs only; a ducklake_smoke-only release mode returns that schema to the shared owner login, the switch's rollback) and provision_telemetry_catalog (ducklake_telemetry only: owner role, DuckLake initialisation, create_telemetry_tables, counter seed, ownership report; never the stats index, Decision 214 cl.2); provision_telemetry_login serves the closed table. Re-running provision_telemetry_catalog is Decision 222 cl.3's production column add. All are operator-invoked; an ADMIN-container agent may write a login's secret and invoke them (never catalog_stats or ensure_catalog_indexes) only under explicit human direction, presenting each mutation (Decision 204 cl.2 shape).
+  5. Data-plane fence (amends Decision 213 cl.1's naming). The permissions boundary denies object reads, writes and deletes under the production telemetry prefixes to every bounded principal except the telemetry writer, telemetry reader and admin maintenance roles; PutObject under telemetry-blobs/ to all but the telemetry writer roles; DeleteObject there to all but admin maintenance; and DeleteObjectVersion under both to all. Decision 213 cl.1's denies name every telemetry function by one agent-platform-ducklake-telemetry-* pattern. PlatformAdmin stays the unbounded operator (Decision 144 cl.3). Decision 213's "before 2c" residuals rec-4205 and rec-4206 concern the shared ops writer, not this path; the CI write narrowing plan owns them.
 
   **Rationale:** An owner role per catalog makes "which catalog can this credential change" a Postgres fact, not an env pin (Decision 143 cl.1), and membership keeps owner-login paths working without pg_read_all_data. The boundary is the layer every bounded principal, PlatformDev included, carries and agents cannot edit; a bucket-policy Deny is editable in the merge loop and risks lockout.
 
@@ -1520,45 +1738,63 @@ execution_steps:
   6. Contracts (PR 1): ducklake_maintenance.yaml; deploy-paths.yaml (generalised scoped_login_provisioning with the three
   rerun triggers, and the production_catalog_provisioning block: the record file and its keys, the MEASUREMENT.md keys,
   and the two sittings in VP 19-28's order, each step a command and a counts-only check); ducklake_telemetry_writer.yaml
-  ingestion_shape and production_column_set; storage-substrate.yaml pointer; tenant-id.yaml note; the pre_production
-  rewording (field_semantics.static.yaml exempt_reason and comment, ops_tenants.yaml, data-modeling-standard.yaml; no
-  status or reconcile_scope value changes). Their tests (VP 7, 10).
+  ingestion_shape and production_column_set; storage-substrate.yaml pointer; tenant-id.yaml note; the exempt_reason
+  rewording (field_semantics.static.yaml exempt_reason and comment, ops_tenants.yaml; rec-4483 named as the owned
+  residual; no status, reconcile_scope or vocabulary change, data-modeling-standard.yaml untouched). Their tests (VP 7,
+  10). The record file and MEASUREMENT.md are one "key: value" line per key, timestamps ISO-8601 UTC.
 - >-
   7. Execute the pre-deploy Verification Plan (VP 1-13); loop until each passes. The VP 11 log and the measured grant
   table go in the PR description.
 - >-
-  8. Commit, push, open PR 1 (template, attribution block; "Resolves: rec-4218, rec-4207" in the eventual squash body).
-  At CI-green, run VP 14; ADMIN_CHAIN_OK runs VP 15-17 here, ADMIN_CHAIN_ABSENT hands them to an ADMIN session; post the
-  counts-only evidence and PR_HEAD_SHA on the PR. A new head re-runs 16-17.
+  8. PR 1 is the implementation PR: it sets this plan's implementation_declared: true, adds the eight registry shards
+  config/agent/verification_registry/entries/<graduation_check_id>.yaml for VP 1-8 (plan_slug
+  telemetry-production-catalog; sanctioned by implement-scope-boundary's graduation_check_id_per_step row, every node
+  absent on main), and records weakening_dispositions for every candidate the constraints list. PR 2, PR 3 and the
+  sittings come after the flip, add no graduate node and flip nothing. Commit, push, open PR 1 (template, attribution
+  block; "Resolves: rec-4218, rec-4207" in the eventual squash body). At CI-green, run VP 14; ADMIN_CHAIN_OK runs VP
+  15-17 here, ADMIN_CHAIN_ABSENT hands them to an ADMIN session; post the counts-only evidence and PR_HEAD_SHA on the
+  PR. A new head re-runs 16-17.
 - >-
-  9. Ask Benjamin for his word on PR 1's merge (Decision N, role SQL, IAM, bootstrap), quoting the always-ask items;
-  merge only on his own message in the record. Squash with "Resolves: rec-4218, rec-4207".
+  9. Ask Benjamin, in one message, for his word on PR 1's merge (Decision N, role SQL, IAM, bootstrap) and on PR 3's
+  (the switch PR, exactly execution step 12's pinned diff, merged in sitting 2 right after VP 25 passes), quoting the
+  always-ask items; this way the sitting 2 deploy hold spans only PR 3's merge and terraform apply, never a reply. Merge
+  PR 1 only on his own message in the record. Squash with "Resolves: rec-4218, rec-4207".
 - >-
   10. VP 18 (deploy and apply legs green). Then admin sitting 1 on Benjamin's direction: VP 19 (bootstrap apply and
-  simulate), 20 (measurement, before any create), 21 (production catalog), 22 (production writer and reader logins), 23
-  (stats index). Each mutation is presented and run only after he accepts it (Decision N cl.4); each step appends its keys
-  to ADMIN-SESSION-RECORD.md. A STOP on any step ends the sitting and comes back to the thread.
+  simulate), 20 (measurement before any create; Benjamin runs catalog_stats and the agent records its counts), 21
+  (production catalog), 22 (production writer and reader logins, the reader's read_only_attach recorded), 23 (Benjamin
+  runs ensure_catalog_indexes; the agent records it and reads StatsIndexValid). Each carve-out mutation is presented and
+  run only after he accepts it (Decision N cl.4); each step appends its keys to ADMIN-SESSION-RECORD.md. A STOP on any
+  step ends the sitting and comes back to the thread. Sitting 2 (step 13) does not depend on sitting 1 and may run
+  first if he prefers.
 - >-
-  11. Prepare the switch PR while sitting 1 runs (execution step 12's content); open it and take it to CI-green, unmerged.
+  11. Prepare PR 2 and PR 3 (execution step 12's content) after PR 1 merges; open both and take them to CI-green,
+  unmerged.
 - >-
-  12. The switch PR (no source change, so no DuckLake deploy): terraform/personal/ducklake_maintenance_smoke.tf (env
-  DUCKLAKE_DSN_SECRET_ID, NeonDsnRead on the maintainer secret only) and
-  test_maintenance_smoke_reads_only_the_smoke_maintainer_secret; the Class A status lines (four telemetry contracts),
-  the ops_entity_counters write-boundary sentence and the storage-substrate status, each with its amendment_log entry, and
-  test_telemetry_dimension_contracts.py's substrate pin; the roadmap c1 flip with its progress_note.
+  12. PR 2, the bookkeeping PR (no source change, so no DuckLake deploy): the Class A production-status statements (four
+  telemetry contracts), the ops_entity_counters write-boundary sentence and the storage-substrate status and note, each
+  with its amendment_log entry; test_telemetry_dimension_contracts.py's substrate pin; the roadmap c1 flip with its
+  progress_note. After VP 19-23 pass, ask Benjamin for his word with the record's counts and merge it; it is independent
+  of sitting 2. PR 3, the switch PR (no source change, so no DuckLake deploy): exactly
+  terraform/personal/ducklake_maintenance_smoke.tf (env DUCKLAKE_DSN_SECRET_ID, NeonDsnRead on the maintainer secret
+  only) and test_maintenance_smoke_reads_only_the_smoke_maintainer_secret; nothing else.
 - >-
-  13. Admin sitting 2 on Benjamin's direction, with the coordinator holding DuckLake deploys from VP 24 until VP 27 has
-  passed: VP 24 (adopt smoke), 25 (maintainer login), then ask Benjamin for his word on the switch PR, merge it and wait
-  for its terraform apply, then VP 26 (clean owner re-run) and VP 27 (narrow the smoke writer, live telemetry gate). Then
-  the coordinator releases the hold and dispatches VP 28's deploy run.
+  13. Admin sitting 2 on Benjamin's direction, PR 3 already CI-green, with the coordinator holding DuckLake deploys from
+  VP 24 until VP 27 has passed: VP 24 (adopt smoke), 25 (maintainer login, current_user ducklake_smoke_owner), then merge
+  PR 3 under the word he gave in step 9 and wait for its terraform apply, then VP 26 (clean owner re-run) and VP 27
+  (narrow the smoke writer, live telemetry gate). Then the coordinator releases the hold and dispatches VP 28's deploy
+  run. A failure from VP 24 on follows its step's fix_if; after PR 3 has merged the rollback is VP 28's (keep the hold,
+  revert PR 3, release mode, one green create-telemetry run, then release).
 - >-
   14. Close rec-4297 through the portal with VP 30's evidence; execute VP 29-30; on an unrecoverable V3 failure stop and
   RCA (Decision 55).
 - '15. Report: what was implemented, the evidence markers, the measured grant table, MEASUREMENT.md and ADMIN-SESSION-RECORD.md, and the hand-off to PLAN-telemetry-reader-and-smoke-twin.'
 rollback: >-
   The production catalog is additive and empty: nothing reads or writes it until the flip, so a code revert leaves it in
-  place harmlessly. Smoke adoption is reversible by re-owning ducklake_smoke to ducklake_ops by hand (or by
-  catalog_reinit, smoke being disposable). The switch PR reverts in one change (env and secret grant together) after
-  which provision_catalog_owner(ducklake_smoke) normalises anything created meanwhile. A narrowed writer template that
-  breaks a verb is rolled forward (a template grant line, the governed deploy, a provision_telemetry_login re-run);
-  capture backs off and replays without loss. The bootstrap rolls back by applying the prior sha's HCL by hand.
+  place harmlessly. Smoke adoption and the switch roll back together, with DuckLake deploys held throughout: revert PR 3
+  (its apply restores the shared credential), run provision_catalog_owner(ducklake_smoke, mode release) so the shared
+  owner login owns the smoke schema and every relation again, dispatch one deploy run whose create-telemetry gate must
+  pass, then release the hold. Adoption without the switch is undone by the release mode alone. PR 2's records are
+  bookkeeping of the production catalog and stay. A narrowed writer template that breaks a verb is rolled forward (a
+  template grant line, the governed deploy, a provision_telemetry_login re-run); capture backs off and replays without
+  loss. The bootstrap rolls back by applying the prior sha's HCL by hand.
