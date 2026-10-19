@@ -178,7 +178,11 @@ scope:
     becomes test_telemetry_pin_targets_the_production_catalog (rec-4292's acceptance node: the pin local reads
     ducklake_telemetry and the writer binds it with the production data path, blob root and secret) with
     test_pin_guard_rejects_a_moved_pin now rejecting a pin moved back to smoke; test_blob_root_on_the_writer_and_reader
-    becomes test_blob_root_follows_the_writer_pin (writer half only). test_writer_blob_grant_shape and
+    becomes test_blob_root_follows_the_writer_pin (writer half only), and test_blob_root_guard_rejects_a_moved_root (:428-436,
+    registry telemetry-reader-blob-grant-pins) keeps its writer, ops-writer and unscoped red cases while its two reader
+    cases leave it (Decision 181 cl.1, declared): reader_moved moves into test_shared_reader_guard_rejects_a_production_reach,
+    and reader_missing is retired, because a shared reader without a blob root is PR narrow's end state, asserted by
+    test_shared_reader_carries_no_telemetry_state. test_writer_blob_grant_shape and
     test_telemetry_writer_reads_only_its_scoped_login assert the expand window in PR flip (both data prefixes, both blob
     roots, both secrets, never Delete) and the production resource only in PR narrow (same node names, so their entries
     keep their ids). assert_no_delete_on_prefix probes every role in _DELETE_ROLES at both blob roots
@@ -194,7 +198,8 @@ scope:
     test_shared_reader_never_reaches_production_telemetry (no shared-reader TELEMETRY_* env value names the moving pin
     local, its production data path or blob root; any telemetry-blobs statement is s3:GetObject only on
     telemetry-blobs/ducklake_smoke/*; no statement names ducklake-telemetry/ or telemetry-blobs/ducklake_telemetry/) and
-    test_shared_reader_guard_rejects_a_production_reach (env following the pin local, a blob grant widened to Put or to
+    test_shared_reader_guard_rejects_a_production_reach (env following the pin local, a blob root moved to a production
+    value (the reader_moved case moved from test_blob_root_guard_rejects_a_moved_root), a blob grant widened to Put or to
     the production root, a production telemetry data prefix: each fails). These replace the moved reader nodes: the
     "exactly one GetObject statement on the blob prefix" assertion becomes "at most one, GetObject only, on the smoke root"
     because PR narrow retires that grant, where test_shared_reader_carries_no_telemetry_state asserts its absence
@@ -422,6 +427,13 @@ scope:
 - file: config/agent/verification_registry/entries/deprecated/ducklake-reader-deadline-routing.yaml
   action: Create
   purpose: PR cleanup, the retired entry, unchanged, in the loader-excluded retirement subtree.
+- file: config/agent/verification_registry/entries/telemetry-reader-bundle.yaml
+  action: Modify
+  purpose: >-
+    PR cleanup: the command_output_matches check retargets to the telemetry reader: the three event-read modules affect
+    exactly {'ducklake_telemetry_reader'} and src/telemetry/identity.py affects the telemetry reader and not
+    ducklake_reader (the inverse of today's assertion, so it fails on pre-cleanup main and is admitted); guard_target
+    becomes src/lambdas/ducklake_telemetry_reader/manifest.yaml; expected stays BUNDLE_OK.
 - file: config/agent/verification_registry/entries/telemetry-reader-content-bundle.yaml
   action: Modify
   purpose: >-
@@ -555,8 +567,10 @@ scope:
   purpose: >-
     PR cleanup: test_readback_reassembles_on_a_consistent_reader is removed with the vector; the three readback_*
     parameter cases of test_each_divergence_fails_loudly (:216-218; registry telemetry-blob-readback-gate and
-    telemetry-blob-size-mismatch-gate) and TELEMETRY_BLOB_READBACK_OK in the module's ordered marker list (:34) go with
-    it; NEW test_blob_vectors_read_nothing_through_a_reader (no reader URL is resolved or called).
+    telemetry-blob-size-mismatch-gate), TELEMETRY_BLOB_READBACK_OK in the module's ordered marker list (:34) and
+    blob_read_ms in test_vectors_pass_on_a_consistent_writer's measure tuple (:90-91; that node is graduated in
+    telemetry-blob-size-mismatch-gate, telemetry-blob-readback-gate and telemetry-blob-smoke-vectors, ids unchanged) go
+    with it, each removal declared under Decision 181 cl.1 (the read-back that printed them is retired); NEW test_blob_vectors_read_nothing_through_a_reader (no reader URL is resolved or called).
 - file: tests/telemetry_capture/test_read_route.py
   action: Modify
   purpose: >-
@@ -575,8 +589,9 @@ scope:
     PR bookkeeping (tier-item-lifecycle bookkeeping_walk): flip T2.36:c2 open -> met with met_by telemetry-production-flip;
     a dated re-grounding annotation on c3 (the gauge now reads the telemetry reader on ducklake_telemetry; met by
     telemetry-reader-verbs stays); a dated annotation on c4 saying its "(the CI role's bucket-wide S3 write is a named
-    residual, rec-4292)" is closed by Decision A's blob-root write fence (c4's original text stays as the criterion's
-    history); a dated progress_note (production capture live through the writer; golden replay, the monitor and the
+    residual, rec-4292)" is closed by Decision A's blob-root write fence, appended after c4's existing text, never
+    prepended (test_t2_36_c2_c4_name_the_claim_check asserts c4 starts with "[Re-grounded 2026-10-12,
+    PLAN-telemetry-blob-route:"; c4's original text stays as the criterion's history); a dated progress_note (production capture live through the writer; golden replay, the monitor and the
     gauge green on production). If c1 and c5 already read met, the item qualifies for completion: it is
     surfaced to Benjamin for manual confirmation together with the intent's VTS-05 annotation (the owed cross-run
     escape-rate query), never auto-flipped.
@@ -889,8 +904,9 @@ verification_plan:
     bin/venv-python -m pytest tests/lambdas/ducklake_reader/test_event_routing.py::test_shared_reader_answers_an_event_verb_as_an_unregistered_verb
     tests/lambdas/ducklake_reader/test_event_routing.py::test_shared_reader_describe_lists_no_event_row
     tests/lambdas/ducklake_reader/test_event_routing.py::test_ops_verbs_run_without_a_deadline
-    tests/lambda_manifest/test_bundle_checks.py::test_reader_bundle_carries_no_event_read_module -q
-  expected: Exit 0. Red before because the new nodes are absent.
+    tests/lambda_manifest/test_bundle_checks.py::test_reader_bundle_carries_no_event_read_module -q &&
+    bin/venv-python -c "from scripts.lambda_manifest import compute_affected_artifacts as c;a=c(['src/common/ducklake_event_reads.py','src/common/ducklake_event_read_sql.py','src/common/ducklake_event_read_verbs.py']);assert set(a)=={'ducklake_telemetry_reader'}, a;b=c(['src/telemetry/identity.py']);assert 'ducklake_reader' not in b and 'ducklake_telemetry_reader' in b, b;print('BUNDLE_OK')"
+  expected: Exit 0, then BUNDLE_OK. Red before because the new nodes are absent and main bundles the modules in ducklake_reader.
   fix_if: Remove the remaining event path and deadline wiring from the shared reader; never re-add a smoke pin.
   hermetic: true
   graduation: waive
@@ -1347,6 +1363,12 @@ test_obligations:
   waiver_reason: >-
     A git mv of a registry record into entries/deprecated/, which the loader excludes by construction; its successors are
     the telemetry reader's deadline nodes (PLAN-telemetry-reader-and-smoke-twin) and shared-reader-serves-no-telemetry.
+- source: config/agent/verification_registry/entries/telemetry-reader-bundle.yaml
+  behavior: The registry guards that the event-read modules ship in the telemetry reader only.
+  verification_step: 13
+  command: >-
+    bin/venv-python -c "from scripts.lambda_manifest import compute_affected_artifacts as c;a=c(['src/common/ducklake_event_reads.py','src/common/ducklake_event_read_sql.py','src/common/ducklake_event_read_verbs.py']);assert set(a)=={'ducklake_telemetry_reader'}, a;b=c(['src/telemetry/identity.py']);assert 'ducklake_reader' not in b and 'ducklake_telemetry_reader' in b, b;print('BUNDLE_OK')"
+  red_green_expectation: red before (main bundles the modules in ducklake_reader), green after
 - source: config/agent/verification_registry/entries/telemetry-reader-content-bundle.yaml
   behavior: The registry guards the inverse bundle invariant.
   verification_step: 13
@@ -1408,16 +1430,16 @@ constraints:
 - Every file stays under 500 SLOC (Decision 128); decompose rather than raise.
 context:
 - >-
-  Decision-scout: FLAGS_FOUND, dispositioned (/mnt/project-files/telemetry-slice2c/decision-scout-report-reads.md,
-  first pass decision-scout-report.md). CITE 213, 207, 200/209, 212, 181, 199, 228, 215, 216, 222, 84, 126, 101.
-  Decisions triaged: 180 of 180. Roadmap items intersected: 13; CONFLICT: 0; RELATED: 12.
-- 'gates: decision-scout=FLAGS_FOUND (dispositioned); plan-critique=REVISE after 3 rounds (confirming round pending)'
-- 'ci_rca red_overlap (2026-10-19, round 3): {"verdict": "clear", "slo_hours": 4, "reds": []}'
+  Decision-scout: FLAGS_FOUND, dispositioned (/mnt/project-files/telemetry-slice2c/decision-scout-report-reads.md). CITE
+  213, 207, 200/209, 212, 181, 199, 228, 215, 216, 222, 84, 126, 101. Triaged 180 of 180; CONFLICT 0, RELATED 12.
+- 'gates: decision-scout=FLAGS_FOUND (dispositioned); plan-critique=REVISE after 4 rounds (confirming-round findings folded in; closure per Benjamin)'
+- 'ci_rca red_overlap (2026-10-19, round 4): {"verdict": "blocked", "slo_hours": 4, "reds": [{"id": "rec-4488", "rule": "overlap", "track": "product_regression"}]}'
 - >-
-  Direction: Benjamin's "write the plan" (cmsg_012XgaFy8VaDQbxP5D8nC958BtcmGWkGnzJuQRx3VaxZyU) on the slice 2c split
-  and the revised read design; golden replay writes tagged synthetic trees into production (his card answer). Round 1
-  design change (coordinator, with notice to Benjamin): capture follows the writer's describe and reads route by a
-  Terraform deploy output, so the flip is one apply with no capture blackout. Evidence: /mnt/project-files/telemetry-slice2c/.
+  Deferral (Decision 226): rec-4488 (Critical red: telemetry_orphan_counts 500 after the cold-read deploy) has its own
+  forward fix, not bundled here; this plan PR changes no code and its build waits for rec-4488's closure (step 1).
+- >-
+  Direction: Benjamin's "write the plan" (cmsg_012XgaFy8VaDQbxP5D8nC958BtcmGWkGnzJuQRx3VaxZyU); golden replay writes tagged
+  synthetic trees into production (his card answer); capture follows the writer, reads a deploy output (round 1).
 - >-
   Decision A = the numbered Decision PLAN-telemetry-production-catalog ratifies (catalog, owners, logins, fence);
   Decision B = PLAN-telemetry-reader-and-smoke-twin's (smoke twin proofs, telemetry reader identity, no production
@@ -1455,7 +1477,8 @@ pre_implementation_checklist:
 - Acceptance criteria understood and verifiable
 execution_steps:
 - >-
-  1. Run VP step 1. Rebase onto origin/main. Read and use verbatim: PLAN-telemetry-reader-and-smoke-twin's merged gate
+  1. Run VP step 1 and confirm rec-4488 is closed (recs_by_ids); if not, wait and tell the coordinator. Rebase onto
+  origin/main. Read and use verbatim: PLAN-telemetry-reader-and-smoke-twin's merged gate
   code (lambda_telemetry_gates._run, lambda_telemetry_smoke, lambda_telemetry_reader_gates), its jobs, locals, contract
   (ducklake_telemetry_reader.yaml) and the tests/common/ducklake_event_reads/ package; PLAN-telemetry-cold-read-deadline's
   merged handler wiring and contract rows; the production catalog plan's secret resource and production locals; and the
@@ -1541,7 +1564,10 @@ rollback: >-
   its policy the apply would cut the writer to smoke-only grants before its env moves back (appends 500, begin_blobs
   fails, capture halts). Before the cleanup PR: a forward pin-back PR moves ducklake_telemetry_meta_schema back to
   "ducklake_smoke" and the writer's env back to the smoke secret and data path while keeping both bindings in its
-  policy; one apply moves the writer and the deploy output back, capture re-sends each tree to smoke (identical rows
+  policy. That PR, under the human's direction, moves with it the guards and the gate that expect production: VP 2's
+  production-pin nodes, VP 5's writer-contract node (and the contract text it reads), and telemetry-smoke's
+  --lambda-telemetry-production step, which becomes the light gate against the smoke binding until the flip is
+  re-planned. One apply moves the writer and the deploy output back, capture re-sends each tree to smoke (identical rows
   are no-ops there; a diverged one halts as grain_conflict_after_catalog_reset and is reported) and reads route back to
   the shared reader; the production grants are removed later in their own PR. Production rows stay (append-only).
   After the narrow or cleanup PRs: revert those first, narrow then cleanup (restoring the writer's smoke grants and the

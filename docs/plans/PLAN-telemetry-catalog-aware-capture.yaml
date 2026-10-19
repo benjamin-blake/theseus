@@ -63,8 +63,9 @@ scope:
     "ducklake_telemetry"), defined here once (runner.py and read_route.py import them). state.json's envelope gains
     "catalog" (the meta_schema the persisted cursor's rows were sent to, as the writer's describe named it); Loaded
     gains catalog: str = DEFAULT_CATALOG (an envelope without the key reads it, so no pre-existing state re-sends at this
-    PR's merge); save_cursor(cursor, root, loaded, *, catalog: str = DEFAULT_CATALOG) writes it; the regression refusal is
-    unchanged. Rule ST-6 (catalog-keyed verify state): VERIFY_OWNERS[CHECK] gains verify_catalog (CHECK only, never
+    PR's merge) and reset_at: float | None = None (the envelope's "reset_at", the epoch time of an RN-9 reset still owed
+    its confirming re-send); save_cursor(cursor, root, loaded, *, catalog: str = DEFAULT_CATALOG, reset_at: float | None =
+    None) writes both, omitting reset_at when None; the regression refusal is unchanged. Rule ST-6 (catalog-keyed verify state): VERIFY_OWNERS[CHECK] gains verify_catalog (CHECK only, never
     OPERATOR); CATALOG_KEYED = ("root_session_id", "last_ledger_line", "held_ledger_line"); NEW verify_view(vstate,
     catalog) returns vstate unchanged when its verify_catalog (absent reads DEFAULT_CATALOG) equals catalog, else a copy
     without the CATALOG_KEYED fields. Defaults keep every existing call site unchanged. Stays under 500 SLOC (196 today).
@@ -85,7 +86,16 @@ scope:
     with detach_below set (only the in-hook SessionEnd pass, .claude/hooks/session_end_log_turn.py:69-84) returns
     short_budget right after describe, before the resend record_turn and without persisting, so the hook detaches the
     final pass with its own 600 s budget instead of letting the whole-tree resend run out of the hook's 50 s and stop
-    with nothing detached. The module and RN-5 docstrings stop naming the smoke catalog. Not on the coverage checker's map (no grandfathered home), so its tests
+    with nothing detached. (6) Rule RN-10 (confirm a reset): append responses do not echo the catalog, so a pass that
+    met the new describe could still have had some appends served by an old-configuration environment of the same
+    unqualified function while the flip's update settles (rows landing in ducklake_smoke, or a begin_blobs/append split).
+    A persisted reset pass therefore records reset_at = now; the first sent pass at least RESET_CONFIRM_AFTER_S = 1800
+    (30 minutes) later calls record_turn with resend_tree=True once more (identical rows are no-ops, Decision 207; a
+    missing row is written), counts catalog_reset_confirm and persists the cursor without reset_at; a 409 there halts
+    as grain_conflict_after_catalog_reset. 1800 s exceeds Lambda's configuration-update window (the update settles within
+    minutes, and an old-configuration environment's in-flight invocation ends within the writer's 120 s timeout) and the
+    15-minute ceiling of a begin_blobs grant issued under the old binding. The module and RN-5 docstrings stop naming
+    the smoke catalog. Not on the coverage checker's map (no grandfathered home), so its tests
     may live in a sibling module. Stays under 500 SLOC (356 today).
 - file: src/turn_capture/record_turn.py
   action: Modify
@@ -107,7 +117,9 @@ scope:
     chained exception carries a parameter address. EVENT_VERBS = frozenset of
     src.common.ducklake_event_read_verbs.EVENT_READS (pure data, no duckdb). TelemetryReader(DuckLakeReader) overrides
     _reader_url only: env DUCKLAKE_TELEMETRY_READER_URL, then SSM /agent-platform/ducklake/telemetry_reader_url, then
-    lambda:GetFunctionUrlConfig on agent-platform-ducklake-telemetry-reader; a loud RuntimeError naming the three sources
+    lambda:GetFunctionUrlConfig on agent-platform-ducklake-telemetry-reader, through its own reads with no logging of the
+    AWS error (never ducklake_reader_client._resolve_function_url_via_ssm, which logs the exception, so an access-denied
+    text could reach a public Actions log); a loud RuntimeError naming the three sources, never their errors,
     otherwise; it inherits _invoke as PLAN-telemetry-cold-read-deadline merged it (a 504 read_deadline_exceeded raises
     ReadDeadlineExceededError after one POST); binding() returns describe's catalog object. RoutedReader(ops, profile) is
     lazy: the catalog, the event reader and the merged describe are resolved on first use and cached, so construction
@@ -124,15 +136,21 @@ scope:
   purpose: >-
     PR catalog awareness: _run_check and _cmd_verify build read_route.make_routed_reader() when no reader_factory is
     injected (replacing make_reader). The routed reader is lazy, so an unresolvable catalog surfaces inside run_verify
-    (verify.py _Check.run, before the tree lock) as the counted, non-benign status verify_error:TelemetryCatalogUnresolved:
-    the detached check records it, backs off and adds to incomplete_streak, so verify_incomplete fires as for any
-    failing check; _cmd_run's blanket except never sees it.
+    (verify.py _Check.run, before the tree lock, after its unlocked read of the verify state) as the counted, non-benign
+    status verify_error:TelemetryCatalogUnresolved: the detached check records it, backs off with a growing retry and
+    adds to incomplete_streak, so verify_incomplete fires at the streak threshold as for any failing check; _cmd_run's
+    blanket except never sees it.
 - file: scripts/telemetry_capture/verify.py
   action: Modify
   purpose: >-
-    PR catalog awareness. (1) _Check.run resolves the reader's catalog once, before the tree lock and only when
-    self.credentials() is true (getattr(raw_reader, "catalog", None), the routed reader's): a failure there is the
-    counted status verify_error:TelemetryCatalogUnresolved and no lock is taken; without credentials nothing is resolved
+    PR catalog awareness. (1) _Check.run first reads self.vstate = self.state.verify_state() (an unlocked read, safe
+    because every state write is a temp file plus os.replace; _load re-reads it under the lock as today), then resolves
+    the reader's catalog once, before the tree lock and only when self.credentials() is true (getattr(raw_reader,
+    "catalog", None), the routed reader's): a failure there is the counted status verify_error:TelemetryCatalogUnresolved
+    and no lock is taken until _finish's write, where _settlement and _finish compute from that pre-read state, so
+    incomplete_streak and retry_s grow across failures and verify_incomplete fires at the streak threshold; _write then
+    sends no verify_catalog (it is written only after _load, which needs the tree's recorded catalog), so the stored one
+    stays. Without credentials nothing is resolved
     (no SSM call), the transcript legs run as today and the check ends with the benign no_credentials in _read_stored, so
     expired credentials never become a non-benign streak. No SSM call happens inside the lock window. (2) _load gains the
     catalog_skip token beside parser_version_skip: when that resolved catalog is set and the tree's recorded catalog
@@ -254,7 +272,10 @@ scope:
     test_a_catalog_reset_pass_schedules_a_check (scheduled_at set on the reset pass; not past the daily cap) and
     test_a_catalog_reset_under_a_detach_budget_detaches (with detach_below set, a reset pass returns short_budget after
     describe, sends nothing, persists nothing and leaves the recorded catalog; with detach_below None the same pass
-    re-sends the tree).
+    re-sends the tree) and test_a_reset_is_confirmed_by_one_whole_tree_resend_after_the_window (the reset pass records
+    reset_at; a sent pass inside RESET_CONFIRM_AFTER_S sends only its new rows; the first sent pass after it re-sends the
+    whole tree once, a row an old-configuration append dropped reaching the writer, and clears reset_at; the next pass
+    sends only new rows).
 - file: tests/telemetry_capture/test_smoke.py
   action: Modify
   purpose: The fake describe carries catalog.meta_schema ducklake_smoke with data_path_is_smoke true.
@@ -309,9 +330,12 @@ scope:
     telemetry_root_sessions answers the production id: session_tree_rows is called with the production id only, no
     missing_in_store finding, verify.json then holds verify_catalog ducklake_telemetry, the production id and floors
     re-derived from this check alone, the floors cleared when this check derived none; an operator check in the same
-    state leaves verify_catalog absent) and test_the_catalog_resolves_before_the_lock_and_only_with_credentials (without
+    state leaves verify_catalog absent) and test_the_catalog_resolves_before_the_lock_and_only_with_credentials (through
+    run_verify's credentials argument, since its credentials_available default is bound at definition: without
     credentials no resolution is attempted and the status is no_credentials with the transcript legs counted; with
-    credentials a failing resolution is verify_error:TelemetryCatalogUnresolved and the tree lock is never taken).
+    credentials and verify.json seeded with incomplete_streak 2, a failing resolution is
+    verify_error:TelemetryCatalogUnresolved taken before the tree lock, verify.json then holds incomplete_streak 3 and a
+    doubled retry_s, verify_incomplete is counted, and verify_catalog is unchanged).
 - file: tests/test_agent_sdk_mcp_server.py
   action: Modify
   purpose: >-
@@ -500,7 +524,8 @@ verification_plan:
   phase: pre-deploy
   action: >-
     PR catalog awareness. Capture records the writer's catalog, re-sends the whole tree when it changes (detaching
-    first under the SessionEnd hook's budget) and schedules a check on that pass.
+    first under the SessionEnd hook's budget), confirms the reset with one more whole-tree re-send after the window,
+    and schedules a check on the reset pass.
   command: >-
     bin/venv-python -m pytest tests/telemetry_capture/test_runner_catalog.py::test_a_pass_records_the_catalog_describe_answered
     tests/telemetry_capture/test_runner_catalog.py::test_a_catalog_change_resends_the_whole_tree_keeping_pins
@@ -508,6 +533,7 @@ verification_plan:
     tests/telemetry_capture/test_runner_catalog.py::test_a_no_rows_pass_keeps_the_recorded_catalog
     tests/telemetry_capture/test_runner_catalog.py::test_a_catalog_reset_pass_schedules_a_check
     tests/telemetry_capture/test_runner_catalog.py::test_a_catalog_reset_under_a_detach_budget_detaches
+    tests/telemetry_capture/test_runner_catalog.py::test_a_reset_is_confirmed_by_one_whole_tree_resend_after_the_window
     tests/telemetry_capture/test_state.py::test_state_records_the_catalog_and_reads_absent_as_smoke
     tests/turn_capture/test_record_turn.py::test_resend_tree_re_emits_every_row_keeping_pins_and_cuts -q
   expected: Exit 0. Red before because the module and nodes are absent.
@@ -647,9 +673,9 @@ verification_plan:
   action: >-
     PR catalog awareness merged: in this live cloud session, after checking out main and ending one turn, a Stop pass
     after the merge time (MERGE_TS, epoch seconds, set before the command) sent to smoke under the new RN-5 and recorded
-    the catalog. The in-session check completes through the routed reader with compare_skipped=producer_modified, which
-    is expected for this tree (this session edited record_turn.py, so the runner set producer_changed and the compare is
-    skipped for the rest of the tree's life); the routed event reads are proven by the golden replay leg, which reads
+    the catalog. The in-session check completes through the routed reader with compare_skipped=producer_modified for a
+    tree that was in flight when this session edited record_turn.py (the runner set producer_changed and the compare is
+    skipped for the rest of that tree's life), or none for a tree started after the edit; the routed event reads are proven by the golden replay leg, which reads
     every session verb through the routed reader with its catalog assertion; the routed client then reaches the deployed
     telemetry reader.
   command: >-
@@ -660,13 +686,13 @@ verification_plan:
     x.get('at',0)>=int(os.environ['MERGE_TS'])];assert any(x.get('outcome')=='sent' for x in r), 'no sent pass';
     assert not any('describe_mismatch' in (x.get('diag') or {}) for x in r), 'describe_mismatch';print('CAPTURE_SMOKE_OK',len(r))"
     && out="$(AWS_PROFILE=agent_platform bin/venv-python -m scripts.telemetry_capture verify --tree "$TREE" --no-alarms)" &&
-    echo "$out" && echo "$out" | grep -q "VERIFY status=completed compare_skipped=producer_modified" &&
+    echo "$out" && echo "$out" | grep -Eq "VERIFY status=completed compare_skipped=(producer_modified|none)" &&
     AWS_PROFILE=agent_platform bin/venv-python -m scripts.ducklake_smoke.lambda_telemetry_golden_gates --no-alarms
     --assert-zero-mismatches && AWS_PROFILE=agent_platform bin/venv-python -c "from scripts.telemetry_capture.read_route
     import TelemetryReader;v=TelemetryReader().describe();assert 'session_tree_rows' in v and 'transcript_content' not in
     v;print('TELEMETRY_READER_ROUTE_OK')"
   expected: >-
-    CAPTURE_SMOKE_OK, a VERIFY line with status=completed compare_skipped=producer_modified, GOLDEN_SMOKE ... skew=0
+    CAPTURE_SMOKE_OK, a VERIFY line with status=completed and compare_skipped producer_modified or none, GOLDEN_SMOKE ... skew=0
     mismatches=0 with exit 0, then TELEMETRY_READER_ROUTE_OK.
   fix_if: >-
     A describe_mismatch on smoke means RN-5 reads the wrong field: revert and fix before the flip. A telemetry reader
@@ -788,16 +814,16 @@ constraints:
 - Every file stays under 500 SLOC (Decision 128); decompose rather than raise.
 context:
 - >-
-  Decision-scout: FLAGS_FOUND, dispositioned (/mnt/project-files/telemetry-slice2c/decision-scout-report-reads.md,
-  first pass decision-scout-report.md). CITE 207, 212, 213, 215, 224, 228, 199, 84, 101. Decisions triaged: 180 of 180.
-  Roadmap items intersected: 13; CONFLICT: 0; RELATED: 12.
-- 'gates: decision-scout=FLAGS_FOUND (dispositioned); plan-critique=REVISE after 3 rounds (confirming round pending)'
-- 'ci_rca red_overlap (2026-10-19, round 3): {"verdict": "clear", "slo_hours": 4, "reds": []}'
+  Decision-scout: FLAGS_FOUND, dispositioned (/mnt/project-files/telemetry-slice2c/decision-scout-report-reads.md). CITE
+  207, 212, 213, 215, 224, 228, 199, 84, 101. Decisions triaged 180 of 180; roadmap items 13, CONFLICT 0, RELATED 12.
+- 'gates: decision-scout=FLAGS_FOUND (dispositioned); plan-critique=REVISE after 4 rounds (confirming-round findings folded in; closure per Benjamin)'
+- 'ci_rca red_overlap (2026-10-19, round 4): {"verdict": "blocked", "slo_hours": 4, "reds": [{"id": "rec-4488", "rule": "overlap", "track": "product_regression"}]}'
 - >-
-  Direction: Benjamin's "write the plan" (cmsg_012XgaFy8VaDQbxP5D8nC958BtcmGWkGnzJuQRx3VaxZyU) on the slice 2c split
-  and the revised read design. Round 1 design change (coordinator, with notice to Benjamin): capture follows the
-  deployed writer's describe and reads route by a Terraform-written deploy output, so the flip is one apply with no
-  capture blackout. Evidence: /mnt/project-files/telemetry-slice2c/ (planning-facts.md, ADVICE.md Q8, ADVICE-reads.md).
+  Deferral (Decision 226): rec-4488 (Critical red: telemetry_orphan_counts 500 after the cold-read deploy) has its own
+  forward fix, not bundled here; this plan PR changes no code and its build waits for rec-4488's closure (step 1).
+- >-
+  Direction: Benjamin's "write the plan" (cmsg_012XgaFy8VaDQbxP5D8nC958BtcmGWkGnzJuQRx3VaxZyU); round 1 design change
+  (planning thread, notice to Benjamin): capture follows the writer, reads follow a deploy output. Evidence: /mnt/project-files/telemetry-slice2c/.
 - >-
   Closes no criterion (closes_criteria is empty), as earlier T2.36 follow-ons did; c2 is PLAN-telemetry-production-flip's.
   rec-4292 is the five slice 2c plans' carrier, bundled and closed by PLAN-telemetry-production-flip; this plan
@@ -812,14 +838,14 @@ context:
   re-sends the whole tree (ADVICE Q8; Decision 207); the check's cached session id and ledger floors are keyed by
   catalog (ST-6), because the runner does not own them.
 - >-
-  Known effects: editing record_turn.py changes the producer fingerprint, so for every tree in flight at the merge the
-  runner sets producer_changed and the in-session check skips its compare (producer_modified) for the rest of that
-  tree's life; trees started after the merge compare as usual. An MCP server started before the flip keeps its routing
-  until the session restarts. At the flip every live session re-sends its whole tree on its first post-flip pass
-  against the writer's reserved concurrency of 5 (429s and OCC retries stop the pass and the next one resumes); a tree
-  too large for one 600 s budget re-sends from scratch each pass, as a lost cursor does today. A session whose checkout
-  predates this plan's code PR runs the old RN-5 (data_path_is_smoke must be true), so from the flip it stops with
-  describe_mismatch, never a halt, until it rebases onto main; its next pass then re-sends the tree whole.
+  Known effects: trees in flight at the merge skip their compare (producer_modified) for the rest of their life, since
+  record_turn.py's fingerprint changes; an MCP server started before the flip keeps its routing until restart. At the
+  flip every live session re-sends its tree against the writer's reserved concurrency of 5 (429s and OCC retries stop
+  a pass, the next resumes; a tree too large for one 600 s budget re-sends each pass, as a lost cursor does). A checkout
+  predating the code PR runs the old RN-5 and stops with describe_mismatch from the flip until it rebases; its next pass
+  re-sends the tree whole. Residual (RN-10): a tree whose reset pass
+  was its last sent pass never confirms, and a begin_blobs/append split in the update window can still halt the reset
+  pass (blob_not_verified, one redelivery, writer_refused), reported and never cleared blindly.
 - >-
   Overlaps: none with the "Retire query_ops raw SQL" plan. PLAN-telemetry-cold-read-deadline (built first) edits
   ducklake_reader_client.py and agent_sdk/errors.py: TelemetryReader inherits its _invoke and the MCP server its error
@@ -835,7 +861,8 @@ pre_implementation_checklist:
 - Acceptance criteria understood and verifiable
 execution_steps:
 - >-
-  1. Run VP step 1. Rebase onto origin/main. Read the merged telemetry reader (PLAN-telemetry-reader-and-smoke-twin:
+  1. Run VP step 1 and confirm rec-4488 is closed (recs_by_ids); if not, wait and tell the coordinator. Rebase onto
+  origin/main. Read the merged telemetry reader (PLAN-telemetry-reader-and-smoke-twin:
   function name, SSM parameter, describe shape, github_ci_branch's GetFunctionUrlConfig) and the merged reader client
   (PLAN-telemetry-cold-read-deadline: _invoke, ReadDeadlineExceededError, errors.map_reader_error) and use them verbatim.
 - >-

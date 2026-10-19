@@ -414,6 +414,15 @@ scope:
 - file: config/agent/verification_registry/entries/telemetry-event-reads-mechanism.yaml
   action: Modify
   purpose: PR 1. node_id repointed to tests/common/ducklake_event_reads/test_describe.py; name unchanged.
+- file: config/agent/verification_registry/entries/telemetry-reader-bundle.yaml
+  action: Modify
+  purpose: >-
+    PR 1. Its first assertion's expected set for compute_affected_artifacts over ducklake_event_reads,
+    ducklake_event_read_sql and ducklake_event_read_verbs moves from {'ducklake_reader'} to {'ducklake_reader',
+    'ducklake_telemetry_reader'}, because this PR ships those modules in the telemetry reader too; the identity.py
+    assertion is unchanged. Planned-change disposition (not a weakening: the set is exact and widens by the one new
+    artifact). The new set fails on origin/main, so the differential gate admits it. PLAN-telemetry-production-flip
+    later retargets it to the telemetry reader alone.
 - file: config/agent/verification_registry/entries/ducklake-reader-telemetry-slot-wiring.yaml
   action: Modify
   purpose: >-
@@ -1022,6 +1031,13 @@ test_obligations:
   verification_step: 6
   command: bin/venv-python -m scripts.validate --pre
   waiver_reason: A registry entry is its own check; validate_verification_registry runs the repointed node.
+- source: config/agent/verification_registry/entries/telemetry-reader-bundle.yaml
+  behavior: The event-read modules affect exactly the shared reader and the telemetry reader.
+  verification_step: 6
+  command: bin/venv-python -m scripts.validate --pre
+  waiver_reason: >-
+    A registry entry is its own check; validate_verification_registry's differential admission runs it (red on
+    origin/main, green after PR 1).
 - source: config/agent/verification_registry/entries/ducklake-reader-telemetry-slot-wiring.yaml
   behavior: Node ids follow the concern split; names unchanged.
   verification_step: 6
@@ -1123,7 +1139,9 @@ context:
 - "Parallel threads touching shared files: CI write narrowing (oidc_ci_roles.tf), query_ops retirement (shared reader). The second to land rebases."
 - "PLAN-telemetry-cold-read-deadline (rec-4474, plan merged at ff51756d): its build is expected to merge first and this plan's build rebases onto it. telemetry_acquirer and test_telemetry_acquirer_defaults_are_byte_identical then reproduce its merged opener (threads 8, serial catalog scans) and interrupted-slot catalog probe, the telemetry reader manifest includes src/common/ducklake_read_deadline.py, and the handler wires ev.deadline_guard so cold production window reads end in a typed 504 instead of a timeout. If its build has not merged, this plan's build waits for it rather than carrying the wiring itself."
 - "Test split (Decision 128): tests/common/test_ducklake_event_reads.py is 392 SLOC on origin/main; with the cold-read build's six nodes and this plan's three it would cross 500, so PR 1 moves it to the concern-split package tests/common/ducklake_event_reads/ (the src/common/ducklake_reader_client.py precedent) before adding nodes, repointing four registry entries."
-- "Red-overlap (scripts.ci_rca.red_overlap, 2026-10-19, re-run after critique round 3): {\"verdict\": \"clear\", \"slo_hours\": 4, \"reds\": []}"
+- 'red_overlap (2026-10-19, after critique round 4): {"verdict": "blocked", "slo_hours": 4, "reds": [{"id": "rec-4488", "rule": "overlap", "track": "product_regression"}]}'
+- >-
+  Deferral (Decision 226): rec-4488 (Critical red: telemetry_orphan_counts 500 in the deploy smoke after the cold-read deploy) overlaps this plan's affected test set; it has its own forward fix and is not bundled here; this plan PR changes no code and its build waits for rec-4488's closure (execution step 1).
 pre_implementation_checklist:
 - Branch confirmed not on main; harness branch only.
 - docs/PROJECT_CONTEXT.md read; only Decisions 81, 91, 143, 199, 200, 209, 213, 216 and Decision N read in full.
@@ -1132,7 +1150,8 @@ pre_implementation_checklist:
 - All files in scope located and readable; acceptance criteria understood and verifiable.
 execution_steps:
 - >-
-  1. Reconcile with PLAN-telemetry-production-catalog's merged state: read its scope and the tree for the shared names this
+  1. Confirm rec-4488 is closed (recs_by_ids; Decision 226); if it is still open, wait and tell the
+  coordinator before any edit. Reconcile with PLAN-telemetry-production-catalog's merged state: read its scope and the tree for the shared names this
   plan relies on (rt.TELEMETRY_PROD_META_SCHEMA and the production telemetry data-path constant, the
   ducklake_telemetry_data_prefix and ducklake_telemetry_data_path locals, the reader secret container's resource
   address, open_connection's read_only keyword (that plan's PR 1, used as-is: this plan never edits ducklake_runtime),
