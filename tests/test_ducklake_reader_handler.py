@@ -683,7 +683,7 @@ def test_size_guard_failure_is_an_unmapped_500(monkeypatch):
     assert r["statusCode"] == 500 and json.loads(r["body"])["error_class"] == "KeyError"
 
 
-def test_dq_check_dispatch_and_engine_input_errors(monkeypatch):
+def test_dq_check_dispatch_through_the_handler(monkeypatch):
     monkeypatch.setattr(h, "_open_reader_connection", lambda: CountCon(2))
     call = {"action": "dq_check", "check": "row_count_min", "table": "ops_decisions", "params": {"min": 1}}
     r = h.handler({"body": json.dumps(call)})
