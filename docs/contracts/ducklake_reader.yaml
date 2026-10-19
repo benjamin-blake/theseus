@@ -96,20 +96,25 @@ verbs:
       catalog_unavailable: "a dead catalog connection (also after the reopen-once where the handler reopens): retryable, 503 {error_class, request_id, action, reopened}"
   named_read:
     payload_schema_ref: >-
-      event envelope {action: "named_read", verb, params?: {..}, limit?}. `verb` names a
+      event envelope {action: "named_read", verb, params?: {..}, limit?, deadline_ms?}. `verb` names a
       pre-established read from the NAMED_READS registry (src/common/ducklake_named_reads.py);
       `params` binds named bind values. No caller SQL crosses the boundary on this path (Decision
       84 I-3). `limit` (T1.16 c1) is an optional server-side integer-cast trailing LIMIT, accepted
       ONLY for a `paginable` verb (e.g. open_recs, recs_by_title_prefix) -- rejected with a
-      DuckLakeRuntimeError for a non-paginable verb.
+      DuckLakeRuntimeError for a non-paginable verb. `deadline_ms` (rec-4474, beside `limit`, never inside
+      `params`) is accepted ONLY for an event-journal verb: a positive integer of milliseconds, applied per
+      query attempt, the caller's own deadline in addition to the reader's; on a non-event verb it is a
+      DuckLakeRuntimeError before any connect.
     response_codes:
       200: "rows returned; body {ok, verb, registry_version, read_version, rows, row_count}. read_version is an opaque per-verb digest (first 16 hex of sha256 over the verb's canonical definition, SELECT * verbs including their column projection), compared by equality only -- it implies no ordering; registry_version stays the registry-format stamp"
       400: "named_read_input: a bound value or a registry error() guard refused caller input; body {ok: false, error_type, verb, error_class, error} with the redacted DuckDB message (first line, 300 characters); never retried. BinderException, ParserException and every other DuckDB class stay 500 unmapped"
       413: "response_too_large: the Function-URL envelope exceeds MAX_RESPONSE_BYTES (6,000,000); body {ok: false, error_type, action, bytes, cap, hint}; never retried (Decision 215 cl.6)"
-      500: "DuckLakeRuntimeError (empty/unknown verb; non-object params; limit on a non-paginable verb) / VersionMismatchError; transcript_content typed faults blob_integrity, grain_conflict and blob_misconfigured answer 500 {ok, error_type, reason, request_id, action}; unmapped: any other exception answers 500 {ok, error_type, error_class, request_id, action, elapsed_ms}, never its message"
+      500: "DuckLakeRuntimeError (empty/unknown verb; non-object params; limit on a non-paginable verb; deadline_ms on a non-event verb) / VersionMismatchError; transcript_content typed faults blob_integrity, grain_conflict and blob_misconfigured answer 500 {ok, error_type, reason, request_id, action}; unmapped: any other exception answers 500 {ok, error_type, error_class, request_id, action, elapsed_ms}, never its message"
       503: "catalog_unavailable: a dead catalog connection (retryable); transcript_content blob_unavailable (retryable)"
+      504: "read_deadline_exceeded: an event-journal verb still running at its deadline was interrupted; body {ok, error_type, reason: reader_deadline, request_id, action}; never retried"
     typed_errors:
-      runtime: "missing/unknown verb, params not an object, or limit supplied for a non-paginable verb (500)"
+      runtime: "missing/unknown verb, params not an object, limit supplied for a non-paginable verb, or deadline_ms supplied for a non-event verb (500)"
+      read_deadline_exceeded: "an event-journal verb still running at the reader's deadline, the Lambda's remaining time when the attempt starts minus 10 s or the caller's deadline_ms if earlier, is interrupted: 504 {error_type, reason: reader_deadline, request_id, action}; never retried; narrow the window"
       version_mismatch: "DuckDB/extension version mismatch (500)"
       response_too_large: "serialised response envelope above the 6,000,000-byte guard (413, typed, never retried); use a narrower named verb or the claim-check export (rec-4237)"
       named_read_input: "a named verb refused caller input (a bound value or an error() guard raised InvalidInputException, ConversionException, OutOfRangeException or TypeMismatchException): 400 {verb, error_class, error} carrying the redacted DuckDB message (first line, 300 characters); never retried"
@@ -173,7 +178,9 @@ audit_invariants:
   - "KNOWN GAP: the current_state single-key filter path has an open correctness rec (rec-2170) where a non-merge-key equality filter can bind against the merge key. The verb semantics here document the intended contract; the fix is a code amendment, not a contract change."
   - "T2.26: a control-class table (read_boundary: none, e.g. ops_entity_counters, docs/contracts/ops_entity_counters.yaml) is not reachable through read_ops_current, read_ops_history, query_ops, or named_read -- registering a table for governance does not by itself grant application read access. It is readable only in-transaction by its owning writer, or via the admin ducklake_maintenance control_health verb (outside this contract's boundary)."
   - "Generic-read refusal: read_ops_current, read_ops_history and query_ops REFUSE (500, DuckLakeRuntimeError naming the write_boundary) a `table` whose ops_tables entry has write_boundary telemetry_append or registration (the four telemetry event tables, ops_tenants, ops_projects); telemetry reads arrive as the event-journal named verbs (rec-4291) and dimension reads as named verbs. This is a narrow refusal list keyed on write_boundary, not a read-capability model: rec-3771 owns that design. Declared residual (Decision 181 cl.2), narrowed by rec-4291: the catalog-alias path is closed by construction -- query_ops binds the ops warm slot, which never attaches the telemetry catalog, so a statement naming telemetry_catalog.<table> raises a catalog error (coverage: tests/lambdas/ducklake_reader/test_event_routing.py::test_query_ops_runs_on_the_ops_slot_only and the CI smoke gate's isolation check, which asserts HTTP 500, error_type unmapped and error_class CatalogException or BinderException). Caller SQL can still name a table function (read_parquet, glob) over any object-store prefix the reader role reads, the smoke telemetry data prefix included; that object-store path stays declared, owner rec-4292 (before production reads)."
-  - "No request that reaches the handler answers the Function URL's 502: an exception no row maps answers 500 unmapped {error_class, request_id, action}, never its message; a dead catalog connection that survives the reopen-once answers 503 catalog_unavailable. Enforced by the nodes of tests/test_ducklake_reader_handler.py named in the plan's verification step 3 (test_named_read_other_duckdb_error_is_unmapped_500, test_dead_connection_after_reopen_is_503, test_invocation_line_on_unparseable_body). Process-level failures (timeout, out of memory, Runtime.ExitError, an init failure) remain the runtime's 502 and count in Errors; rec-4296 owns the reader's process exits."
+  - "No request that reaches the handler answers the Function URL's 502 except through a process-level failure: an exception no row maps answers 500 unmapped {error_class, request_id, action}, never its message; a dead catalog connection that survives the reopen-once answers 503 catalog_unavailable; an event-journal read still running at its deadline answers 504 read_deadline_exceeded (rec-4474). Enforced by the nodes of tests/test_ducklake_reader_handler.py named in the plan's verification step 3 (test_named_read_other_duckdb_error_is_unmapped_500, test_dead_connection_after_reopen_is_503, test_invocation_line_on_unparseable_body). Process-level failures (an interrupt that overruns the margin, for example during query bind or planning where DuckDB does not honour it, out of memory, Runtime.ExitError, an init failure) remain the runtime's 502 and count in Errors; rec-4296 owns the reader's process exits."
+  - "Event-journal read deadline (rec-4474): for an event verb the handler runs each query attempt (the first and the reopen-once retry) under a deadline at the earlier of the Lambda's remaining time minus 10 s and the caller's deadline_ms. At the deadline the DuckDB statement is interrupted (re-sent every 50 ms until the call returns, because DuckDB 1.5.4 drops an interrupt sent before execution starts), a deadline already spent never runs the query, and the answer is 504 read_deadline_exceeded, which the client never retries. Ops verbs and every other action run with no deadline. The interrupted telemetry slot is kept; its next acquire runs one catalog probe (a select over __ducklake_metadata_<alias>.ducklake_metadata) and reopens through the existing probe-failure path if it fails, with no per-acquire catalog round trip."
+  - "Telemetry slot threads (rec-4474): the telemetry slot runs DuckDB at 8 threads to overlap I/O over many small Parquet files, with pg_use_ctid_scan=false so catalog scans keep the serial single-connection shape (Decision 88 connection budget); the ops slot and every other connection keep threads=1."
   - "Declared residual: the ducklake_unmapped_error and ducklake_named_read_input log lines carry the exception message redacted and truncated to 300 characters, so a request value inside an exception's message can reach the log (strictly less than the runtime traceback they replace). The async DuckLake handlers (maintenance, maintenance_smoke, catalog_dr) are EventBridge-invoked and keep Lambda's own retry behaviour; rec-4303 owns them."
 amendment_log:
   - date: "2026-10-05"
@@ -254,4 +261,16 @@ amendment_log:
     migration_story: >-
       Additive: three new verbs. No existing caller's answer changes; NAMED_READS_VERSION stays 6 and no existing verb's
       read_version moves.
+  - date: "2026-10-19"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-telemetry-cold-read-deadline (rec-4474, rec-2879): named_read gains the optional deadline_ms envelope field
+      (event verbs only), the 504 read_deadline_exceeded response and typed error, and the telemetry slot runs at 8
+      threads with serial catalog scans; the no-502 invariant is amended so a deadline answers 504 while process-level
+      failures remain the runtime's 502.
+    migration_story: >-
+      additive: a read that used to time out as a retried 502 is now a non-retried typed 504; existing callers send no
+      deadline_ms and ignore the new code. The client raises ReadDeadlineExceededError and the agent SDK maps it to
+      ReaderDeadlineError.
 previous_versions: []

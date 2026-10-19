@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
 
+from src.common import ducklake_read_deadline as deadline
 from src.common import ducklake_runtime as rt
 from src.common.ducklake_event_read_sql import AGENTS, OBSERVATIONS, SESSIONS, TRANSCRIPTS
 from src.row_rules.rules import RowRules
@@ -29,6 +30,7 @@ from src.telemetry.timestamps import TimestampError, parse_iso8601_utc
 
 TELEMETRY_SLOT = "telemetry"
 TELEMETRY_MEMORY_LIMIT = "300MB"
+TELEMETRY_THREADS = 8
 KIND = "event_journal"
 CATALOG = "telemetry"
 
@@ -334,9 +336,37 @@ def _telemetry_opener(meta_schema: str, data_path: str, extension_directory: str
             alias=rt.TELEMETRY_CATALOG_ALIAS,
         )
         con.execute(f"SET memory_limit='{TELEMETRY_MEMORY_LIMIT}'")
+        con.execute(f"SET threads={TELEMETRY_THREADS}")
+        con.execute("SET pg_use_ctid_scan=false")
         return con
 
     return opener
+
+
+_INTERRUPTED_SLOTS: set[str] = set()
+
+
+def _catalog_probe_sql() -> str:
+    return f"SELECT count(*) FROM __ducklake_metadata_{rt.TELEMETRY_CATALOG_ALIAS}.ducklake_metadata"
+
+
+def _deadline_ms(verb: str, payload: dict[str, Any]) -> int | None:
+    value = payload.get("deadline_ms")
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise EventReadInputError(verb, "deadline_ms", "must be a positive integer")
+    return value
+
+
+def deadline_guard(
+    action: Any, payload: dict[str, Any], remaining_ms: Callable[[], float] | None
+) -> Callable[[Any, Callable[[], Any]], Any]:
+    """The deadline runner for this request: armed for a named_read of an event verb, a pass-through for everything else."""
+    verb = payload.get("verb") if action == "named_read" else None
+    if not isinstance(verb, str) or verb not in _event_reads():
+        return deadline.runner(None, None, lambda: None)
+    return deadline.runner(remaining_ms, _deadline_ms(verb, payload), lambda: _INTERRUPTED_SLOTS.add(TELEMETRY_SLOT))
 
 
 def acquirer_for(
@@ -345,17 +375,23 @@ def acquirer_for(
     """The connection acquirer for this request: the handler's own ops acquirer, unchanged, for everything but an event verb.
 
     An event verb first passes the smoke-pin refusal and parameter validation, so a refused request never pays an ATTACH,
-    then binds the telemetry slot (opened lazily on its first verb).
+    then binds the telemetry slot (opened lazily on its first verb). The first acquire after a deadline interrupt probes
+    the catalog connection once; a failed probe reopens through get_warm_connection's existing path.
     """
     verb = payload.get("verb") if action == "named_read" else None
     if not isinstance(verb, str) or verb not in _event_reads():
+        if action == "named_read" and payload.get("deadline_ms") is not None:
+            raise rt.DuckLakeRuntimeError("`deadline_ms` is accepted only for event-journal read verbs")
         return ops
     meta_schema, data_path = require_smoke_pin()
     params = payload.get("params")
     bind_values(_event_reads()[verb], {} if params is None else params)
+    _deadline_ms(verb, payload)
     opener = _telemetry_opener(meta_schema, data_path, extension_directory)
 
     def acquire(force_reopen: bool = False) -> tuple[Any, dict[str, Any]]:
+        probe = _catalog_probe_sql() if TELEMETRY_SLOT in _INTERRUPTED_SLOTS else "SELECT 1"
+        _INTERRUPTED_SLOTS.discard(TELEMETRY_SLOT)
         return rt.get_warm_connection(
             opener=opener,
             data_path=data_path,
@@ -363,6 +399,7 @@ def acquirer_for(
             extension_directory=extension_directory,
             slot=TELEMETRY_SLOT,
             alias=rt.TELEMETRY_CATALOG_ALIAS,
+            probe_sql=probe,
             force_reopen=force_reopen,
         )
 

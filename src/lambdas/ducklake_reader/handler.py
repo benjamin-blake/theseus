@@ -342,7 +342,7 @@ def _guard_response_size(response: dict[str, Any], payload: dict[str, Any], meta
     )
 
 
-def _handle(payload: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
+def _handle(payload: dict[str, Any], meta: dict[str, Any], remaining_ms: Callable[[], float] | None = None) -> dict[str, Any]:
     """Reader dispatch. Dispatches `action`; loud-fail maps to a 5xx (no silent drop)."""
     action = payload.get("action")
     fn = _ACTIONS.get(action)
@@ -357,6 +357,7 @@ def _handle(payload: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
         # action; reads are idempotent, so reopen ONCE and retry -- the reopen never leaks a 5xx for
         # this expected transient. Any non-connection error reaches handler()'s terminal answer (Decision 55).
         acquire = ev.acquirer_for(action, payload, _warm_reader_connection, EXTENSION_DIRECTORY)
+        under_deadline = ev.deadline_guard(action, payload, remaining_ms)
         con, conn_meta = acquire()
         payload["_connect_ms"] = conn_meta["connect_ms"]
         payload["_connect_reused"] = conn_meta["reused"]
@@ -364,7 +365,7 @@ def _handle(payload: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
             connect_ms=conn_meta["connect_ms"], connect_reused=conn_meta["reused"], reopened=bool(conn_meta.get("reopened"))
         )
         try:
-            return _response(200, fn(payload, con))
+            return _response(200, under_deadline(con, lambda: fn(payload, con)))
         except Exception as exc:  # noqa: BLE001 -- narrowed immediately to the dead-connection case
             if not rt.is_dead_connection_error(exc):
                 raise
@@ -372,7 +373,7 @@ def _handle(payload: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
             payload["_connect_ms"] = conn_meta["connect_ms"]
             payload["_connect_reused"] = conn_meta["reused"]
             meta.update(connect_ms=conn_meta["connect_ms"], connect_reused=conn_meta["reused"], reopened=True)
-            return _response(200, fn(payload, con))
+            return _response(200, under_deadline(con, lambda: fn(payload, con)))
     except (NamedReadInputError, ev.EventReadInputError) as exc:
         handler_errors.log_named_read_input(
             exc.__cause__ or exc, function="reader", verb=exc.verb, request_id=meta.get("request_id")
@@ -418,7 +419,9 @@ def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
             status, body = handler_errors.bad_request("reader", "unknown")
             return _response(status, body)
         payload = parsed
-        response = _guard_response_size(_handle(payload, meta), payload, meta)
+        response = _guard_response_size(
+            _handle(payload, meta, getattr(context, "get_remaining_time_in_millis", None)), payload, meta
+        )
         status = response["statusCode"]
         return response
     except Exception as exc:

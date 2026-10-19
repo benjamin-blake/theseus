@@ -37,8 +37,10 @@ def smoke_pin(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture(autouse=True)
 def _reset_slots() -> Any:
     rt.reset_warm_connection()
+    ev._INTERRUPTED_SLOTS.clear()
     yield
     rt.reset_warm_connection()
+    ev._INTERRUPTED_SLOTS.clear()
 
 
 class FakeCursor:
@@ -239,6 +241,94 @@ def test_validation_and_pin_refusal_precede_any_acquire(monkeypatch: pytest.Monk
     assert opened == ["open"] and meta["reused"] is False
     assert con.calls[0][0].startswith("SET memory_limit='300MB'")
     assert acquire()[1]["reused"] is True and opened == ["open"]
+
+
+def _telemetry_payload(**extra: Any) -> dict[str, Any]:
+    return {"verb": "telemetry_health_count", "params": {}, **extra}
+
+
+def test_telemetry_opener_sets_threads_and_serial_catalog_scans(monkeypatch: pytest.MonkeyPatch, smoke_pin: None) -> None:
+    con = RecordingCon()
+    monkeypatch.setattr(rt, "open_connection", lambda **kw: con)
+    monkeypatch.setattr(rt, "fetch_dsn", lambda *a, **k: {})
+    ev._telemetry_opener(rt.SMOKE_META_SCHEMA, rt.SMOKE_DATA_PATH, "/e")()
+    statements = [sql for sql, _ in con.calls]
+    assert statements[0].startswith("SET memory_limit=") and statements[1:] == [
+        f"SET threads={ev.TELEMETRY_THREADS}",
+        "SET pg_use_ctid_scan=false",
+    ]
+    assert ev.TELEMETRY_THREADS == 8
+
+
+def test_deadline_ms_is_refused_before_any_attach(monkeypatch: pytest.MonkeyPatch, smoke_pin: None) -> None:
+    opened: list[str] = []
+    monkeypatch.setattr(rt, "open_connection", lambda **kw: opened.append("open") or RecordingCon())
+    for bad in (0, -1, True, "5", 1.5):
+        with pytest.raises(ev.EventReadInputError) as info:
+            ev.acquirer_for("named_read", _telemetry_payload(deadline_ms=bad), None, "/e")
+        assert info.value.param == "deadline_ms"
+    assert opened == []
+    assert callable(ev.acquirer_for("named_read", _telemetry_payload(deadline_ms=5000), None, "/e"))
+
+
+def test_deadline_ms_on_an_ops_verb_is_refused(smoke_pin: None) -> None:
+    with pytest.raises(rt.DuckLakeRuntimeError, match="deadline_ms"):
+        ev.acquirer_for("named_read", {"verb": "open_recs_tally", "params": {}, "deadline_ms": 5000}, None, "/e")
+
+
+def test_deadline_guard_is_identity_off_event_verbs(smoke_pin: None) -> None:
+    for action, payload in (
+        ("named_read", {"verb": "open_recs_tally", "params": {}}),
+        ("query_ops", {"verb": "telemetry_health_count"}),
+        ("read_ops_current", {}),
+    ):
+        guard = ev.deadline_guard(action, payload, lambda: 0.0)
+        assert guard(object(), lambda: "ran") == "ran"
+    assert ev._INTERRUPTED_SLOTS == set()
+
+
+def test_deadline_guard_marks_the_slot_on_a_spent_deadline(smoke_pin: None) -> None:
+    guard = ev.deadline_guard("named_read", _telemetry_payload(), lambda: 5_000.0)
+    ran: list[int] = []
+    with pytest.raises(ev.deadline.TypedFault) as info:
+        guard(object(), lambda: ran.append(1))
+    assert info.value.status == 504 and ran == [] and ev.TELEMETRY_SLOT in ev._INTERRUPTED_SLOTS
+    ev._INTERRUPTED_SLOTS.clear()
+
+
+def test_interrupted_slot_probes_the_catalog_once(monkeypatch: pytest.MonkeyPatch, smoke_pin: None) -> None:
+    probes: list[str] = []
+
+    class ProbeCon(RecordingCon):
+        def __init__(self, fail: bool = False) -> None:
+            super().__init__()
+            self.fail = fail
+
+        def execute(self, sql: str, params: Any = None) -> FakeCursor:
+            if sql.startswith("SELECT"):
+                probes.append(sql)
+                if self.fail:
+                    raise RuntimeError("catalog connection is broken")
+            return super().execute(sql, params)
+
+        def close(self) -> None:
+            pass
+
+    cons = [ProbeCon(fail=False)]
+    monkeypatch.setattr(rt, "open_connection", lambda **kw: cons[-1])
+    monkeypatch.setattr(rt, "fetch_dsn", lambda *a, **k: {})
+    acquire = ev.acquirer_for("named_read", _telemetry_payload(), None, "/e")
+    acquire()
+    assert probes == []
+    ev._INTERRUPTED_SLOTS.add(ev.TELEMETRY_SLOT)
+    assert acquire()[1]["reused"] is True
+    assert len(probes) == 1 and "__ducklake_metadata_" in probes[0] and "ducklake_metadata" in probes[0]
+    assert acquire()[1]["reused"] is True and probes[1:] == ["SELECT 1"]
+    cons[0].fail = True
+    cons.append(ProbeCon())
+    ev._INTERRUPTED_SLOTS.add(ev.TELEMETRY_SLOT)
+    con, meta = acquire()
+    assert meta["reopened"] is True and con is cons[1]
 
 
 def test_event_verbs_are_described_with_their_class_bounds_and_audience() -> None:

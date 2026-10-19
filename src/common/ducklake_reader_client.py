@@ -38,13 +38,14 @@ _DUCKLAKE_READER_FUNCTION_NAME = "agent-platform-ducklake-reader"
 _DUCKLAKE_READER_SSM_PATH = "/agent-platform/ducklake/reader_url"
 _DUCKLAKE_WRITER_SSM_PATH = "/agent-platform/ducklake/writer_url"
 
-# Transient reader-invoke resilience: the Neon free-tier catalog scales to zero, so the first
-# read after idle can return a 5xx while the compute resumes (cold-resume). Reader ops are
-# idempotent, so retry transient 5xx with backoff before loud-failing. (HTTP 502 is the observed
-# cold-resume signature; 503/504 covered for completeness.)
+# Transient reader-invoke resilience: reader ops are idempotent, so retry a transient 5xx with backoff before
+# loud-failing. A 502 is a process exit or a deadline overrun, a 503 catalog_unavailable (a dead catalog connection);
+# a typed 504 read_deadline_exceeded is the one answer never retried (the same read overruns again).
 _READER_MAX_ATTEMPTS = 3
 _READER_TRANSIENT_STATUS = frozenset({502, 503, 504})
 _READER_RETRY_BACKOFF_S = (2.0, 4.0)
+# Literal, not imported: the reader-only deadline module is not in this file's data-pipeline bundle.
+_READ_DEADLINE_ERROR_TYPE = "read_deadline_exceeded"
 
 _ORDER_BY_DEFAULT = "last_updated_timestamp"
 
@@ -326,6 +327,16 @@ class ResponseTooLargeError(ReaderInvokeError):
         self.cap = (body or {}).get("cap")
 
 
+class ReadDeadlineExceededError(ReaderInvokeError):
+    """The reader interrupted an event-journal read at its deadline (HTTP 504 read_deadline_exceeded, rec-4474).
+
+    Never retried: the same read overruns again. Narrow the window.
+    """
+
+    def __init__(self, action: str | None, text: str, body: dict[str, Any] | None) -> None:
+        super().__init__(action, 504, text, body)
+
+
 def _parse_error_body(text: str) -> dict[str, Any] | None:
     """Best-effort JSON-parse of a reader error response body; None if it isn't a JSON object."""
     try:
@@ -418,10 +429,11 @@ class DuckLakeReader:
             last_body = _parse_error_body(resp.text)
             if resp.status_code == 413:
                 raise ResponseTooLargeError(payload.get("action"), last_text, last_body)
+            if resp.status_code == 504 and (last_body or {}).get("error_type") == _READ_DEADLINE_ERROR_TYPE:
+                raise ReadDeadlineExceededError(payload.get("action"), last_text, last_body)
             if resp.status_code in _READER_TRANSIENT_STATUS and attempt < _READER_MAX_ATTEMPTS - 1:
-                # Cold-resume: give Neon time to wake, then re-invoke (reads are idempotent).
                 logger.warning(
-                    "ducklake_reader %r HTTP %d (attempt %d/%d) -- retrying after cold-resume backoff",
+                    "ducklake_reader %r HTTP %d (attempt %d/%d) -- retrying after backoff",
                     payload.get("action"),
                     resp.status_code,
                     attempt + 1,
