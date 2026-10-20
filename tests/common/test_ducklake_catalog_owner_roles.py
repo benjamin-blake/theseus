@@ -167,6 +167,7 @@ def test_live_order_catalog_verb_runs_before_any_production_login_exists(bare: A
         "foreign_owned": 0,
         "schema_owner": "ducklake_telemetry_owner",
         "schema_owner_held": True,
+        "schema_owner_is_current_user": False,
         "scoped_create_on_schema": False,
         "scoped_create_on_public": False,
     }

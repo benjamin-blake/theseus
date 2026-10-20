@@ -193,6 +193,10 @@ def test_provision_telemetry_catalog_runs_owner_sql_create_seed_then_report_in_o
     assert out["ok"] is True and out["created"] == ["t_a"] and out["tables"] == ["t_a", "t_b"] and out["added"] == []
     assert out["counters"] == {"ops_tenants": 0, "ops_projects": 0}
     assert out["owner_sql_sha256"] == cl.template_sha256("owner")
+    assert out["ownership"]["schema_owner_is_current_user"] is False
+    assert {"foreign_owned", "schema_owner", "schema_owner_held", "scoped_create_on_schema", "scoped_create_on_public"} <= set(
+        out["ownership"]
+    )
     assert h.opened.call_args.kwargs["data_path"] == rt.TELEMETRY_PROD_DATA_PATH
     assert h.opened.call_args.kwargs["meta_schema"] == "ducklake_telemetry"
     assert h.duck.closed is True
