@@ -111,7 +111,7 @@ ROW_EVALUATORS: dict[str, Callable[[dict, Path, list[str]], None]] = {
 }
 
 PENDING_STATIC_ROWS: dict[str, str] = {
-    "terraform_github_root": "rec-3136",
+    "terraform_github_root": "rec-4355",
 }
 
 

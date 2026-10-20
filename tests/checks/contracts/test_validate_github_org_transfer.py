@@ -208,5 +208,5 @@ def test_rec_3903_rows_are_evaluated_not_pending() -> None:
     assert rows == {"dependabot_repository_guard", "owner_literal_defaults", "codeowners", "descriptive_literals"}
     assert rows <= set(module.ROW_EVALUATORS)
     assert not rows & set(module.PENDING_STATIC_ROWS)
-    assert module.PENDING_STATIC_ROWS == {"terraform_github_root": "rec-3136"}
+    assert module.PENDING_STATIC_ROWS == {"terraform_github_root": "rec-4355"}
     assert all(module.ROW_EVALUATORS[rid] is _retired_identity.ROW_EVALUATORS[rid] for rid in rows)
