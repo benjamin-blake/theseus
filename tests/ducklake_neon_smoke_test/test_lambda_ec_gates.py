@@ -288,7 +288,6 @@ def test_lambda_churn_incontainer_budget_pass_still_no_raise(monkeypatch, capsys
 
 
 _TABLES = ["telemetry_agents", "telemetry_observations", "telemetry_sessions", "telemetry_transcripts"]
-_UNMAPPED_CATALOG = {"ok": False, "error_type": "unmapped", "error_class": "CatalogException"}
 
 
 def _json_resp(status, payload):
@@ -321,7 +320,7 @@ def _dq_answer(payload, *, skew=None, drop=None, refuse_table=True, echo=False, 
     return _json_resp(200, body)
 
 
-def _reader_fake(*, health_tables=None, absent_rows=0, bad=None, probe=None, describe_flags=None, window=None, dq=None):
+def _reader_fake(*, health_tables=None, absent_rows=0, bad=None, describe_flags=None, window=None, dq=None, query_ops=None):
     """A consistent reader: ops reads and the write boundary as before, plus the telemetry slot's real answer shapes."""
     from src.common.ducklake_event_read_verbs import EVENT_READS  # noqa: PLC0415
 
@@ -338,7 +337,9 @@ def _reader_fake(*, health_tables=None, absent_rows=0, bad=None, probe=None, des
         if action == "dq_check":
             return _dq_answer(payload, **(dq or {}))
         if action == "query_ops":
-            return probe or _json_resp(500, _UNMAPPED_CATALOG)
+            return query_ops or _json_resp(
+                400, {"ok": False, "error": "unknown action 'query_ops'", "actions": ["describe", "dq_check"]}
+            )
         if payload["verb"] == "telemetry_health_count":
             rows = [{"table_name": t, "record_count": 0, "meta_schema": "ducklake_smoke"} for t in health_tables or _TABLES]
             return _json_resp(200, {"rows": rows, "row_count": len(rows)})
@@ -363,7 +364,8 @@ def test_lambda_reader_ok(monkeypatch, capsys):
     _patch_reader(monkeypatch)
     smoke.lambda_reader()
     out = capsys.readouterr().out
-    assert "READER OK rows=3 write_denied=true" in out and "TELEMETRY_READS_OK" in out and "DQ_CHECK_OK kinds=12" in out
+    assert "READER OK rows=3 write_denied=true" in out and "TELEMETRY_READS_OK" in out
+    assert "QUERY_OPS_RETIRED" in out and "DQ_CHECK_OK kinds=12" in out
 
 
 def test_telemetry_read_checks_pass_on_a_consistent_reader(monkeypatch, capsys):
@@ -382,22 +384,22 @@ def _failing(monkeypatch, match, **kwargs):
         lambda_ec_gates._telemetry_read_checks(profile=None, region="eu-west-2")
 
 
-def test_telemetry_read_checks_fail_when_query_ops_reaches_telemetry(monkeypatch):
-    _failing(monkeypatch, "query_ops must not reach", probe=_json_resp(200, {"ok": True, "rows": [{"count_star()": 0}]}))
-
-
-def test_isolation_check_needs_the_catalog_exception_not_any_error(monkeypatch):
-    for status, body in (
-        (500, {"error_type": "unmapped", "error_class": "ValueError"}),
-        (500, {"error_type": "runtime", "error_class": "CatalogException"}),
-        (503, {"error_type": "catalog_unavailable"}),
-        (403, {"message": "Forbidden"}),
-    ):
-        _failing(monkeypatch, "query_ops must not reach", probe=_json_resp(status, body))
+def test_reader_gate_fails_when_query_ops_still_answers(monkeypatch, capsys):
     from scripts.ducklake_smoke import lambda_ec_gates  # noqa: PLC0415
 
-    _patch_reader(monkeypatch, probe=_json_resp(500, {"error_type": "unmapped", "error_class": "BinderException"}))
-    lambda_ec_gates._telemetry_read_checks(profile=None, region="eu-west-2")
+    _patch_reader(monkeypatch)
+    lambda_ec_gates.retired_actions_gate()
+    assert capsys.readouterr().out.strip() == "QUERY_OPS_RETIRED"
+    for answer in (
+        _json_resp(200, {"ok": True, "rows": []}),
+        _json_resp(500, {"error_type": "unmapped"}),
+        _json_resp(400, {"ok": False, "actions": ["describe", "dq_check", "query_ops"]}),
+        _json_resp(400, {"ok": False, "actions": ["describe"]}),
+        _json_resp(400, {"ok": False}),
+    ):
+        _patch_reader(monkeypatch, query_ops=answer)
+        with pytest.raises(core.SmokeTestFailure, match="QUERY_OPS_RETIRED FAIL"):
+            lambda_ec_gates.retired_actions_gate()
 
 
 def test_telemetry_read_checks_fail_when_a_bad_id_is_echoed(monkeypatch):

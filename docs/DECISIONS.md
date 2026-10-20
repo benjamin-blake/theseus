@@ -9321,6 +9321,12 @@ queue current-state semantics referenced here are this decision's own `priority_
 > reject-on-conflict grain enforcement Decision 207 requires of insert-grain tables. Fixed by
 > rec-4121 (ops-writer idempotency replay and history MERGE on the write ULID).
 
+> **[Amendment 2026-10-19, PLAN-query-ops-retirement]:** I-3's staged follow-up landed. The data-quality harness (the YAML
+> runner and the contract-rule census) reads through the reader's `dq_check` action, a closed family of twelve check kinds whose
+> SQL is server-owned and whose values are bound, so `query_ops`, its `query_current` and `assert_read_only_sql` helpers and
+> `DuckLakeReader.query` are removed. No reader action accepts caller-supplied SQL. Sources:
+> `src/common/ducklake_dq_checks.py`, `src/lambdas/ducklake_reader/handler.py`, `docs/contracts/ducklake_reader.yaml`.
+
 ---
 
 ## Decision 83: Branch Protection Now Active -- Amends Decision 89 Premise (Decided)

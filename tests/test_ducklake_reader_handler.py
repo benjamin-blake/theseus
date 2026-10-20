@@ -162,7 +162,7 @@ def test_open_reader_connection(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# T2.19 production ops read actions: read_ops_current / read_ops_history / query_ops
+# T2.19 production ops read actions: read_ops_current / read_ops_history
 # ---------------------------------------------------------------------------
 
 
@@ -232,17 +232,6 @@ def test_action_read_ops_history(monkeypatch):
     monkeypatch.setattr(rt, "read_history", lambda con, *, table, key, limit: [{"ulid": "01A"}, {"ulid": "01B"}])
     out = h.action_read_ops_history({"table": "ops_decisions", "limit": 5}, FakeCon())
     assert out["row_count"] == 2
-
-
-def test_action_query_ops(monkeypatch):
-    monkeypatch.setattr(rt, "query_current", lambda con, *, table, sql, params: [{"violation": 0}])
-    out = h.action_query_ops({"table": "ops_recommendations", "sql": "SELECT 1 FROM {tbl}"}, FakeCon())
-    assert out["row_count"] == 1
-
-
-def test_action_query_ops_requires_sql():
-    with pytest.raises(rt.DuckLakeRuntimeError, match="non-empty 'sql'"):
-        h.action_query_ops({"table": "ops_recommendations"}, FakeCon())
 
 
 def test_require_ops_table_rejects_unknown():
@@ -456,14 +445,13 @@ _REFUSED_READ_TABLES = (
 
 
 def test_generic_reads_refuse_telemetry_and_registration_tables(monkeypatch):
-    """read_ops_current, read_ops_history and query_ops refuse the six tables by their `table` parameter
+    """read_ops_current and read_ops_history refuse the six tables by their `table` parameter
     with the directed error naming the write_boundary (a 500 under the reader's error map)."""
     monkeypatch.setattr(rt, "read_current", lambda *a, **k: pytest.fail("runtime reached"))
     monkeypatch.setattr(rt, "read_history", lambda *a, **k: pytest.fail("runtime reached"))
-    monkeypatch.setattr(rt, "query_current", lambda *a, **k: pytest.fail("runtime reached"))
     for table in _REFUSED_READ_TABLES:
         boundary = "registration" if table.startswith("ops_") else "telemetry_append"
-        for action in (h.action_read_ops_current, h.action_read_ops_history, h.action_query_ops):
+        for action in (h.action_read_ops_current, h.action_read_ops_history):
             with pytest.raises(rt.DuckLakeRuntimeError, match=rf"write_boundary={boundary}"):
                 action({"table": table, "sql": "SELECT 1"}, FakeCon())
 

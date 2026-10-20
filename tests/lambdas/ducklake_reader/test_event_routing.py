@@ -1,6 +1,6 @@
 """End-to-end reader handler routing for event-journal verbs, with fake connections (rec-4291).
 
-Event verbs bind the lazily opened telemetry slot; every other action, query_ops included, binds the ops slot and never
+Event verbs bind the lazily opened telemetry slot; every other action, dq_check included, binds the ops slot and never
 opens or reaches the telemetry slot; the smoke-pin refusal and parameter validation both precede any connect.
 """
 
@@ -101,20 +101,6 @@ def test_ops_actions_never_open_the_telemetry_slot(wiring: dict[str, Any], monke
     assert _call({"action": "read_current"})[0] == 200
     assert wiring["telemetry_opened"] == 0 and wiring["ops_opened"] == 1
     assert rt._named_slots.get("telemetry", {}) == {}
-
-
-def test_query_ops_runs_on_the_ops_slot_only(wiring: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
-    seen: list[Any] = []
-    monkeypatch.setattr(rt, "query_current", lambda con, **kw: seen.append(con) or [])
-    status, _ = _call(
-        {
-            "action": "query_ops",
-            "table": "ops_recommendations",
-            "sql": "SELECT count(*) FROM telemetry_catalog.telemetry_sessions",
-        }
-    )
-    assert status == 200 and seen == [wiring["ops_con"]]
-    assert wiring["telemetry_opened"] == 0
 
 
 def test_dq_check_runs_on_the_ops_slot_only(wiring: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:

@@ -107,8 +107,8 @@ class Reader(Protocol):
 
     Any implementation must satisfy this protocol without changing call sites (CD.8).
 
-    named(), query() and describe() are deliberately NOT part of this Protocol -- named() and
-    query() were already undeclared DuckLakeReader-only extras before this file added describe(),
+    named(), dq_check() and describe() are deliberately NOT part of this Protocol -- named() was
+    already an undeclared DuckLakeReader-only extra before this file added describe(),
     so widening the Protocol to cover the new method would silently formalise that gap by omission
     rather than by decision. A caller that needs describe() holds a DuckLakeReader (or the
     narrower structural type it needs), not the Reader Protocol.
@@ -499,18 +499,6 @@ class DuckLakeReader:
         failure is never a silent empty result (Decision 55).
         """
         body = self._invoke({"action": "named_read", "verb": verb, "params": params})
-        return list(body.get("rows", []))
-
-    def query(
-        self,
-        table: str,
-        sql: str,
-        *,
-        params: tuple[Any, ...] = (),
-        snapshot_id: int | None = None,
-    ) -> list[dict]:
-        """Execute *sql* (using `{tbl}`) over the current projection via the reader. Raises on error (Decision 55)."""
-        body = self._invoke({"action": "query_ops", "table": table, "sql": sql, "params": list(params)})
         return list(body.get("rows", []))
 
     def dq_check(self, check: str, table: str, params: dict[str, Any] | None = None) -> dict[str, Any]:

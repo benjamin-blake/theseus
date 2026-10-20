@@ -197,7 +197,7 @@ def test_acquirer_routes_only_event_verbs_to_the_telemetry_slot(smoke_pin: None)
 
     for action, payload in (
         ("named_read", {"verb": "open_recs_tally", "params": {}}),
-        ("query_ops", {"table": "ops_recommendations", "sql": "SELECT 1", "verb": "session_state_and_duration"}),
+        ("dq_check", {"table": "ops_recommendations", "check": "not_null", "verb": "session_state_and_duration"}),
         ("read_ops_current", {"table": "ops_recommendations"}),
         ("attach_check", {}),
     ):
@@ -279,7 +279,7 @@ def test_deadline_ms_on_an_ops_verb_is_refused(smoke_pin: None) -> None:
 def test_deadline_guard_is_identity_off_event_verbs(smoke_pin: None) -> None:
     for action, payload in (
         ("named_read", {"verb": "open_recs_tally", "params": {}}),
-        ("query_ops", {"verb": "telemetry_health_count"}),
+        ("dq_check", {"verb": "telemetry_health_count"}),
         ("read_ops_current", {}),
     ):
         guard = ev.deadline_guard(action, payload, lambda: 0.0)
