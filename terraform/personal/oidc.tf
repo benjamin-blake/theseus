@@ -10,6 +10,7 @@
 #   pr (read-only)  -- refs/pull/*                          -> PR-context read queries
 # The account ID in ARNs comes from var.account_id (gitignored tfvars); never a committed literal.
 
+# Probe (oidc-owner-segment-prestage VP 23): PR-context liveness after the trust change; never merged.
 locals {
   # PRE-STAGED STATE (Decision 218 / PLAN-oidc-owner-segment-prestage): the list carries the current
   # segment and, additively beside it, the otl-labs/ontheloop target segment, so the GitHub
