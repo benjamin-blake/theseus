@@ -10,7 +10,7 @@ import pytest
 import yaml
 
 from scripts.checks import registry
-from scripts.checks.contracts import _manifest
+from scripts.checks.contracts import _manifest, _retired_identity
 from scripts.checks.contracts import validate_github_org_transfer as module
 from scripts.checks.contracts.validate_github_org_transfer import validate_github_org_transfer
 
@@ -67,7 +67,11 @@ def _write(root: Path, contract: dict[str, Any] | str | None, personal: list[str
     (root / _BOOTSTRAP).write_text(_tf(personal if bootstrap is None else bootstrap), encoding="utf-8")
 
 
-def _run(root: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+_OIDC_ONLY = {"oidc_trust_segment": module._evaluate_oidc_trust_segment}
+
+
+def _run(root: Path, monkeypatch: pytest.MonkeyPatch, evaluators: dict[str, Any] | None = None) -> list[str]:
+    monkeypatch.setattr(module, "ROW_EVALUATORS", evaluators or _OIDC_ONLY)
     monkeypatch.setattr(module, "PENDING_STATIC_ROWS", {"pending_row": "rec-2"})
     failed: list[str] = []
     with patch("scripts.checks._common.ROOT", root):
@@ -156,11 +160,12 @@ class TestValidateGithubOrgTransfer:
 
     def test_row_in_both_maps_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _write(tmp_path, _contract(), [_CUR])
-        monkeypatch.setattr(module, "ROW_EVALUATORS", {**module.ROW_EVALUATORS, "pending_row": lambda c, r, f: None})
-        assert any("pending_row" in f for f in _run(tmp_path, monkeypatch))
+        evaluators = {**_OIDC_ONLY, "pending_row": lambda c, r, f: None}
+        assert any("pending_row" in f for f in _run(tmp_path, monkeypatch, evaluators))
 
     def test_named_row_absent_from_contract_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _write(tmp_path, _contract(), [_CUR])
+        monkeypatch.setattr(module, "ROW_EVALUATORS", _OIDC_ONLY)
         monkeypatch.setattr(module, "PENDING_STATIC_ROWS", {"pending_row": "rec-2", "ghost": "rec-9"})
         failed: list[str] = []
         with patch("scripts.checks._common.ROOT", tmp_path):
@@ -169,6 +174,7 @@ class TestValidateGithubOrgTransfer:
 
     def test_pending_rec_differing_from_row_rec_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _write(tmp_path, _contract(), [_CUR])
+        monkeypatch.setattr(module, "ROW_EVALUATORS", _OIDC_ONLY)
         monkeypatch.setattr(module, "PENDING_STATIC_ROWS", {"pending_row": "rec-77"})
         failed: list[str] = []
         with patch("scripts.checks._common.ROOT", tmp_path):
@@ -186,7 +192,7 @@ class TestValidateGithubOrgTransfer:
         loaded = module.load_contract(tmp_path)
         assert isinstance(loaded, dict) and loaded["identity"]["phase"] == "p0"
         assert module.load_contract(tmp_path / "absent") is None
-        assert set(module.ROW_EVALUATORS) == {"oidc_trust_segment"}
+        assert set(module.ROW_EVALUATORS) == {"oidc_trust_segment", *_retired_identity.ROWS}
         assert all(callable(fn) for fn in module.ROW_EVALUATORS.values())
         assert all(rec.startswith("rec-") for rec in module.PENDING_STATIC_ROWS.values())
         assert not set(module.ROW_EVALUATORS) & set(module.PENDING_STATIC_ROWS)
@@ -195,3 +201,12 @@ class TestValidateGithubOrgTransfer:
         assert "validate_github_org_transfer" in registry._REGISTRY
         entry = next(e for e in _manifest.ENTRIES if e.name == "validate_github_org_transfer")
         assert entry.pre is True
+
+
+def test_rec_3903_rows_are_evaluated_not_pending() -> None:
+    rows = set(_retired_identity.ROWS)
+    assert rows == {"dependabot_repository_guard", "owner_literal_defaults", "codeowners", "descriptive_literals"}
+    assert rows <= set(module.ROW_EVALUATORS)
+    assert not rows & set(module.PENDING_STATIC_ROWS)
+    assert module.PENDING_STATIC_ROWS == {"terraform_github_root": "rec-3136"}
+    assert all(module.ROW_EVALUATORS[rid] is _retired_identity.ROW_EVALUATORS[rid] for rid in rows)
