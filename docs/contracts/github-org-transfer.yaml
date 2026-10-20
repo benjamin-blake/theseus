@@ -17,7 +17,7 @@ contract:
     renaming it in the same operation (Decision 218). Executes nothing itself.
   subject: github-org-transfer
   evaluator:
-    agent_surface: docs/CLAUDE.md
+    check: validate_github_org_transfer
 amendment_log:
   - date: "2026-10-15"
     semantic_break: false
@@ -27,32 +27,47 @@ amendment_log:
       (Decision 218), the breakage map, six phases from settle to predecessor removal, the
       transfer-window checklist, the rollback stance and the evidence ledger. identity.phase
       starts at pre_transfer.
+  - date: "2026-10-20"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-oidc-owner-segment-prestage (rec-3902): the evaluator becomes the registered check
+      validate_github_org_transfer, landed with the target segment's staging. identity.staged_phase
+      (new, pre_staged) records that the trust lists lead identity.phase by one phase, because the
+      phase flip needs post-merge live proof and other plans' gates first; the check matches the
+      lists exactly against it. Invariant (2) stays planned. breakage_map.oidc_trust_segment's fix
+      names the admin split-apply for github_ci_planner and github_ci_deploy.
 
 planned_evaluator: >-
-    The OIDC owner-segment pre-stage plan (rec-3902) replaces agent_surface with a registered check,
-    validate_github_org_transfer, in the same PR that first flips identity.phase. Planned
-    invariants: (1) local.github_repos in terraform/personal/oidc.tf and
-    terraform/bootstrap/github_ci_apply.tf equals the trusted_segments of the phase whose exit_sets_phase equals identity.phase
-    names, exact match; (2) every breakage_map row with detection: static matches its
-    per-phase expected literal state. Until then the pinned constants in
-    tests/checks/iam_tf/test_oidc_trust_slug_invariants.py and
-    tests/checks/ci_guards/test_validate_dependabot_automation.py, and the old-slug pins in
-    scripts/checks/hygiene/validate_licence_consistency.py (rec-3903 adds the new forbidden slug), are
-    the only static guards.
+    validate_github_org_transfer (rec-3902) enforces invariant (1): local.github_repos in
+    terraform/personal/oidc.tf and terraform/bootstrap/github_ci_apply.tf are identical, every
+    entry is OWNER@OWNER-ID/REPO@REPO-ID with one shared repository id, and the entries' owner and
+    repository names equal, exact match, the trusted_segments of the phase whose exit_sets_phase
+    equals identity.staged_phase when it is set, else identity.phase. staged_phase may only name
+    the phase value immediately after identity.phase; the PR that stages a trust change ahead of
+    its phase sets it, and the PR that flips identity.phase clears it. Names are matched, not the
+    owner id, because the target id lives only in the two lists. Still planned, invariant (2):
+    every other breakage_map row with detection: static matches its per-phase expected literal
+    state, enforced by a check its owning plan (rec-3903, rec-3136) lands or extends; this check
+    names each such row with its owning rec and fails on any static row it neither evaluates nor
+    names. Until then the pinned constants in
+    tests/checks/ci_guards/test_validate_dependabot_automation.py and the old-slug pins in
+    scripts/checks/hygiene/validate_licence_consistency.py (rec-3903 adds the new forbidden slug)
+    guard those rows.
 
 identity:
   current:
     owner: benjamin-blake
     owner_kind: personal_account
     repository: theseus
-    trust_segment_ref: "terraform/personal/oidc.tf local.github_repos (the single immutable segment)"
+    trust_segment_ref: "terraform/personal/oidc.tf local.github_repos (the benjamin-blake entry)"
   target:
     owner: otl-labs
     owner_kind: organisation
     owner_numeric_id: >-
-      Read by the operator from the GitHub API at the pre_staged phase and written only into the
-      two local.github_repos lists, never here (GitHub numeric ids are public API values; Decision
-      172 precedent).
+      Read by the operator from the GitHub API during the pre_stage phase and written only into
+      the two local.github_repos lists, never here (GitHub numeric ids are public API values;
+      Decision 172 precedent).
     repository: ontheloop
     decided_by: "Decision 218"
   durable: >-
@@ -61,6 +76,7 @@ identity:
     immutable subject repo:OWNER@OWNER-ID/REPO@REPO-ID for any repository renamed or transferred
     after 2026-07-15). Transfer and rename are ONE operation, so exactly one new segment is staged.
   phase: pre_transfer
+  staged_phase: pre_staged
   phase_values: [pre_transfer, pre_staged, transferred, proven, predecessor_removed]
 
 plan_tier:
@@ -133,10 +149,13 @@ breakage_map:
       tf-gated-apply, which needs OIDC) and falls to the admin break-glass apply.
     fix: >-
       Add the target segment additively to BOTH lists before transfer: terraform/personal through
-      the PR -> tf-gated-apply path, terraform/bootstrap by the operator's out-of-band admin apply.
-      Exact match only, no wildcard (Decision 172 clause 3). Every sub site renders all five sub
-      forms from the list, including environment:tf-gated-apply (Decision 94), so the one new
-      entry covers them; the both-forms guard in the trust test stays intact.
+      the PR -> tf-gated-apply path for github_ci_branch and github_ci_pr, after an admin
+      split-apply of github_ci_planner and github_ci_deploy, whose trust the CI apply role may not
+      rewrite (Decision 143 clause 1; Decision 183 point 4); terraform/bootstrap by the operator's
+      out-of-band admin apply. Exact match only, no wildcard (Decision 172 clause 3). Every sub
+      site renders all five sub forms from the list, including environment:tf-gated-apply
+      (Decision 94), so the one new entry covers them; the both-forms guard in the trust test
+      stays intact.
     fix_phase: pre_staged
     actor: HUMAN
     rec: rec-3902
@@ -413,5 +432,5 @@ tracking:
     - "rec-3903: dependabot guard, owner-literal and descriptive sweep"
     - "the transfer runbook plan: freeze, transfer, checklist, proof"
   decision_172_review: >-
-    Decision 172's reversal stanza (review_by 2026-11-15) is re-armed or closed by the OIDC
-    pre-stage plan, since the transfer is its future-rename-not-prestaged trigger's subject.
+    Decision 172's reversal stanza was re-armed by the OIDC pre-stage plan (rec-3902); its
+    review_by and conditions live in the stanza itself.

@@ -4374,12 +4374,12 @@ This trust stays additive until superseded by a scoped contraction: (a) the two 
 
 ```yaml reversal-conditions
 decision: 172
-review_by: 2026-11-15
+review_by: 2027-04-30
 on_trigger: "re-decide via /plan whether contraction is evidenced; update or re-arm this stanza"
 conditions:
-  - id: legacy-entries-provably-dead-with-proof
+  - id: old-owner-segment-removed-with-proof
     kind: manual
-    description: "All five CI roles record a live RoleLastUsed timestamp under the immutable sub (this plan's VP steps 11-12) and github_ci_deploy's pending evidence closes -> contract local.github_repos to the immutable entry alone via a follow-on plan, never silently."
+    description: "The otl-labs transfer is proven (docs/contracts/github-org-transfer.yaml phases.prove) and every CI role records a live assume under the otl-labs segment -> remove the benjamin-blake segment from both local.github_repos lists in the predecessor_removal phase, never silently (clause 4)."
   - id: future-rename-not-prestaged
     kind: manual
     description: "A future repository rename/transfer lands without the new name's immutable entry pre-staged additively beforehand -> this Decision's playbook (point 2) was not followed; re-run the same recovery and file a process gap."
@@ -4399,6 +4399,12 @@ conditions:
 > owner-transfer case changes the OWNER login and numeric id, so the target owner's segment is
 > pre-staged additively before the transfer, exactly as for a rename. Only the repository id is
 > durable. Procedure: `docs/contracts/github-org-transfer.yaml`.
+
+> **Update (2026-10-20):** Reversal stanza re-armed by PLAN-oidc-owner-segment-prestage (rec-3902). Condition
+> `legacy-entries-provably-dead-with-proof` was discharged when PLAN-oidc-trust-contraction-closure (#925,
+> 2026-08-17) contracted both lists to the immutable entry; it is replaced by `old-owner-segment-removed-with-proof`,
+> the same clause-4 discipline applied to the benjamin-blake segment after the otl-labs transfer (Decision 218).
+> `review_by` moves from 2026-11-15 to 2027-04-30, matching Decision 218.
 
 ---
 
