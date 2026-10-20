@@ -113,7 +113,7 @@ PENDING_STATIC_ROWS: dict[str, str] = {
     "owner_literal_defaults": "rec-3903",
     "codeowners": "rec-3903",
     "descriptive_literals": "rec-3903",
-    "terraform_github_root": "rec-3136",
+    "terraform_github_root": "rec-4355",
 }
 
 
