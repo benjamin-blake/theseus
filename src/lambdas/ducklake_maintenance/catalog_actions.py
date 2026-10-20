@@ -113,6 +113,7 @@ def _check_ownership(report: prov.OwnershipReport) -> dict[str, Any]:
         "foreign_owned": report.foreign_owned,
         "schema_owner": report.schema_owner,
         "schema_owner_held": report.schema_owner_held,
+        "schema_owner_is_current_user": report.schema_owner_is_current_user,
         "scoped_create_on_schema": report.scoped_create_on_schema,
         "scoped_create_on_public": report.scoped_create_on_public,
     }
