@@ -187,7 +187,7 @@ verification_plan:
       want=p['execution_steps'][3].split(chr(10)*2,1)[1]; pick=lambda d: [l for l in d.splitlines() if l.startswith(('+','-')) and not l.startswith(('+++','---'))];
       got=subprocess.run(['git','diff','origin/main','--','terraform/github/CLAUDE.md'],capture_output=True,text=True,check=True).stdout;
       assert pick(want)==pick(got), 'CLAUDE.md differs from the approved diff'; print('CLAUDE_MD_APPROVED', len(pick(got)))"
-    expected: Prints CLAUDE_MD_APPROVED followed by the changed-line count (build PR only; the closure PR adds one line).
+    expected: Prints CLAUDE_MD_APPROVED followed by the changed-line count (build PR only; the closure PR changes no CLAUDE.md file).
     fix_if: >-
       Any difference is an unapproved wording change: restore the approved text. If main changed the same lines since
       planning, stop and escalate to the planning thread through the coordinator; never re-word to fit.
@@ -428,7 +428,8 @@ verification_plan:
     command: >-
       bin/venv-python -c "import yaml; c=yaml.safe_load(open('docs/contracts/github-org-transfer.yaml',encoding='utf-8'));
       rows=[r for r in c['evidence_ledger'] if r['gate']=='prerequisites.terraform-github-state-reconciled'];
-      assert len(rows)>=2, rows; row=[b for b in c['breakage_map'] if b['id']=='terraform_github_root'][0];
+      assert len(rows)>=2, rows; assert all(str(r.get('date','')).startswith('20') and '/actions/runs/' in str(r.get('evidence_path','')) for r in rows), rows;
+      row=[b for b in c['breakage_map'] if b['id']=='terraform_github_root'][0];
       assert row['rec'].startswith('rec-') and row['rec']!='rec-3136', row['rec'];
       assert any('PLAN-terraform-github-state-reconcile' in a['summary'] for a in c['amendment_log']);
       import importlib.util as u; m=None if u.find_spec('scripts.checks.contracts.validate_github_org_transfer') is None else __import__('scripts.checks.contracts.validate_github_org_transfer',fromlist=['x']);
@@ -510,7 +511,8 @@ test_obligations:
     command: >-
       bin/venv-python -c "import yaml; c=yaml.safe_load(open('docs/contracts/github-org-transfer.yaml',encoding='utf-8'));
       rows=[r for r in c['evidence_ledger'] if r['gate']=='prerequisites.terraform-github-state-reconciled'];
-      assert len(rows)>=2, rows; row=[b for b in c['breakage_map'] if b['id']=='terraform_github_root'][0];
+      assert len(rows)>=2, rows; assert all(str(r.get('date','')).startswith('20') and '/actions/runs/' in str(r.get('evidence_path','')) for r in rows), rows;
+      row=[b for b in c['breakage_map'] if b['id']=='terraform_github_root'][0];
       assert row['rec'].startswith('rec-') and row['rec']!='rec-3136', row['rec'];
       assert any('PLAN-terraform-github-state-reconcile' in a['summary'] for a in c['amendment_log']);
       import importlib.util as u; m=None if u.find_spec('scripts.checks.contracts.validate_github_org_transfer') is None else __import__('scripts.checks.contracts.validate_github_org_transfer',fromlist=['x']);
@@ -531,7 +533,8 @@ test_obligations:
     command: >-
       bin/venv-python -c "import yaml; c=yaml.safe_load(open('docs/contracts/github-org-transfer.yaml',encoding='utf-8'));
       rows=[r for r in c['evidence_ledger'] if r['gate']=='prerequisites.terraform-github-state-reconciled'];
-      assert len(rows)>=2, rows; row=[b for b in c['breakage_map'] if b['id']=='terraform_github_root'][0];
+      assert len(rows)>=2, rows; assert all(str(r.get('date','')).startswith('20') and '/actions/runs/' in str(r.get('evidence_path','')) for r in rows), rows;
+      row=[b for b in c['breakage_map'] if b['id']=='terraform_github_root'][0];
       assert row['rec'].startswith('rec-') and row['rec']!='rec-3136', row['rec'];
       assert any('PLAN-terraform-github-state-reconcile' in a['summary'] for a in c['amendment_log']);
       import importlib.util as u; m=None if u.find_spec('scripts.checks.contracts.validate_github_org_transfer') is None else __import__('scripts.checks.contracts.validate_github_org_transfer',fromlist=['x']);
@@ -579,7 +582,7 @@ context:
     Decision-scout verdict FLAGS_FOUND. CITE: 218, 172, 77, 126, 101, 201. NOTE on 119 (no local init of a
     third-party-provider root) resolved by verifying from the S3 state object, never terraform state list.
     Decisions triaged: 171 of 171. Roadmap items intersected: 2; CONFLICT: 0; RELATED: 2.
-  - "gates: decision-scout=FLAGS_FOUND (one NOTE, resolved); plan-critique=PROCEED after 6 rounds; round 6 on the escalated one-more-round option; amendment 2026-10-16: rounds 7 and 8 REVISE (fixed), round 9 PROCEED"
+  - "gates: decision-scout=FLAGS_FOUND (one NOTE, resolved); plan-critique=PROCEED after 6 rounds; round 6 on the escalated one-more-round option; amendment 2026-10-16: rounds 7 and 8 REVISE (fixed), round 9 PROCEED; amendment 2026-10-20: round 10 REVISE (fixed)"
   - >-
     V3 resolution: E0 (step 6) and paste 0 at the CI-green head (step 9, read-only, including the dry run of the import)
     are the pre-merge live evidence the implement V3 Merge Gate and the code-review V3 check require, by analogy with
@@ -590,7 +593,7 @@ context:
     Live facts 2026-10-15: five state instances keyed on agent-platform; bucket versioning Enabled; provider v6.12.1 Read
     sets name from d.Id(); Terraform 1.10.5 ignores an import block whose address is already in state (scratch test).
     Amendment 2026-10-16 (#1523 first-run findings): /mnt/project-files/terraform-github-state-fix/amendment-2026-10-16.md.
-    Amendment 2026-10-20 (closure CLAUDE.md line dropped: 15 bytes of budget left after #1562; the ledger carries it).
+    Amendment 2026-10-20 (closure CLAUDE.md line dropped for budget; ledger row 2 carries rec-3136's dated result): pending.
   - >-
     Venue: api.github.com is reachable from cloud sessions but the proxy substitutes its own GitHub credential (a bogus
     token returned 200; /actions/permissions 403), so plan, import and apply run only in AWS CloudShell. Import with the
@@ -973,7 +976,9 @@ execution_steps:
 
     Then, each outcome reported separately: github_readiness; rebase on origin/main; VP steps 2, 4 and 5; VP step 7 on
     the committed clean tree (full tier, then --verify-head); postflight evidence as in the build PR; push; the PR
-    (body ends with a standalone "Resolves: rec-3136" line in a Key: value block); subscribe_pr_activity; wait for its
+    (body ends with a standalone "Resolves: rec-3136" line in a Key: value block, and says that the dated result rec-3136's
+    verification text asks to record in CLAUDE.md is carried by evidence_ledger row 2, per the 2026-10-20 amendment);
+    subscribe_pr_activity; wait for its
     terraform-github-plan run (E3) and run VP step 15; code review in a fresh context; the operator's code-owner
     approval; squash-merge with commit_message = the PR body plus the git-ops attribution footer added at merge (the
     footer never goes in the PR body, which VP step 15 sweeps); VP step 16 from the closure job's event (never
