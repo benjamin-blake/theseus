@@ -312,3 +312,15 @@ def test_planner_and_apply_reads_list_the_new_roles() -> None:
         assert arn in oidc and arn in apply_reads, role
         assert reads_problems(oidc.replace(arn, "", 1), apply_reads) == [f"planner IAMPlatformRolesRead lacks {role}"]
         assert reads_problems(oidc, apply_reads.replace(arn, "", 1)) == [f"apply IAMRolesRead lacks {role}"]
+
+
+def test_maintenance_smoke_reads_only_the_smoke_maintainer_secret() -> None:
+    text = (_TERRAFORM_PERSONAL_DIR / "ducklake_maintenance_smoke.tf").read_text(encoding="utf-8")
+    assert "DUCKLAKE_DSN_SECRET_ID        = aws_secretsmanager_secret.ducklake_smoke_maintainer_dsn.name" in text
+    read = re.search(r'Sid\s*=\s*"NeonDsnRead".*?Resource\s*=\s*\[([^\]]*)\]', text, re.S)
+    assert read is not None
+    assert [r.strip() for r in read.group(1).split(",") if r.strip()] == [
+        "aws_secretsmanager_secret.ducklake_smoke_maintainer_dsn.arn"
+    ]
+    assert "ducklake_neon_catalog_dsn" not in text
+    assert "ducklake_telemetry_writer_dsn" not in text
