@@ -152,6 +152,42 @@ resource "aws_secretsmanager_secret" "ducklake_telemetry_writer_dsn" {
 }
 
 # ---------------------------------------------------------------------------
+# Production telemetry catalog logins (Decision 230) -- CONTAINERS only, no aws_secretsmanager_secret_version,
+# for the same SECRET-VALUE-OUT-OF-BAND reason as the writer secret above. Each value is written by the admin and
+# applied to its role by provision_telemetry_login.
+# ---------------------------------------------------------------------------
+
+resource "aws_secretsmanager_secret" "ducklake_telemetry_writer_prod_dsn" {
+  name        = "agent-platform-ducklake-telemetry-writer-prod-dsn"
+  description = "DuckLake telemetry writer scoped login for the production telemetry catalog (DML-only on the ducklake_telemetry metadata schema). Value written out of band by the admin. ROTATION: quarterly, manual, via provision_telemetry_login."
+
+  tags = {
+    Name    = "DuckLake Telemetry Writer Prod DSN"
+    Purpose = "Decision 230 scoped catalog login - runtime-fetch by the telemetry writer after the flip"
+  }
+}
+
+resource "aws_secretsmanager_secret" "ducklake_telemetry_reader_dsn" {
+  name        = "agent-platform-ducklake-telemetry-reader-dsn"
+  description = "DuckLake telemetry reader scoped login (SELECT-only on the ducklake_telemetry metadata schema). Value written out of band by the admin. ROTATION: quarterly, manual, via provision_telemetry_login."
+
+  tags = {
+    Name    = "DuckLake Telemetry Reader DSN"
+    Purpose = "Decision 230 scoped catalog login - runtime-fetch by the telemetry reader"
+  }
+}
+
+resource "aws_secretsmanager_secret" "ducklake_smoke_maintainer_dsn" {
+  name        = "agent-platform-ducklake-smoke-maintainer-dsn"
+  description = "DuckLake smoke maintainer scoped login (one owner-role grant for the smoke catalog maintenance function). Value written out of band by the admin. ROTATION: quarterly, manual, via provision_telemetry_login."
+
+  tags = {
+    Name    = "DuckLake Smoke Maintainer DSN"
+    Purpose = "Decision 230 scoped catalog login - runtime-fetch by the smoke maintenance function"
+  }
+}
+
+# ---------------------------------------------------------------------------
 # Outputs -- consumed by the T2.16b smoke test + the T2.17 Lambda runtime.
 # ---------------------------------------------------------------------------
 

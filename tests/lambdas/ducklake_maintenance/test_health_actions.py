@@ -94,6 +94,27 @@ def test_action_catalog_stats_success():
     assert "CatalogFileColumnStatsRows" in metric_names
 
 
+def test_catalog_stats_emits_metrics_only_for_the_ops_catalog():
+    """A measurement read of another catalog returns the same body and adds nothing to the undimensioned ops series."""
+    stats = {"ok": True, "catalog_metadata_bytes": 5, "file_column_stats_rows_est": 9}
+    for schema in ("ducklake_smoke", "ducklake_telemetry"):
+        with (
+            patch.object(ha.rt, "fetch_dsn", return_value=_FULL_DSN),
+            patch.object(ha.maint, "catalog_stats", return_value=stats),
+            patch.object(_shared, "_emit_maintenance_metric") as mock_emit,
+        ):
+            result = ha.action_catalog_stats({"meta_schema": schema}, None)
+        assert result == stats
+        mock_emit.assert_not_called()
+    with (
+        patch.object(ha.rt, "fetch_dsn", return_value=_FULL_DSN),
+        patch.object(ha.maint, "catalog_stats", return_value=stats),
+        patch.object(_shared, "_emit_maintenance_metric") as mock_emit,
+    ):
+        ha.action_catalog_stats({"meta_schema": "ducklake_ops"}, None)
+    assert [c.args[0] for c in mock_emit.call_args_list] == ["CatalogMetadataBytes", "CatalogFileColumnStatsRows"]
+
+
 def test_action_catalog_stats_requires_meta_schema():
     """No-arg invoke is refused -- catalog_stats needs an explicit meta_schema (no production default)."""
     with pytest.raises(DuckLakeRuntimeError, match="meta_schema"):

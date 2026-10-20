@@ -182,8 +182,7 @@ locals {
           "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-writer:*",
           "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-reader",
           "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-reader:*",
-          "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-telemetry-writer",
-          "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-telemetry-writer:*",
+          "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-telemetry-*",
         ]
         Condition = {
           BoolIfExists = {
@@ -210,8 +209,7 @@ locals {
           "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-writer:*",
           "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-reader",
           "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-reader:*",
-          "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-telemetry-writer",
-          "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-telemetry-writer:*",
+          "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-telemetry-*",
         ]
       },
       {
@@ -233,11 +231,75 @@ locals {
               "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-writer:*",
               "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-reader",
               "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-reader:*",
-              "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-telemetry-writer",
-              "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-telemetry-writer:*",
+              "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-telemetry-*",
             ]
           }
         }
+      },
+      {
+        # Decision 230 cl.5: the production telemetry catalog's data prefix and its blob root are reachable only by
+        # the roles that serve or maintain that catalog. PlatformDev and the CI roles carry this boundary, so their
+        # bucket-wide S3 grants are fenced here without an identity-side edit. The roles may not exist yet, which
+        # IAM accepts.
+        Sid    = "DenyTelemetryProdPrefixIO"
+        Effect = "Deny"
+        Action = [
+          "s3:GetObject",
+          "s3:GetObjectVersion",
+          "s3:PutObject",
+          "s3:DeleteObject"
+        ]
+        Resource = [
+          "arn:aws:s3:::agent-platform-data-lake/ducklake-telemetry/*",
+          "arn:aws:s3:::agent-platform-data-lake/telemetry-blobs/ducklake_telemetry/*"
+        ]
+        Condition = {
+          ArnNotLike = {
+            "aws:PrincipalArn" = [
+              "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-telemetry-writer",
+              "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-telemetry-reader",
+              "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-maintenance"
+            ]
+          }
+        }
+      },
+      {
+        # Presigned PUTs execute as the signing role, so only the writer and its smoke twin may put a blob.
+        Sid      = "DenyTelemetryBlobPut"
+        Effect   = "Deny"
+        Action   = ["s3:PutObject"]
+        Resource = ["arn:aws:s3:::agent-platform-data-lake/telemetry-blobs/*"]
+        Condition = {
+          ArnNotLike = {
+            "aws:PrincipalArn" = [
+              "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-telemetry-writer",
+              "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-telemetry-writer-smoke"
+            ]
+          }
+        }
+      },
+      {
+        # The blob sweep is a plain DeleteObject from the admin maintenance role; the bucket's noncurrent
+        # lifecycle reclaims the bytes.
+        Sid      = "DenyTelemetryBlobDelete"
+        Effect   = "Deny"
+        Action   = ["s3:DeleteObject"]
+        Resource = ["arn:aws:s3:::agent-platform-data-lake/telemetry-blobs/*"]
+        Condition = {
+          ArnNotLike = {
+            "aws:PrincipalArn" = ["arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-maintenance"]
+          }
+        }
+      },
+      {
+        # No bounded identity deletes an object version of telemetry data, so the lifecycle is the only reclaimer.
+        Sid    = "DenyTelemetryVersionDelete"
+        Effect = "Deny"
+        Action = ["s3:DeleteObjectVersion"]
+        Resource = [
+          "arn:aws:s3:::agent-platform-data-lake/telemetry-blobs/*",
+          "arn:aws:s3:::agent-platform-data-lake/ducklake-telemetry/*"
+        ]
       }
     ]
   })

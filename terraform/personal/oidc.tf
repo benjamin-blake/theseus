@@ -200,6 +200,10 @@ data "aws_iam_policy_document" "ci_full_refresh_read" {
       "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-maintenance-smoke",
       # Telemetry writer exec role (same refresh-read class as the maintenance-smoke entry above).
       "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-telemetry-writer",
+      # Pre-staged for PLAN-telemetry-reader-and-smoke-twin's creates (the telemetry-writer precedent), so the
+      # planner's refresh reads never fail closed.
+      "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-telemetry-writer-smoke",
+      "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-telemetry-reader",
       # T2.43 gap (same class as rec-2688 for ducklake-deploy): these prod-class execution
       # roles must be refresh-readable by github_ci_planner once they enter terraform/personal
       # state, or every subsequent plan against this module fails closed with AccessDenied.

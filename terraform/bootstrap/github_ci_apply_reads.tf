@@ -108,6 +108,9 @@ locals {
           # agent-platform-ducklake-telemetry-writer; without this entry the gated apply's own
           # iam:GetRole after that create, and every later plan's refresh, fail closed.
           "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-telemetry-writer",
+          # Same pre-stage for PLAN-telemetry-reader-and-smoke-twin's creates.
+          "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-telemetry-writer-smoke",
+          "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-telemetry-reader",
         ]
       },
       {

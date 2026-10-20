@@ -97,6 +97,55 @@ c1, c10 (cl.3); c6 (cl.4); the parked status -- validate_platform_roadmap.
 
 ---
 
+## Decision 230: Production telemetry gets its own catalog -- an owner role per catalog, one login per catalog binding, operator admin verbs to create it, and only the telemetry functions on its prefixes (amends Decision 216 clauses 1 and 3, Decision 213 clauses 1, 3 and 5, Decision 126 and Decision 81 clause 6) (Decided)
+
+```yaml
+number: 230
+status: Decided
+decided_date: "2026-10-20"
+amends: [81, 126, 213, 216]
+significance:
+  value: numbered_decision
+  justification: "Durable catalog-identity and data-plane commitments amending Decisions 216, 126, 213 and 81; ducklake_maintenance.yaml and deploy-paths.yaml can index the procedures but cannot widen a ratified rule or carve-out, nor can an amendment_forms annotation (Decision 204 cl.4 precedent)."
+```
+
+**Status:** Decided
+**Date:** 2026-10-20
+**Warehouse ID:** dec-230 (per Decision 84 backfill)
+
+**Problem:** Real sessions land in the disposable smoke catalog; production needs its own, but Decision 216 left creating it an operator step with no carve-out, names one owner login that reaches every catalog, and leaves that login with the CI-reachable smoke maintenance function.
+
+**Decision:**
+1. Catalog. Production telemetry is its own DuckLake catalog: schema ducklake_telemetry in the existing catalog database, data under ducklake-telemetry/ (a sibling of ducklake/, never inside it) and blobs under telemetry-blobs/ducklake_telemetry/. It starts empty; smoke keeps its rows.
+2. Owner per catalog (amends Decision 216 cl.1 for two catalogs). ducklake_telemetry and ducklake_smoke are each owned, schema and every relation, by a NOLOGIN role (ducklake_telemetry_owner, ducklake_smoke_owner); ducklake_ops keeps the shared owner login. That login is a member of each role; the owner verbs and their deploy-paths re-runs normalise relations to the role, and a per-catalog DDL login takes it as its session role. ducklake_maintenance_smoke moves to ducklake_smoke_maintainer, a member of the smoke role only, closing Decision 216's CI-path residual at the database layer.
+3. One login per catalog binding (amends Decision 213 cl.3): ducklake_telemetry_writer for the smoke binding (the writer until the flip, then its smoke twin) and ducklake_telemetry_writer_prod for production each hold, on their own schema only, the DML measured from the writer verbs (rec-4297; no UPDATE or DELETE on catalog structure, so a DuckLake DROP TABLE fails); ducklake_telemetry_reader holds SELECT on ducklake_telemetry only, read-only. Each has its own secret and connection limit, rendered from one closed table of versioned SQL templates.
+4. Admin verbs (amends Decision 126's admin tier, Decision 216 cl.3, Decision 213 cl.5 and, for these verbs, Decision 81 cl.6): ducklake_maintenance gains provision_catalog_owner (create or adopt a catalog's owner role, the two catalogs only; a ducklake_smoke-only release mode returns that schema to the shared owner login, the switch's rollback) and provision_telemetry_catalog (ducklake_telemetry only: owner role, DuckLake initialisation, create_telemetry_tables, counter seed, ownership report; never the stats index, Decision 214 cl.2); provision_telemetry_login serves the closed table. Re-running provision_telemetry_catalog is Decision 222 cl.3's production column add. All are operator-invoked; an ADMIN-container agent may write a login's secret and invoke them (never catalog_stats or ensure_catalog_indexes) only under explicit human direction, presenting each mutation (Decision 204 cl.2 shape).
+5. Data-plane fence (amends Decision 213 cl.1's naming). The permissions boundary denies object reads, writes and deletes under the production telemetry prefixes to every bounded principal except the telemetry writer, telemetry reader and admin maintenance roles; PutObject under telemetry-blobs/ to all but the telemetry writer roles; DeleteObject there to all but admin maintenance; and DeleteObjectVersion under both to all. Decision 213 cl.1's denies name every telemetry function by one agent-platform-ducklake-telemetry-* pattern. PlatformAdmin stays the unbounded operator (Decision 144 cl.3). Decision 213's "before 2c" residuals rec-4205 and rec-4206 concern the shared ops writer, not this path; the CI write narrowing plan owns them.
+
+**Rationale:** An owner role per catalog makes "which catalog can this credential change" a Postgres fact, not an env pin (Decision 143 cl.1), and membership keeps owner-login paths working without pg_read_all_data. The boundary is the layer every bounded principal, PlatformDev included, carries and agents cannot edit; a bucket-policy Deny is editable in the merge loop and risks lockout.
+
+**Coverage (Decision 181 cl.2):** owner rule -- the ownership report on every smoke deploy and in provision_telemetry_catalog's response; production ownership after an extension migration -- the rerun of the owner verb, unenforced between runs; logins -- the per-login scope probe and tests/common/test_ducklake_telemetry_writer_least_privilege.py (real Postgres, run before merge; unenforced in CI until rec-4071); fence -- tests/checks/iam_tf/test_telemetry_prefix_fence.py and the post-apply simulate rows; a production column add -- unenforced until the flip's light gate checks drift.
+
+```yaml reversal-conditions
+decision: 230
+review_by: 2027-04-30
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: owner-role-refused
+    kind: manual
+    description: "The catalog provider refuses the owner-role membership, ownership transfer or session-role default for a non-superuser owner: the shared owner login owns ducklake_telemetry with default privileges to its logins, dated on Decision 216."
+  - id: measured-grants-drift
+    kind: manual
+    description: "A DuckLake extension bump changes the statements a writer verb issues: re-measure clause 3's grants before the bump merges."
+  - id: boundary-headroom
+    kind: manual
+    description: "The boundary's minified size passes 5,632 bytes: re-decide where clause 5's fence lives."
+```
+
+**Related:** Decision 216, 213, 81, 214, 222, 204, 143, 144, 202, 126, 88, 181.
+
+---
+
 ## Decision 229: Persona-first migration -- each persona ships as its own item to an interim coordinator before any loop host, personas never invoke personas, the operator only launches compute-plane personas, and T4.15 becomes implement_agent on Fargate (amends Decision 217 clause 8 and Decision 205 clauses 1 and 6) (Decided)
 
 ```yaml
@@ -1031,6 +1080,8 @@ conditions:
 
 [Amendment 2026-10-17, Decision 222: cl.2 and cl.3 also cover adding declared nullable columns on the smoke catalog.]
 
+[Amendment 2026-10-20, Decision 230: for ducklake_smoke and ducklake_telemetry, cl.1's owner is a NOLOGIN owner role per catalog and cl.3's production step is provision_telemetry_catalog under a carve-out, the CI-path residual closed by ducklake_smoke_maintainer.]
+
 ---
 
 ## Decision 215: The full local recommendations cache is retired; completeness reads are bounded named verbs that fail closed (amends Decision 88 clause 1(ii) and Decision 103) (Decided)
@@ -1200,6 +1251,8 @@ conditions:
 > **Update (2026-10-09):** PLAN-url-only-invoke-guard step 8 measured that a principal whose own InvokeFunction grant is URL-only sees 'no identity-based policy allows' on a direct invoke, never the boundary's name, so the telemetry writer's deploy gate asserts AccessDenied for its own principal. The boundary Deny is proven by tests/checks/iam_tf/test_url_only_invoke_guard.py on the policy text, which names the telemetry writer, and by the post-apply simulate's url-only rows on the shared writer's ARN (same statement, explicitDeny). The reversal stanza's condition-key-semantics-change was re-armed to match.
 
 [Amendment 2026-10-14, Decision 216: cl.3's admin step is carved out for the disposable smoke catalog; the reversal condition scoped-login-blocks-verbs fired and was resolved without widening the grant set.]
+
+[Amendment 2026-10-20, Decision 230: cl.1's denies name the telemetry functions by one pattern, cl.3's logins are one per catalog binding from a closed table, cl.5's carve-out covers the two catalog verbs and the four logins, and rec-4205 and rec-4206 concern the shared ops writer and stay with the CI write narrowing plan.]
 
 ---
 
@@ -7094,6 +7147,8 @@ Decision 204's: an ADMIN-container agent may write the telemetry writer's scoped
 ducklake_maintenance's provision_telemetry_login only under explicit human direction, presenting each
 mutation. `deploy-paths.yaml`'s admin_out_of_band.scoped_login_provisioning indexes it.]
 
+[Amendment 2026-10-20, Decision 230: the admin tier admits provision_catalog_owner and provision_telemetry_catalog for an ADMIN-container agent under explicit human direction.]
+
 ---
 
 ## Decision 125: Ratify decoupling DuckLake Lambda code deploys from terraform/personal infra apply (environment-taxonomy.md section 5 conformance) (Decided)
@@ -9527,6 +9582,8 @@ maintenance_smoke, catalog_dr and telemetry_writer (catalog_dr was never listed 
 as one write-time enforcement chokepoint per table, the closed boundary covering both the shared writer and
 the telemetry writer; clause 6's "no LLM / agent invocation" carve-out gains a third maintenance verb,
 provision_telemetry_login, invocable by an ADMIN-container agent only under explicit human direction.]
+
+[Amendment 2026-10-20, Decision 230: cl.6's agent carve-outs gain provision_catalog_owner and provision_telemetry_catalog under explicit human direction.]
 
 ---
 

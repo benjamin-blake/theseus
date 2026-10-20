@@ -17,6 +17,7 @@ locals {
   ducklake_writer_function           = "agent-platform-ducklake-writer"
   ducklake_reader_function           = "agent-platform-ducklake-reader"
   ducklake_telemetry_writer_function = "agent-platform-ducklake-telemetry-writer"
+  ducklake_telemetry_reader_function = "agent-platform-ducklake-telemetry-reader"
 
   platform_dev_runtime_policy_json = jsonencode({
     Version = "2012-10-17"
@@ -48,7 +49,7 @@ locals {
       {
         # T2.19 recs cutover: the ops portal runs as PlatformDev at RUNTIME and reaches the closed
         # DuckLake boundary by SigV4-invoking the writer/reader AWS_IAM Function URLs. Decision 213
-        # adds the telemetry writer. Two statements because the permissions boundary denies a direct
+        # adds the telemetry writer and reader. Two statements because the permissions boundary denies a direct
         # invoke (DenyDuckLakeDirectInvoke) and InvokeFunction here carries Bool
         # lambda:InvokedViaFunctionUrl = true, so it authorizes only the URL path.
         Sid    = "DuckLakeInvokeUrl"
@@ -61,6 +62,8 @@ locals {
           "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:${local.ducklake_reader_function}:*",
           "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:${local.ducklake_telemetry_writer_function}",
           "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:${local.ducklake_telemetry_writer_function}:*",
+          "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:${local.ducklake_telemetry_reader_function}",
+          "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:${local.ducklake_telemetry_reader_function}:*",
         ]
       },
       {
@@ -74,6 +77,8 @@ locals {
           "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:${local.ducklake_reader_function}:*",
           "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:${local.ducklake_telemetry_writer_function}",
           "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:${local.ducklake_telemetry_writer_function}:*",
+          "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:${local.ducklake_telemetry_reader_function}",
+          "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:${local.ducklake_telemetry_reader_function}:*",
         ]
         Condition = {
           Bool = {

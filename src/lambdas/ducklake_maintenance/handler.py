@@ -20,7 +20,8 @@ boundary now admits recs writes only via the portal `file_rec`/`update_rec` -> w
 Decision 81 cl.7.)
 
 The scheduled path is agent-free; an ADMIN-container agent may invoke the partition-layout verbs (Decision 204)
-and provision_telemetry_login (Decision 213) only under explicit human direction (CD.33 clause 5 / Decision 81 cl.6).
+and provision_telemetry_login (Decision 213), provision_catalog_owner and provision_telemetry_catalog (Decision 230) only under
+explicit human direction (CD.33 clause 5 / Decision 81 cl.6).
 Singleton enforced by reserved_concurrent_executions=1 (Decision 81 clause 6; see Terraform).
 
 See src/common/ducklake_maintenance.py::MAINTENANCE_SCOPE_NOTE.
@@ -37,7 +38,7 @@ from src.common import ducklake_gc_ops as gc_ops_body
 from src.common import ducklake_maintenance as maint
 from src.common import ducklake_maintenance_scope as scope
 from src.common import ducklake_runtime as rt
-from src.lambdas.ducklake_maintenance import health_actions, index_actions, login_actions, partition_actions
+from src.lambdas.ducklake_maintenance import catalog_actions, health_actions, index_actions, login_actions, partition_actions
 from src.lambdas.ducklake_maintenance._shared import (  # noqa: F401 -- DATA_PATH re-bound for existing callers
     DATA_PATH,
     EXTENSION_DIRECTORY,
@@ -511,6 +512,8 @@ _ACTIONS: dict[str, Any] = {
     "reconcile_partitions": partition_actions.action_reconcile_partitions,
     "rewrite_partition_layout": partition_actions.action_rewrite_partition_layout,
     "provision_telemetry_login": login_actions.action_provision_telemetry_login,
+    "provision_catalog_owner": catalog_actions.action_provision_catalog_owner,
+    "provision_telemetry_catalog": catalog_actions.action_provision_telemetry_catalog,
     "ensure_catalog_indexes": index_actions.action_ensure_catalog_indexes,
 }
 

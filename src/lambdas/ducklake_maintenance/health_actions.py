@@ -24,6 +24,9 @@ def action_catalog_stats(event: dict[str, Any], _con: Any) -> dict[str, Any]:
     the supported measurement path for the neon-egress budget (the DR bucket + direct CloudWatch reads
     are IAM-blocked from the dev role by design). Read-only: no merge/expire/cleanup/orphan.
 
+    The two metrics are the undimensioned ops series, so they are emitted only for the ops catalog; any other schema
+    (a measurement read of ducklake_smoke or ducklake_telemetry) returns the same body and emits nothing.
+
     Expected event: {"action": "catalog_stats", "meta_schema": "ducklake_ops"}
     """
     raw_schema = event.get("meta_schema")
@@ -35,6 +38,8 @@ def action_catalog_stats(event: dict[str, Any], _con: Any) -> dict[str, Any]:
     ops_filter = event.get("ops_table_filter", "ops_%")
     result = maint.catalog_stats(meta_schema=meta_schema, dsn=rt.fetch_dsn(), ops_table_filter=ops_filter)
 
+    if meta_schema != rt.META_SCHEMA:
+        return result
     _shared._emit_maintenance_metric("CatalogMetadataBytes", float(result.get("catalog_metadata_bytes") or 0))
     if result.get("file_column_stats_rows_est") is not None:
         _shared._emit_maintenance_metric("CatalogFileColumnStatsRows", float(result["file_column_stats_rows_est"]))

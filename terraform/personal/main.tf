@@ -226,6 +226,30 @@ resource "aws_s3_bucket_lifecycle_configuration" "data_lake" {
       days_after_initiation = 1
     }
   }
+
+  # Production telemetry catalog data (Decision 230). A sibling of ducklake/, not inside it: the ops catalog's
+  # catalog-wide orphan cleanup must never see these files, and the trailing slash keeps this prefix apart from
+  # ducklake/ and ducklake-neon-smoke/. Same noncurrent-only shape: DuckLake addresses Parquet by key.
+  rule {
+    id     = "ducklake-telemetry-noncurrent-reclaim"
+    status = "Enabled"
+
+    filter {
+      prefix = "${local.ducklake_telemetry_data_prefix}/"
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 30
+    }
+
+    expiration {
+      expired_object_delete_marker = true
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
+    }
+  }
 }
 
 # ---------------------------------------------------------------------------
