@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts.checks import _common, registry
+from scripts.checks.contracts import _retired_identity
 
 _CONTRACT = "docs/contracts/github-org-transfer.yaml"
 _TRUST_ROOTS = ("terraform/personal/oidc.tf", "terraform/bootstrap/github_ci_apply.tf")
@@ -106,13 +107,10 @@ def _evaluate_oidc_trust_segment(contract: dict, repo_root: Path, failed: list[s
 
 ROW_EVALUATORS: dict[str, Callable[[dict, Path, list[str]], None]] = {
     "oidc_trust_segment": _evaluate_oidc_trust_segment,
+    **_retired_identity.ROW_EVALUATORS,
 }
 
 PENDING_STATIC_ROWS: dict[str, str] = {
-    "dependabot_repository_guard": "rec-3903",
-    "owner_literal_defaults": "rec-3903",
-    "codeowners": "rec-3903",
-    "descriptive_literals": "rec-3903",
     "terraform_github_root": "rec-3136",
 }
 
