@@ -145,7 +145,7 @@ acceptance_criteria:
 - >-
   The telemetry completeness monitor treats only otl-labs/ontheloop sessions as in scope, and the sweep runs only
   once the monitor's default judged day (UTC today minus 2) is after the transfer's last evidence_ledger day, so no
-  judged window holds pre-transfer sessions.
+  default judged window holds pre-transfer sessions.
 - The two verification-registry rows change in the same PR as the text they assert; each fails on origin/main and passes on HEAD.
 - rec-3903's acceptance is the operator-approved oracle, it holds at the closing sha, and rec-3903 is closed.
 verification_plan:
@@ -334,7 +334,7 @@ verification_plan:
 - step: 13
   phase: pre-deploy
   action: >-
-    Each text-only swept file names otl-labs/ontheloop and no longer the retired full name (workflow comment,
+    Each swept file checked here names otl-labs/ontheloop and no longer the retired full name (workflow comment,
     package metadata, roadmap criterion, licence-check docstring, setup-script comments, completeness monitor tuple and
     its test fixture).
   command: >-
@@ -436,17 +436,18 @@ verification_plan:
 - step: 18
   phase: pre-deploy
   action: >-
-    The comment-only files change exactly their approved lines: bin/setup-cloud-env.sh two lines,
-    scripts/checks/hygiene/validate_licence_consistency.py four lines, each as a one-for-one replacement.
+    The comment-only files change exactly their approved lines (bin/setup-cloud-env.sh two lines,
+    scripts/checks/hygiene/validate_licence_consistency.py four lines) and scripts/telemetry_verify/completeness.py
+    only its REPOSITORIES line, each as a one-for-one replacement.
   command: >-
     bin/venv-python -c "import subprocess; c=lambda f:[l for l in subprocess.check_output(['git','diff','-U0','origin/main','--',f],text=True,encoding='utf-8').splitlines() if l[:1] in '+-' and l[:3] not in ('+++','---')];
-    a=c('bin/setup-cloud-env.sh'); b=c('scripts/checks/hygiene/validate_licence_consistency.py');
-    n=lambda d,k:sum(1 for l in d if l[0]==k); print('CHANGED', n(a,'-'), n(a,'+'), n(b,'-'), n(b,'+'));
-    assert (n(a,'-'),n(a,'+'))==(2,2) and (n(b,'-'),n(b,'+'))==(4,4)"
-  expected: Exit 0 and CHANGED 2 2 4 4 printed.
+    a=c('bin/setup-cloud-env.sh'); b=c('scripts/checks/hygiene/validate_licence_consistency.py'); m=c('scripts/telemetry_verify/completeness.py');
+    n=lambda d,k:sum(1 for l in d if l[0]==k); print('CHANGED', n(a,'-'), n(a,'+'), n(b,'-'), n(b,'+'), n(m,'-'), n(m,'+'));
+    assert (n(a,'-'),n(a,'+'))==(2,2) and (n(b,'-'),n(b,'+'))==(4,4) and (n(m,'-'),n(m,'+'))==(1,1)"
+  expected: Exit 0 and CHANGED 2 2 4 4 1 1 printed.
   fix_if: >-
-    Any other count means a line outside the approved comment edits changed: restore it. These files carry no other
-    sweep change.
+    Any other count means a line outside the approved comment edits or the REPOSITORIES line changed: restore it.
+    These files carry no other sweep change.
   hermetic: true
   graduation: waive
   graduation_waiver_reason: A PR-relative one-time diff bound; it is vacuous once merged.
@@ -459,14 +460,15 @@ verification_plan:
     scopes sessions by clone URL; deliberately re-judging an earlier day after the sweep undercounts, never alarms).
   command: >-
     bin/venv-python -c "import yaml,datetime; c=yaml.safe_load(open('docs/contracts/github-org-transfer.yaml',encoding='utf-8'));
-    d=sorted(str(e.get('date'))[:10] for e in (c.get('evidence_ledger') or []) if str(e.get('phase')) in ('transfer','transferred')); assert d, 'no transfer entry in evidence_ledger';
-    assert 'timedelta(days=2)' in open('scripts/telemetry_verify/__main__.py',encoding='utf-8').read(), 'monitor default lag changed';
-    j=(datetime.datetime.now(datetime.timezone.utc).date()-datetime.timedelta(days=2)).isoformat(); print('LAST_TRANSFER_DAY', d[-1], 'DEFAULT_JUDGED_DAY', j); assert j>d[-1], 'judged window not yet past the transfer'"
+    d=sorted(datetime.date.fromisoformat(str(e.get('date'))[:10]) for e in (c.get('evidence_ledger') or []) if str(e.get('phase')) in ('transfer','transferred')); assert d, 'no transfer entry in evidence_ledger';
+    assert 'now.date() - timedelta(days=2)' in open('scripts/telemetry_verify/__main__.py',encoding='utf-8').read(), 'monitor default lag changed';
+    j=datetime.datetime.now(datetime.timezone.utc).date()-datetime.timedelta(days=2); print('LAST_TRANSFER_DAY', d[-1], 'DEFAULT_JUDGED_DAY', j); assert j>d[-1], 'judged window not yet past the transfer'"
   expected: Exit 0 and LAST_TRANSFER_DAY earlier than DEFAULT_JUDGED_DAY printed.
   fix_if: >-
     'judged window not yet past the transfer' means the sweep is early for the monitor: wait and re-run the next UTC
-    day. 'no transfer entry' or 'monitor default lag changed' means the premise moved: STOP and route to the planning
-    thread through the coordinator; never edit the contract or the monitor's lag from this plan.
+    day. Any other failure ('no transfer entry', 'monitor default lag changed', or a ledger date that does not parse)
+    means the premise moved: STOP and route to the planning thread through the coordinator; never edit the contract or
+    the monitor's lag from this plan.
   hermetic: false
   graduation: not-applicable
 test_obligations:
@@ -607,7 +609,7 @@ context:
   publisher, old PATs, classic terraform/github PAT, plan App and personal Claude App removals come first.
 - >-
   Survivors (pinned in _retired_identity.py with reasons): the transfer contract (identity record), the guard and its
-  tests, and test fixtures (licence-check later slugs, captured run URLs, budget_ingest's synthetic repository).
+  tests, and test fixtures (licence-check later slugs, captured or synthetic run URLs, budget_ingest's repository).
 - >-
   rec-3903's current acceptance can never pass (it matches the person comment in tf-gated-apply-prototype.yml and
   the agent-platform pins); execution rewrites it via update_rec BEFORE the merge (Decision 201 keys the closure
