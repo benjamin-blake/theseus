@@ -11,13 +11,17 @@
 # The account ID in ARNs comes from var.account_id (gitignored tfvars); never a committed literal.
 
 locals {
-  # CONTRACTED STEADY STATE (Decision 172 / PLAN-oidc-trust-contraction-closure): the dual-slug
-  # transition (Decision 171 / PLAN-repo-rename-relicense) is over. Both pre-rename name-only
-  # entries were unmintable post-rename and have been removed with live proof -- all five CI
-  # roles verified assuming under the immutable subject before this contraction landed. Every sub
-  # site below MUST iterate this list -- never re-introduce a scalar `github_repo` local. This
-  # list MUST stay identical to terraform/bootstrap's; the two roots cannot reference each other,
-  # so agreement is enforced by tests/checks/iam_tf/test_oidc_trust_slug_invariants.py.
+  # PRE-STAGED STATE (Decision 218 / PLAN-oidc-owner-segment-prestage): the list carries the current
+  # segment and, additively beside it, the otl-labs/ontheloop target segment, so the GitHub
+  # organisation transfer cannot lock CI out. The current segment is removed only by the contract's
+  # predecessor_removal phase, with live proof of the target first. Every sub site below MUST iterate
+  # this list -- never re-introduce a scalar `github_repo` local. This list MUST stay identical to
+  # terraform/bootstrap's; the two roots cannot reference each other, so agreement is enforced by
+  # tests/checks/iam_tf/test_oidc_trust_slug_invariants.py and validate_github_org_transfer.
+  #
+  # CONTRACTED STEADY STATE (history, Decision 172 / PLAN-oidc-trust-contraction-closure): the
+  # dual-slug transition (Decision 171 / PLAN-repo-rename-relicense) ended when both pre-rename
+  # name-only entries, unmintable post-rename, were removed with live proof.
   #
   # IMMUTABLE-SUBJECT ENTRY (Decision 172): a repo SEGMENT of the form
   # "OWNER@OWNER-ID/REPO@REPO-ID", never a full "repo:" sub prefix (every sub site below already
@@ -32,6 +36,7 @@ locals {
   # this contraction itself followed.
   github_repos = [
     "benjamin-blake@217728084/theseus@1252427466",
+    "otl-labs@330441623/ontheloop@1252427466",
   ]
 
   # T2.49 c2 hardening item 3 (single-source, DEP-12 / Decision 144): the RESERVED session-name

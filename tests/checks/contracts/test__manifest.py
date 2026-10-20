@@ -154,6 +154,21 @@ class TestRoadmapArchiveGlobs:
         assert not any(fnmatch("scripts/roadmap/plan_audit.py", glob) for glob in self._globs(name))
 
 
+class TestGithubOrgTransferPromotedUngated:
+    """The org-transfer evaluator reads the contract plus both trust files (and, once the literal sweep
+    extends it, every tracked file), so it is ungated like validate_portal_drift."""
+
+    def test_is_dispatched_in_pre_and_full(self) -> None:
+        pre_names = {step.name for step in registry.pre_sequence() if step.kind == "check"}
+        full_names = {step.name for step in registry.full_sequence() if step.kind == "check"}
+        assert "validate_github_org_transfer" in pre_names
+        assert "validate_github_org_transfer" in full_names
+
+    def test_declares_no_pre_globs(self) -> None:
+        entry = next(e for e in _manifest.ENTRIES if e.name == "validate_github_org_transfer")
+        assert entry.pre_globs is None
+
+
 class TestPortalDriftPromotedUngated:
     """Promoted into --pre WITHOUT globs, deliberately. Every answer_loci path it resolves comes
     OUT of EVALUATION-PROMPTS.yaml at run time and may name any path in the repo, so no static

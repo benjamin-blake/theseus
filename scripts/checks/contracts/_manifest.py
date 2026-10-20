@@ -99,6 +99,15 @@ ENTRIES: tuple[Entry, ...] = (
         full_segment="full_after_lint",
     ),
     Entry(
+        name="validate_github_org_transfer",
+        module="scripts.checks.contracts.validate_github_org_transfer",
+        attr="validate_github_org_transfer",
+        # UNGATED deliberately (the validate_portal_drift precedent): the literal-sweep extension reads
+        # every tracked file, which no static glob encloses; today it reads three files, so it costs nothing.
+        pre=True,
+        full_segment="full_after_lint",
+    ),
+    Entry(
         name="validate_read_engine_verbs",
         module="scripts.checks.contracts.validate_read_engine_verbs",
         attr="validate_read_engine_verbs",
