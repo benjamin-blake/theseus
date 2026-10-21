@@ -169,6 +169,20 @@ class TestGithubOrgTransferPromotedUngated:
         assert entry.pre_globs is None
 
 
+class TestAccountCredentialInventoryPromoted:
+    """The inventory's refs may name any repository YAML file, so the check is ungated like the org-transfer one."""
+
+    def test_is_dispatched_in_pre_and_full(self) -> None:
+        pre_names = {step.name for step in registry.pre_sequence() if step.kind == "check"}
+        full_names = {step.name for step in registry.full_sequence() if step.kind == "check"}
+        assert "validate_account_credential_inventory" in pre_names
+        assert "validate_account_credential_inventory" in full_names
+
+    def test_declares_no_pre_globs(self) -> None:
+        entry = next(e for e in _manifest.ENTRIES if e.name == "validate_account_credential_inventory")
+        assert entry.pre_globs is None
+
+
 class TestPortalDriftPromotedUngated:
     """Promoted into --pre WITHOUT globs, deliberately. Every answer_loci path it resolves comes
     OUT of EVALUATION-PROMPTS.yaml at run time and may name any path in the repo, so no static

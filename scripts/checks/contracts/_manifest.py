@@ -108,6 +108,15 @@ ENTRIES: tuple[Entry, ...] = (
         full_segment="full_after_lint",
     ),
     Entry(
+        name="validate_account_credential_inventory",
+        module="scripts.checks.contracts.validate_account_credential_inventory",
+        attr="validate_account_credential_inventory",
+        # UNGATED deliberately (the validate_github_org_transfer precedent): the inventory's refs may name any
+        # repository YAML file, so no static glob set is complete.
+        pre=True,
+        full_segment="full_after_lint",
+    ),
+    Entry(
         name="validate_read_engine_verbs",
         module="scripts.checks.contracts.validate_read_engine_verbs",
         attr="validate_read_engine_verbs",
