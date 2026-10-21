@@ -71,25 +71,29 @@ def _programme(doc: dict) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _names(value: Any) -> set[str]:
+    return {x for x in value if isinstance(x, str)} if isinstance(value, (list, dict)) else set()
+
+
+def _unhashable_fields(entry: dict, skip: tuple[str, ...] = ()) -> list[str]:
+    return sorted(str(k) for k, v in entry.items() if k not in skip and isinstance(v, (list, dict)))
+
+
 def _as_list(doc: dict, key: str) -> list:
     value = doc.get(key)
     return value if isinstance(value, list) else []
 
 
-def _check_shapes(doc: dict, failed: list[str]) -> list[dict]:
-    """Invariant (1) section shapes; returns the mapping entries of rows, billing and the ledger."""
-    keep: list[dict] = []
+def _check_shapes(doc: dict, failed: list[str]) -> None:
+    """Invariant (1) section shapes: rows, billing and the ledger are lists of mappings."""
     for section in ("rows", "billing", "evidence_ledger"):
         value = doc.get(section)
         if not isinstance(value, list):
             failed.append(f"{_LABEL}: {section} is not a list")
             continue
         for i, entry in enumerate(value):
-            if isinstance(entry, dict):
-                keep.append({"_section": section, **entry})
-            else:
+            if not isinstance(entry, dict):
                 failed.append(f"{_LABEL}: {section}[{i}] is not a mapping")
-    return keep
 
 
 def _check_keys(section: str, row: dict, failed: list[str]) -> None:
@@ -99,7 +103,7 @@ def _check_keys(section: str, row: dict, failed: list[str]) -> None:
     missing = [k for k in keys if k not in row]
     if missing:
         failed.append(f"{_LABEL}: {section} {rid}: missing keys {missing}")
-    extra = sorted(str(k) for k in row if k not in allowed and k != "_section")
+    extra = sorted(str(k) for k in row if k not in allowed)
     if extra:
         failed.append(f"{_LABEL}: {section} {rid}: unknown keys {extra} (an unquoted comma in a flow mapping?)")
     nulls = sorted(str(k) for k, v in row.items() if v is None)
@@ -109,11 +113,11 @@ def _check_keys(section: str, row: dict, failed: list[str]) -> None:
 
 def _check_entries(doc: dict, failed: list[str]) -> dict[str, dict]:
     """Invariants (1) and (2) for rows and billing rows; returns every entry by id."""
-    statuses = set(doc.get("status_values") or {})
+    statuses = _names(doc.get("status_values"))
     programme = _programme(doc)
-    stages = set(programme.get("stages") or [])
-    owners = set(doc.get("owner_values") or [])
-    payers = set(doc.get("payer_values") or [])
+    stages = _names(programme.get("stages"))
+    owners = _names(doc.get("owner_values"))
+    payers = _names(doc.get("payer_values"))
     entries: dict[str, dict] = {}
     for section in ("rows", "billing"):
         for row in _as_list(doc, section):
@@ -121,6 +125,12 @@ def _check_entries(doc: dict, failed: list[str]) -> dict[str, dict]:
                 continue
             rid = row.get("id", "?")
             _check_keys(section, row, failed)
+            bad = _unhashable_fields(row, skip=("rec",))
+            if bad or isinstance(rid, (list, dict)):
+                failed.append(
+                    f"{_LABEL}: {section} {rid if not bad else row.get('id', '?')}: non-scalar values for {bad or ['id']}"
+                )
+                continue
             if rid in entries:
                 failed.append(f"{_LABEL}: {section} {rid}: duplicate id")
             entries[rid] = row
@@ -139,12 +149,12 @@ def _check_entries(doc: dict, failed: list[str]) -> dict[str, dict]:
 
 
 def _check_vocabularies(doc: dict, failed: list[str]) -> None:
-    statuses = set(doc.get("status_values") or {})
+    statuses = _names(doc.get("status_values"))
     for name in ("evidence_required", "terminal_statuses"):
-        declared = set(doc.get(name) or [])
+        declared = _names(doc.get(name))
         if not declared <= statuses:
             failed.append(f"{_LABEL}: {name} names statuses outside status_values: {sorted(declared - statuses)}")
-    terminal = set(doc.get("terminal_statuses") or [])
+    terminal = _names(doc.get("terminal_statuses"))
     if terminal & _OPEN_STATUSES:
         failed.append(f"{_LABEL}: terminal_statuses includes an open status: {sorted(terminal & _OPEN_STATUSES)}")
     if not _OPEN_STATUSES <= statuses:
@@ -156,8 +166,8 @@ def _check_vocabularies(doc: dict, failed: list[str]) -> None:
 
 def _check_ledger(doc: dict, entries: dict[str, dict], failed: list[str]) -> None:
     """Invariant (3): the ledger is dated, ordered, names real rows, and its latest entry equals each row status."""
-    statuses = set(doc.get("status_values") or {})
-    required = set(doc.get("evidence_required") or [])
+    statuses = _names(doc.get("status_values"))
+    required = _names(doc.get("evidence_required"))
     latest: dict[str, str] = {}
     previous: datetime.date | None = None
     for i, entry in enumerate(_as_list(doc, "evidence_ledger")):
@@ -166,6 +176,9 @@ def _check_ledger(doc: dict, entries: dict[str, dict], failed: list[str]) -> Non
         extra = sorted(str(k) for k in entry if k not in _LEDGER_KEYS)
         if extra:
             failed.append(f"{_LABEL}: evidence_ledger[{i}]: unknown keys {extra}")
+        if _unhashable_fields(entry):
+            failed.append(f"{_LABEL}: evidence_ledger[{i}]: non-scalar values for {_unhashable_fields(entry)}")
+            continue
         missing = [k for k in _LEDGER_KEYS if not entry.get(k)]
         if missing:
             failed.append(f"{_LABEL}: evidence_ledger[{i}]: missing {missing}")
@@ -204,8 +217,8 @@ def _resolve_node(node: Any, parts: list[str]) -> bool:
 
 def _ref_resolves(root: Path, ref: str) -> bool:
     path, _, dotted = ref.partition("#")
-    target = root / path
-    if not dotted or not target.is_file():
+    target = (root / path).resolve()
+    if not dotted or not target.is_relative_to(root.resolve()) or not target.is_file():
         return False
     try:
         import yaml
@@ -246,7 +259,7 @@ def _check_close_out(doc: dict, entries: dict[str, dict], failed: list[str]) -> 
     programme = _programme(doc)
     if programme.get("phase") != "closed":
         return
-    terminal = set(doc.get("terminal_statuses") or [])
+    terminal = _names(doc.get("terminal_statuses"))
     for rid, row in entries.items():
         effective = entries.get(str(row.get("follows")), row) if row.get("status") == "follows" else row
         if effective.get("status") not in terminal:
