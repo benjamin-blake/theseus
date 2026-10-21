@@ -136,3 +136,10 @@ def test_github_readiness_runs_after_mcp_install_and_before_precommit() -> None:
     readiness = script.index("bash .claude/hooks/session_start_github_readiness.sh")
     assert readiness > script.index("ensure-github-mcp-server.sh")
     assert readiness < script.index("bash .claude/hooks/session_start_precommit.sh")
+
+
+def test_github_mcp_token_comment_writes_the_proxy_placeholder() -> None:
+    script = SETUP_SCRIPT.read_text(encoding="utf-8")
+    assert "#     printf 'proxy-injected\\n' > \"$HOME/.config/gh-mcp/token\"\n" in script
+    assert "<PAT>" not in script
+    assert "GITHUB_MCP_PAT" not in script
