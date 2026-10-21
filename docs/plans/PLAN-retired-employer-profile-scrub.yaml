@@ -80,6 +80,7 @@ bundled_recommendations:
 - rec-3924
 followon_recs:
 - rec-4544
+- rec-4547
 infrastructure_dependencies:
 - >-
   data-pipeline (src/lambdas/data-pipeline/manifest.yaml, active) packages scripts/run_scheduled_agent.py and
@@ -87,7 +88,7 @@ infrastructure_dependencies:
   the governed deploy and smoke of the scheduled-agent dispatcher and findings processor (VP step 9). The roadmap
   asset has no deploy trigger (rec-3990). No other scope file is Lambda-packaged; no .tf file is in scope.
 acceptance_criteria:
-- No tracked file under scripts/, src/, tests/, config/, bin/, .github/ or .claude/ names the retired profile (VP step 1); rec-3924's own oracle passes.
+- No tracked file under scripts/, src/, tests/, config/, bin/, .github/ or .claude/ names the retired profile (VP step 1); rec-3924's amended, decidable oracle passes (VP steps 4 and 11).
 - With AWS_PROFILE and environment credentials unset, run_scheduled_agent's invoke and S3 verify commands and build_lambda's resolved profile are agent_platform; AWS_PROFILE overrides both; under environment credentials no --profile flag is passed; an explicit build_lambda --profile, including "", is honoured.
 - _resolve_ducklake_profile no longer exists anywhere outside historical records; the DuckLake build passes its profile through unchanged.
 - NS.2, T5.2, the build-lambda.yaml comment and Decision 113 carry exactly the approved wording W1-W4; ns2-names-owning-entity still asserts two terms and passes.
@@ -126,10 +127,9 @@ verification_plan:
   graduation_waiver_reason: Runs existing suites that CI already runs on every PR; steps 1-2 carry the new durable guards.
 - step: 4
   phase: pre-deploy
-  action: rec-3924's stored acceptance oracle holds, and the deleted remap helper is named nowhere in code or tests
-  command: >-
-    ! grep -rn 'company-aws-profile' scripts/ tests/ && ! git grep -n _resolve_ducklake_profile -- 'scripts/**' 'src/**'
-    'tests/**' ':!tests/test_retired_employer_profile.py'
+  action: rec-3924's amended acceptance oracle holds, and the deleted remap helper is named nowhere in code or tests
+  command: |-
+    ! grep -rqn 'company-aws-profile' scripts/ tests/ && grep -q 'resolve_aws_profile' scripts/build_lambda.py && ! git grep -n _resolve_ducklake_profile -- 'scripts/**' 'src/**' 'tests/**' ':!tests/test_retired_employer_profile.py'
   expected: exit 0 with no output
   fix_if: >-
     a hit -- remove it, including the module docstring mention in scripts/build_lambda_deploy.py (a hit only in a
@@ -137,21 +137,15 @@ verification_plan:
   hermetic: false
   graduation: waive
   graduation_waiver_reason: >-
-    The token half duplicates step 1's graduated guard over a narrower path set; the helper-name half is a one-time
-    removal proof that step 2's attribute-absence test guards durably.
+    The token half duplicates step 1's graduated guard over a narrower path set and the anchor half is the rec's own
+    oracle; the helper-name half is a one-time removal proof that step 2's attribute-absence test guards durably.
 - step: 5
   phase: pre-deploy
   action: Roadmap text carries W2 and W3 and the NS.2 check passes
-  command: &roadmap_check >-
-    bin/venv-python -c "import sys,yaml; r=yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml'));
-    d=[p for p in r['north_star']['principles'] if p['id']=='NS.2'][0]['detail'];
-    t=[i for i in r['tier_items'] if i['id']=='T5.2'][0];
-    ok=('On The Loop Labs Limited' in d and 'former employer' in d and 'company-aws' not in d
-    and '[Amendment 2026-10-21, rec-3924:' in d and t['name']=='Former-employer AWS account teardown (30d grace)'
-    and [c.get('id') for c in t['exit_criteria']]==['c1','c2','c3'] and all(c.get('status')=='open' for c in t['exit_criteria']));
-    print('ROADMAP_OK' if ok else 'ROADMAP_BAD'); sys.exit(0 if ok else 1)"
+  command: &roadmap_check |-
+    bin/venv-python -c "import sys,yaml; r=yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml')); d=[p for p in r['north_star']['principles'] if p['id']=='NS.2'][0]['detail']; t=[i for i in r['tier_items'] if i['id']=='T5.2'][0]; w2='is distinct from the founder\x27s former employer\x27s shared work account that T5.2 tears down;'; note='[Amendment 2026-10-21, rec-3924: the former employer\x27s retired AWS profile name is replaced by a plain description; meaning unchanged.]'; crit=['30 days elapsed since T2.1 + T2.2 completion (both completed 2026-05-28/29; grace elapses ~2026-06-28)', 'Old account S3 buckets / data tables / DynamoDB tables removed or marked for retention if needed', 'Cost-report confirms zero billing in old account post-teardown']; ok=('On The Loop Labs Limited' in d and w2 in d and d.endswith(' ' + note) and 'company-aws' not in d and t['name']=='Former-employer AWS account teardown (30d grace)' and [(c.get('id'), c.get('status'), c.get('text')) for c in t['exit_criteria']]==[('c' + str(n), 'open', x) for n, x in enumerate(crit, 1)]); print('ROADMAP_OK' if ok else 'ROADMAP_BAD'); sys.exit(0 if ok else 1)"
   expected: ROADMAP_OK
-  fix_if: ROADMAP_BAD -- compare against W2/W3 in the step6b presentation; criteria text must be byte-identical to main
+  fix_if: ROADMAP_BAD -- fix NS.2 and T5.2 to W2/W3 exactly; the three criteria texts are the literals in the command, unchanged from main
   hermetic: true
   graduation: waive
   graduation_waiver_reason: >-
@@ -160,11 +154,11 @@ verification_plan:
     token's absence from code and config by step 1.
 - step: 6
   phase: pre-deploy
-  action: Decision 113 carries W1 once, no other Decision body changed, and build-lambda.yaml carries W4
-  command: >-
-    test "$(grep -c '^> \*\*Update (2026-10-21):\*\* "company-account (company-aws-profile)" above names' docs/DECISIONS.md)" = 1
-    && test "$(git diff origin/main -- docs/DECISIONS.md | grep -c '^-[^-]')" = 0
-    && grep -qxF '# Flag DEFAULTS (--profile: $AWS_PROFILE else agent_platform via scripts.aws_profile.resolve_aws_profile; --region=eu-west-2) are OUT of registry scope.' docs/contracts/build-lambda.yaml
+  action: >-
+    Decision 113 carries the full W1 line once, docs/DECISIONS.md has no deleted line, the roadmap archive is untouched,
+    and build-lambda.yaml carries W4
+  command: |-
+    test "$(grep -cxF $'> **Update (2026-10-21):** "company-account (company-aws-profile)" above names the founder\'s former employer\'s AWS account, retired in the 2026-05 migration (T2.3; Decision 24\'s update), per the operator\'s confirmation of 2026-10-21 (rec-3924). It is not an account of On The Loop Labs Limited (Decision 195). This entry sets no requirement for how that company\'s accounts authenticate; that stays with this entry\'s reversal condition and Decision 195 clause 3.' docs/DECISIONS.md)" = 1 && test "$(git diff --numstat origin/main -- docs/DECISIONS.md | cut -f2)" = 0 && git diff --quiet origin/main -- docs/ROADMAP-PLATFORM-ARCHIVE.yaml && grep -qxF '# Flag DEFAULTS (--profile: $AWS_PROFILE else agent_platform via scripts.aws_profile.resolve_aws_profile; --region=eu-west-2) are OUT of registry scope.' docs/contracts/build-lambda.yaml
   expected: exit 0
   fix_if: >-
     a removed line -- restore it (Decision 177 append-only); a missing or doubled W1 line, or a W4 line that does not
@@ -217,8 +211,21 @@ verification_plan:
   expected: REC-3924 CLOSED
   fix_if: >-
     still open -- read ci.yml's trailer-acceptance-evaluate and trailer-closure job logs on the merge commit; a fails
-    verdict means the oracle does not hold at the merge sha (RCA, never close around the gate, Decision 201)
+    verdict means the oracle does not hold at the merge sha, and an out_of_grammar verdict means the stored oracle is
+    not the amended decidable one (step 11) -- RCA either way, never close around the gate (Decision 201)
   hermetic: false
+- step: 11
+  phase: pre-deploy
+  action: rec-3924's stored acceptance is the amended, decidable oracle that the trailer gate can evaluate
+  command: |-
+    bin/venv-python -c "from src.common.ducklake_reader_client import fetch_recs_by_ids, make_reader; from scripts.executor.acceptance_lint import lint_acceptance_command as L; from scripts import rec_trailer_acceptance as T; rows, _ = fetch_recs_by_ids(make_reader(profile='agent_platform'), ['rec-3924']); assert L(rows[0]['acceptance'], require_decidable=True)[0] and T.census(['rec-3924'], rows=rows)[0]['bucket'] == 'probeable'; print('REC_ORACLE_DECIDABLE')"
+  expected: REC_ORACLE_DECIDABLE
+  fix_if: >-
+    the stored acceptance is still the bare negated grep -- stop and return to the planning thread; the oracle is
+    amended there with the operator's word, never by the build
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: Reads live warehouse state (the rec's stored acceptance); credential-dependent, not kernel-expressible as a standing check.
 test_obligations:
 - source: scripts/run_scheduled_agent.py
   behavior: the invoke and S3 verify commands carry --profile agent_platform by default, AWS_PROFILE when set, and no --profile under environment credentials
@@ -241,12 +248,11 @@ test_obligations:
   command: *roadmap_check
   red_green_expectation: red before (main's NS.2 names the retired token and T5.2's criteria are bare strings), green after
 - source: docs/contracts/build-lambda.yaml
-  behavior: the flag-defaults comment names the new --profile resolution
-  verification_step: 7
-  command: bin/venv-python -m scripts.validate --pre
-  waiver_reason: >-
-    Comment-only edit that no code reads; tests/test_build_lambda_config.py's flag-equivalence test compares flag
-    names only, so no test can turn red on the comment. The fast tier proves the contract still parses.
+  behavior: the flag-defaults comment names the new --profile resolution (W4)
+  verification_step: 6
+  command: |-
+    grep -qxF '# Flag DEFAULTS (--profile: $AWS_PROFILE else agent_platform via scripts.aws_profile.resolve_aws_profile; --region=eu-west-2) are OUT of registry scope.' docs/contracts/build-lambda.yaml
+  red_green_expectation: red before (main's comment names the retired token), green after
 - source: config/agent/verification_registry/entries/ns2-names-owning-entity.yaml
   behavior: NS.2 still names the owning company and distinguishes it from the former employer's account
   verification_step: 7
@@ -280,7 +286,7 @@ context:
 - "Out of scope, filed: rec-4547 (critique F7) -- once the default resolves, run_scheduled_agent --smoke-test's local build_lambda --deploy leg reaches a working profile; never run it (constraints), and rec-4547 retires or gates it."
 - "T5.2 retirement (no access, so its teardown cannot be done) is rec-4544, deliberately outside this plan: G.10 is pinned by tests/platform_roadmap_state/test_state_dict_and_feeds.py and retirement triggers the Decision 227 archival move."
 - "Decision 101(b) reading: its frozen rows (restated by Decision 171 clause 1) are the agent-platform-* names, the agent_platform profile and Glue database and project_id; the retired token is not among them, so rec-3924's premise that 101(b) froze it is mistaken. The new default lands on the frozen agent_platform row."
-- "Why resolve_aws_profile: it is the registered reader of clouds.aws.profile (Decision 224) and the session hook's rule; _smoke_test spawns build_lambda --deploy without --profile (run_scheduled_agent.py:289), so both defaults must follow one rule. In the ADMIN container AWS_PROFILE=agent_platform_admin, so a local run there uses the admin role like every other repo script."
+- "Why resolve_aws_profile: it is the registered reader of clouds.aws.profile (Decision 224) and the session hook's rule; _smoke_test spawns build_lambda --deploy without --profile (run_scheduled_agent.py:290), so both defaults must follow one rule. In the ADMIN container AWS_PROFILE=agent_platform_admin, so a local run there uses the admin role like every other repo script."
 - "Lazy imports of scripts.aws_profile follow scripts/checks/_scaffolding.py:329 and scripts/ducklake_smoke/core.py:101; aws_profile.py is itself packaged (build_lambda_config.py:98) and must not be edited (it is in deploy-prod-lambdas.yml's filter)."
 - "Overlap: docs/ROADMAP-PLATFORM.yaml is a rec-3903 sweep pin (descriptive_literals); this plan never touches its old-identity line, so the pin and the sweep's count checks stay valid. The AWS account path plan rebases onto this one and keeps ns2-names-owning-entity's two terms (told 2026-10-21)."
 - "Retired-token pattern in step 1 is bracketed so the registry row does not match itself; new tests assert positive values and never spell the token."
@@ -319,13 +325,14 @@ execution_steps:
   explicit "--profile x" and "--profile ''"; with --ducklake-only and _run_ducklake_build's builders patched as in
   tests/build_lambda_deploy/test_canary_layers.py, the builders receive "agent_platform_admin" unchanged when it is
   passed explicitly; and scripts.build_lambda_deploy has no attribute _resolve_ducklake_profile. Never spell the
-  retired token.
+  retired token. Copy any helper such as _FakePath into the file rather than importing it from another test module
+  (validate_no_cross_test_imports).
 - |-
   Tests -- tests/test_build_lambda.py: remove the "_resolve_ducklake_profile": bd row. tests/build_lambda_deploy/
   test_canary_layers.py: delete test_generic_default_maps_to_personal and test_explicit_profile_unchanged; rename
   TestResolveDucklakeProfile to TestDucklakeBuildProfile and test_ducklake_build_resolves_profile to
   test_ducklake_build_passes_profile_through, passing profile="agent_platform" and asserting it unchanged (update its
-  docstring and comment). test_update_functions.py, test_bucket_argv.py, test_sync_recommendations.py: the retired
+  docstring and comment, and the module docstring's "ducklake-profile resolution" wording). test_update_functions.py, test_bucket_argv.py, test_sync_recommendations.py: the retired
   token becomes "test-profile" at every occurrence.
 - |-
   Approved wording, byte-for-byte (operator 2026-10-21, see context).
@@ -348,6 +355,9 @@ execution_steps:
   implementation_declared true in this plan; rebase on origin/main; VP steps 1-7; VP step 8 on the committed clean
   tree then --verify-head; postflight evidence; push; the PR with `Resolves: rec-3924` in its body and the Decision
   101(b) reading from context; subscribe_pr_activity. Code review in a fresh context; fix every blocking finding.
+  validate_weakening_dispositions will want dispositions on the PR for: the two deleted mapping tests (retired with
+  scripts/build_lambda_deploy.py::_resolve_ducklake_profile), the renamed and changed test_ducklake_build_* test, the
+  test_update_functions assertion value change and the removed facade-map row; write them before the first --pre.
   Squash-merge on code review PROCEED plus green CI, passing the PR body as the commit message so the trailer
   survives. Then, on the deploy run's event (never poll), VP steps 9 and 10; post the deploy run URL and REC-3924
   CLOSED as a comment on the merged PR; tell the coordinator.
