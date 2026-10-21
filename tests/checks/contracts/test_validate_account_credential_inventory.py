@@ -77,6 +77,18 @@ def _all_terminal(d: dict[str, Any]) -> None:
     ]
 
 
+def _closed_terminal(d: dict[str, Any]) -> None:
+    _closed(d)
+    _all_terminal(d)
+
+
+def _closed_on_open_target(d: dict[str, Any]) -> None:
+    _closed_terminal(d)
+    _row(d, "AWS-01").update(status="personal")
+    _row(d, "AWS-04").update(status="follows", follows="AWS-01")
+    d["evidence_ledger"] = [e for e in d["evidence_ledger"] if e["row"] != "AWS-01"]
+
+
 def _ledger(**fields: Any) -> _Mutator:
     return lambda d: d["evidence_ledger"].append(
         {"date": "2026-10-22", "row": "GH-03", "status": "company", "evidence": "t", **fields}
@@ -136,13 +148,7 @@ _RED: list[tuple[str, _Mutator, str]] = [
     ("closed with open row", _closed, "programme is closed"),
     (
         "closed with follows row on open target",
-        lambda d: (
-            _closed(d),
-            _all_terminal(d),
-            _row(d, "AWS-01").update(status="personal"),
-            _row(d, "AWS-04").update(status="follows", follows="AWS-01"),
-            d["evidence_ledger"].pop(next(i for i, e in enumerate(d["evidence_ledger"]) if e["row"] == "AWS-01")),
-        ),
+        _closed_on_open_target,
         "programme is closed",
     ),
     ("terminal contains open status", lambda d: d["terminal_statuses"].append("personal"), "includes an open status"),
@@ -166,6 +172,7 @@ _RED: list[tuple[str, _Mutator, str]] = [
         lambda d: _row(d, "BILL-01").update(status="stays", payer="company"),
         "disagrees with status stays",
     ),
+    ("ledger entry not a mapping", lambda d: d["evidence_ledger"].append("scalar"), "evidence_ledger["),
     ("rows not a list", lambda d: d.update(rows={"a": 1}), "rows is not a list"),
     ("row not a mapping", lambda d: d["rows"].append("scalar"), "rows["),
 ]
@@ -198,7 +205,7 @@ class TestValidateAccountCredentialInventory:
         assert not any(_PROBES[label]() in f for f in failed)
 
     def test_closed_phase_passes_when_every_row_is_terminal(self, tmp_path: Path) -> None:
-        _build(tmp_path, _mutated(lambda d: (_closed(d), _all_terminal(d))))
+        _build(tmp_path, _mutated(_closed_terminal))
         assert _run(tmp_path) == []
 
     def test_follows_row_takes_its_target_status_when_closed(self, tmp_path: Path) -> None:
@@ -312,3 +319,28 @@ class TestAppendOnlyAgainstBase:
             validate_account_credential_inventory(failed)
         assert failed == []
         assert "SKIP" in capsys.readouterr().out
+
+
+class TestBaseAndRefEdges:
+    def test_no_base_ref_skips(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        _build(tmp_path, copy.deepcopy(_REAL))
+        failed: list[str] = []
+        with (
+            patch("scripts.checks._common.ROOT", tmp_path),
+            patch("scripts.checks._common.status_diff_base", return_value=None),
+        ):
+            validate_account_credential_inventory(failed)
+        assert failed == []
+        assert "SKIP" in capsys.readouterr().out
+
+    def test_non_mapping_base_skips(self, tmp_path: Path) -> None:
+        fake = type("R", (), {"returncode": 0, "stdout": "- a\n"})()
+        with (
+            patch("scripts.checks._common.status_diff_base", return_value="abc"),
+            patch("scripts.checks._common.run", return_value=fake),
+        ):
+            assert module._base_contract(tmp_path) is None
+
+    def test_unparseable_ref_target_does_not_resolve(self, tmp_path: Path) -> None:
+        (tmp_path / "x.yaml").write_text("a: [unclosed\n", encoding="utf-8")
+        assert not module._ref_resolves(tmp_path, "x.yaml#a")

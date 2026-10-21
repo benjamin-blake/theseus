@@ -66,6 +66,11 @@ def _date(value: Any) -> datetime.date | None:
         return None
 
 
+def _programme(doc: dict) -> dict[str, Any]:
+    value = doc.get("programme")
+    return value if isinstance(value, dict) else {}
+
+
 def _as_list(doc: dict, key: str) -> list:
     value = doc.get(key)
     return value if isinstance(value, list) else []
@@ -105,7 +110,7 @@ def _check_keys(section: str, row: dict, failed: list[str]) -> None:
 def _check_entries(doc: dict, failed: list[str]) -> dict[str, dict]:
     """Invariants (1) and (2) for rows and billing rows; returns every entry by id."""
     statuses = set(doc.get("status_values") or {})
-    programme = doc.get("programme") if isinstance(doc.get("programme"), dict) else {}
+    programme = _programme(doc)
     stages = set(programme.get("stages") or [])
     owners = set(doc.get("owner_values") or [])
     payers = set(doc.get("payer_values") or [])
@@ -144,7 +149,7 @@ def _check_vocabularies(doc: dict, failed: list[str]) -> None:
         failed.append(f"{_LABEL}: terminal_statuses includes an open status: {sorted(terminal & _OPEN_STATUSES)}")
     if not _OPEN_STATUSES <= statuses:
         failed.append(f"{_LABEL}: status_values is missing an open status: {sorted(_OPEN_STATUSES - statuses)}")
-    programme = doc.get("programme") if isinstance(doc.get("programme"), dict) else {}
+    programme = _programme(doc)
     if programme.get("phase") not in (programme.get("phase_values") or []):
         failed.append(f"{_LABEL}: programme.phase {programme.get('phase')!r} is not in programme.phase_values")
 
@@ -238,12 +243,12 @@ def _check_shape_guard(text: str, failed: list[str]) -> None:
 
 def _check_close_out(doc: dict, entries: dict[str, dict], failed: list[str]) -> None:
     """Invariant (7)."""
-    programme = doc.get("programme") if isinstance(doc.get("programme"), dict) else {}
+    programme = _programme(doc)
     if programme.get("phase") != "closed":
         return
     terminal = set(doc.get("terminal_statuses") or [])
     for rid, row in entries.items():
-        effective = entries.get(row.get("follows"), row) if row.get("status") == "follows" else row
+        effective = entries.get(str(row.get("follows")), row) if row.get("status") == "follows" else row
         if effective.get("status") not in terminal:
             failed.append(f"{_LABEL}: {rid}: programme is closed but the row is {row.get('status')}")
 
@@ -254,7 +259,7 @@ def _check_owning_side(doc: dict, failed: list[str]) -> None:
         for row in _as_list(doc, section):
             if not isinstance(row, dict):
                 continue
-            allowed = table.get(row.get("status"))
+            allowed = table.get(str(row.get("status")))
             if allowed is not None and row.get(side_key) not in allowed:
                 failed.append(
                     f"{_LABEL}: {row.get('id', '?')}: {side_key} {row.get(side_key)!r} disagrees with status "
@@ -315,12 +320,7 @@ def validate_account_credential_inventory(failed: list[str]) -> None:
     if doc is None:
         failed.append(f"{_LABEL}: {_CONTRACT} is missing or unparseable")
         return
-    try:
-        text = (root / _CONTRACT).read_text(encoding="utf-8")
-    except OSError as exc:
-        failed.append(f"{_LABEL}: {_CONTRACT} unreadable: {exc}")
-        return
-    _check_shape_guard(text, failed)
+    _check_shape_guard((root / _CONTRACT).read_text(encoding="utf-8"), failed)
     _check_shapes(doc, failed)
     _check_vocabularies(doc, failed)
     entries = _check_entries(doc, failed)
