@@ -30,6 +30,7 @@ import tempfile
 import urllib.request  # noqa: F401 -- deliberately-retained patch anchor
 from pathlib import Path
 
+from scripts.aws_profile import resolve_aws_profile
 from scripts.build_lambda_config import (
     _BUILD_CONTRACT_PATH,  # noqa: F401
     _BUILD_CONTRACT_REGISTRY,  # noqa: F401
@@ -56,7 +57,6 @@ from scripts.build_lambda_config import (
 from scripts.build_lambda_deploy import (
     _artifact_s3_key,  # noqa: F401
     _resolve_artifact_sha,  # noqa: F401
-    _resolve_ducklake_profile,  # noqa: F401
     _write_ducklake_deploy_record,  # noqa: F401
     publish_canary_layers,  # noqa: F401
     read_deploy_record,  # noqa: F401
@@ -123,7 +123,6 @@ def _run_ducklake_build(args: argparse.Namespace) -> None:
     without building and uploading the same artifacts twice. Both default to today's behaviour
     when omitted: every existing caller and the Decision 125 break-glass path are byte-identical.
     """
-    args.profile = _resolve_ducklake_profile(args.profile)
     bucket = args.bucket or resolve_bucket(args.profile)
     only_functions = set(args.ducklake_functions.split(",")) if getattr(args, "ducklake_functions", None) else None
 
@@ -225,7 +224,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Build Lambda deployment packages")
     parser.add_argument("--skip-upload", action="store_true", help="Build zips only, skip S3 upload")
     parser.add_argument("--bucket", default="", help="S3 bucket name (default: from terraform output)")
-    parser.add_argument("--profile", default="company-aws-profile", help="AWS CLI profile")
+    parser.add_argument(
+        "--profile",
+        default=None,
+        help="AWS CLI profile (default: $AWS_PROFILE, else agent_platform; none under environment credentials)",
+    )
     parser.add_argument("--region", default="eu-west-2", help="AWS region")
     parser.add_argument(
         "--deploy",
@@ -275,13 +278,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    if args.profile is None:
+        args.profile = resolve_aws_profile() or ""
 
     if args.list_bundle:
         list_bundle(args.list_bundle)
         return
 
     if args.ducklake_publish_canary_layers:
-        args.profile = _resolve_ducklake_profile(args.profile)
         bucket = args.bucket or resolve_bucket(args.profile)
         publish_canary_layers(bucket=bucket, profile=args.profile, region=args.region, artifact_sha=_resolve_artifact_sha())
         return

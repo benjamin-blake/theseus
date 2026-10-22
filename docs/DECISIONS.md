@@ -7826,6 +7826,8 @@ model the auth primitive change preserves).
 
 > **Update (2026-10-17):** Pattern B's two roles and their inline policies are now declared in terraform/bootstrap/platform_roles.tf and its platform_*_policies.tf siblings (Decision 223), not terraform/personal/platform_roles.tf; the two-principal semantic and the ExternalId conditions are unchanged.
 
+> **Update (2026-10-21):** "company-account (company-aws-profile)" above names the founder's former employer's AWS account, retired in the 2026-05 migration (T2.3; Decision 24's update), per the operator's confirmation of 2026-10-21 (rec-3924). It is not an account of On The Loop Labs Limited (Decision 195). This entry sets no requirement for how that company's accounts authenticate; that stays with this entry's reversal condition and Decision 195 clause 3.
+
 ---
 
 ## Decision 112: Ratify CD.21 -- CI migrated from self-hosted EC2 runner to GitHub-hosted runners + OIDC federation (Decided)

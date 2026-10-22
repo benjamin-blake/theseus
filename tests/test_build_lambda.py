@@ -261,7 +261,6 @@ def test_facade_reexports_complete():
         "build_ducklake_function_package": bm,
         "build_pgclient_layer": bm,
         "list_bundle": bm,
-        "_resolve_ducklake_profile": bd,
         "publish_canary_layers": bd,
         "resolve_bucket": bd,
         "update_lambda_functions": bd,
