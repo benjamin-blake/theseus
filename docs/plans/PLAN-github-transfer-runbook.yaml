@@ -157,7 +157,7 @@ verification_plan:
       recorded: rec-4355 may be planned from it (operator, 2026-10-22, Fork 2 A).
     command: >-
       E=/mnt/project-files/transfer-runbook/EVIDENCE.md && grep -q '^REHEARSAL_AFTER .*ISS_OK.*OWNER_LOGIN
-      otl-labs.*OWNER_ID MATCH.*SUB_FORMAT immutable.*SUB_OWNER_CONSISTENT yes' "$E" && test "$(grep -c '^CARRY ' "$E")" -ge 6 && grep -q '^CARRY org rulesets ' "$E" && grep -q '^ADD_REPO ' "$E" && grep
+      otl-labs.*OWNER_ID MATCH.*SUB_FORMAT immutable.*SUB_OWNER_CONSISTENT yes' "$E" && test "$(grep -c '^CARRY ' "$E")" -ge 7 && grep -q '^CARRY org rulesets ' "$E" && grep -q '^ADD_REPO ' "$E" && grep
       -q '^CLAUDE_AI_LISTS_OTL_LABS' "$E" && grep -q '^REHEARSAL_DELETED' "$E" && echo REHEARSAL_OK
     expected: REHEARSAL_OK printed.
     fix_if: >-
@@ -225,9 +225,9 @@ verification_plan:
       the staged_phase line, append E1 and E2 (context templates, filled from EVIDENCE.md) as the last ledger entries,
       and set implementation_declared true last. The command rebuilds the expected file from the generator's output on
       the merge base and requires HEAD to equal it. In PR B and PR C it starts from main's contract and allows only P2
-      directly after P1, the phase flip to transferred and at most one ledger line (E3, phase transfer) in PR B, and
-      P3 directly after P2 and exactly one ledger line (E4, phase prove) in PR C. Allowed variance (operator, 2026-10-22): dates and PR
-      numbers; the rec ids are already substituted.
+      as the last amendment_log entry, the phase flip to transferred and at most one ledger line (E3, phase transfer)
+      in PR B, and P3 as the last amendment_log entry and exactly one ledger line (E4, phase prove) in PR C. Allowed
+      variance (operator, 2026-10-22): dates and PR numbers; the rec ids are already substituted.
     command: |-  # pragma: allowlist secret
       set -a && . /mnt/project-files/transfer-runbook/state.env && set +a && bin/venv-python - <<'PY'
       import datetime, hashlib, os, pathlib, re, subprocess, sys, tempfile, yaml
@@ -250,6 +250,9 @@ verification_plan:
       def with_ledger(lines, new):
           i = next(k for k, ln in enumerate(lines) if ln.startswith(APPEND))
           return lines[:i] + new + lines[i:]
+      def log_end(lines):
+          a = lines.index('amendment_log:')
+          return next(k for k in range(a + 1, len(lines)) if not lines[k].strip())
       head = pathlib.Path(P).read_text(encoding='utf-8').splitlines()
       main = git('show', f'origin/main:{P}').splitlines()
       ai = next(k for k, ln in enumerate(head) if ln.startswith(APPEND))
@@ -277,18 +280,18 @@ verification_plan:
           exp = list(main)
           if '  phase: pre_staged' in main:
               stage = 'B'
-              k = next(k for k, ln in enumerate(main) if P1.fullmatch(ln))
-              assert P2.fullmatch(head[k + 1]), 'P2 missing, reworded or misplaced'
-              exp.insert(k + 1, head[k + 1])
+              k = log_end(main)
+              assert P2.fullmatch(head[k]), 'P2 missing, reworded or not the last amendment_log entry'
+              exp.insert(k, head[k])
               exp[exp.index('  phase: pre_staged')] = '  phase: transferred'
               n = len(head) - len(exp)
               assert n in (0, 1), f'PR B adds {n} lines beyond P2 and E3'
               new = [entry(head[ai - 1], 'transfer')] if n else []
           else:
               stage = 'C'
-              k = next(k for k, ln in enumerate(main) if P2.fullmatch(ln))
-              assert P3.fullmatch(head[k + 1]), 'P3 missing, reworded or misplaced'
-              exp.insert(k + 1, head[k + 1])
+              k = log_end(main)
+              assert P3.fullmatch(head[k]), 'P3 missing, reworded or not the last amendment_log entry'
+              exp.insert(k, head[k])
               new = [entry(head[ai - 1], 'prove')]
       exp = with_ledger(exp, new)
       diffs = [k + 1 for k, (a, b) in enumerate(zip(head, exp)) if a != b]
@@ -414,41 +417,72 @@ verification_plan:
       commit re-runs VP 7-13. The PR body (public/PR-A-body.md) and the code-review evidence (public/PR-A-evidence.md:
       VP 1-6 results, the rehearsal's flag lines, noting its run URLs end with its deletion, and the run URLs E1 cites)
       pass scan_public.py before they are posted; the evidence is a PR comment before code review. Code review must
-      reach PROCEED. Record PR_A in state.env. Its merge is the go/no-go (VP 15), not part of this step.
+      reach PROCEED. Record PR_A and PR_A_HEAD (the pushed head SHA, updated on every push) in state.env. Its merge
+      is the go/no-go (VP 15), not part of this step.
     command: |-  # pragma: allowlist secret
       set -euo pipefail
       set -a && . /mnt/project-files/transfer-runbook/state.env && set +a
       F=/mnt/project-files/transfer-runbook
       echo "bb641029db371d61203a42204ab5f673a9c9124c483f18d88c73e32f47db9a77  $F/draft/scan_public.py" | sha256sum -c -
       bin/venv-python -I "$F/draft/scan_public.py" --public "$F/public/PR-A-body.md" "$F/public/PR-A-evidence.md"
-      test -n "$PR_A"
+      test -n "$PR_A" && test "$PR_A_HEAD" = "$(git rev-parse HEAD)"
       echo "PR_A_OPEN $PR_A"
     expected: SCAN_CLEAN 2 and PR_A_OPEN with the number printed.
     fix_if: >-
-      SCAN_HITS names the file; remove the hit before posting (never print it). No PR_A yet: append it to state.env.
+      SCAN_HITS names the file; remove the hit before posting (never print it). No PR_A, or a stale PR_A_HEAD: update
+      state.env.
     hermetic: false
     graduation: not-applicable
   - step: 15
     phase: post-deploy
     action: >-
       GO/NO-GO (operator's word: "go/no-go: merge PR A"). Before asking: re-check VP 1's conditions and that VP 2-6
-      and code review are done; the operator disables dependabot-auto-merge in the Actions UI (its own word) and
-      approves or rejects any run waiting on an environment; the build session dry-runs VP 16's command; and the
-      operator can stay about 3 hours (PR A's push CI, PR B's two full tiers, its CI and code review, and the
-      post-merge apply all fall inside the window). Squash-merge with the trailer "Resolves: rec-4356"
+      and code review are done; run this command (GO_NO_GO_READY: PR A's pull_request CI is green on PR_A_HEAD, and
+      the latest terraform-apply-sandbox push run and terraform-drift scheduled run on main are green, so the
+      convergence record starts green); the operator disables dependabot-auto-merge in the Actions UI (its own word)
+      and approves or rejects any run waiting on an environment; the build session dry-runs VP 16's command with
+      FREEZE_TS=dry set inline; and the operator can stay about 3.5 to 4 hours (PR A's push CI, the :47 alignment,
+      PR B's two full tiers, its CI and code review, and the post-merge apply all fall inside the window). Just
+      before the merge, tell the coordinator the freeze starts. Squash-merge with the trailer "Resolves: rec-4356"
       only; record PR_A_SHA. The freeze starts now: no other merge to main and no dispatch until VP 26. Wait for PR
-      A's push CI on main to finish green (the last proof on the old path).
-    command: >-
-      set -a && . /mnt/project-files/transfer-runbook/state.env && set +a && git fetch -q origin main && git
-      merge-base --is-ancestor "$PR_A_SHA" origin/main && git log -1 --format=%B "$PR_A_SHA" | grep -q '^Resolves:
-      rec-4356$' && git show "$PR_A_SHA":docs/contracts/github-org-transfer.yaml | grep -q '^  phase: pre_staged$' &&
-      curl -sSf "https://api.github.com/repos/benjamin-blake/theseus/actions/runs?head_sha=$PR_A_SHA&event=push&per_page=50"
-      | bin/venv-python -c "import json,sys; runs=json.load(sys.stdin)['workflow_runs']; c={};
-      [c.setdefault(r['name'], (r['status'], r['conclusion'])) for r in runs]; assert c.get('CI')==('completed','success')
-      and not [k for k,v in c.items() if v[1] in ('failure','cancelled','timed_out')], c; print('GO_NO_GO_MERGED')"
-    expected: GO_NO_GO_MERGED printed once PR A's push runs finish (CI green, no failed run).
+      A's push CI on main to finish green (the last proof on the old path), then re-run this command.
+    command: |-
+      set -euo pipefail
+      set -a && . /mnt/project-files/transfer-runbook/state.env && set +a
+      if [ -n "${PR_A_SHA:-}" ]; then
+          git fetch -q origin main && git merge-base --is-ancestor "$PR_A_SHA" origin/main
+          git log -1 --format=%B "$PR_A_SHA" | grep -q '^Resolves: rec-4356$'
+          git show "$PR_A_SHA:docs/contracts/github-org-transfer.yaml" | grep -q '^  phase: pre_staged$'
+      fi
+      bin/venv-python - <<'PY'
+      import json, os, subprocess
+      R = 'https://api.github.com/repos/benjamin-blake/theseus/actions'
+      def get(q):
+          return json.loads(subprocess.run(['curl', '-sSf', R + q], capture_output=True, text=True, check=True).stdout)['workflow_runs']
+      def green(label, q):
+          c = {}
+          for r in get(q):
+              c.setdefault(r['name'], (r['status'], r['conclusion']))
+          bad = sorted(k for k, v in c.items() if v[1] in ('failure', 'cancelled', 'timed_out'))
+          assert c.get('CI') == ('completed', 'success') and not bad, (label, c.get('CI'), bad)
+      green('PR A head', f"/runs?head_sha={os.environ['PR_A_HEAD']}&event=pull_request&per_page=50")
+      for wf, ev in (('terraform-apply-sandbox.yml', 'push'), ('terraform-drift.yml', 'schedule')):
+          last = get(f'/workflows/{wf}/runs?branch=main&event={ev}&status=completed&per_page=1')
+          assert last and last[0]['conclusion'] == 'success', f'{wf}: the last {ev} run on main is not green'
+      print('GO_NO_GO_READY')
+      if os.environ.get('PR_A_SHA'):
+          green('PR A push', f"/runs?head_sha={os.environ['PR_A_SHA']}&event=push&per_page=50")
+          print('GO_NO_GO_MERGED')
+      PY
+    expected: >-
+      GO_NO_GO_READY before the ask; after the merge, GO_NO_GO_READY and GO_NO_GO_MERGED once PR A's push runs finish
+      (CI green, no failed run).
     fix_if: >-
-      Without the operator's typed word, do not merge. A red CI on main before the transfer: stop, forward-fix, re-ask.
+      Without the operator's typed word, do not merge. PR A's CI red on PR_A_HEAD: forward-fix on the branch (VP 7-14
+      re-run); a failure that is also red on main (known, not this PR's) is re-run once on the operator's word, and if
+      it stays red the operator decides whether the window waits. A red terraform-apply-sandbox or drift run on main:
+      no go/no-go until its ci-rca rec is reviewed and the record healed (Decision 183). A red CI on main after the
+      merge and before the transfer: stop, forward-fix, re-ask.
     hermetic: false
     graduation: not-applicable
   - step: 16
@@ -459,7 +493,7 @@ verification_plan:
       armed and no workflow run is queued, in progress, waiting, pending or requested. Hosted runners end a job at
       6 hours and drop a queued one at 24, so older runs in those states are ghosts: they are listed, not waited for
       (at planning two runs had sat queued since August and October and one in progress for 19 hours). Record
-      FREEZE_TS.
+      FREEZE_TS first (VP 15's dry run passes FREEZE_TS=dry inline instead).
     command: |-
       set -euo pipefail
       set -a && . /mnt/project-files/transfer-runbook/state.env && set +a
@@ -499,8 +533,9 @@ verification_plan:
   - step: 17
     phase: post-deploy
     action: >-
-      TRANSFER (HUMAN, operator's word), just after a :47 scheduled tick (crons fire at :17, :37 and :47) with VP 16's
-      FROZEN still true: Settings, Transfer, new owner otl-labs, new repository name ontheloop, in one operation.
+      TRANSFER (HUMAN, operator's word), just after the :47 scheduled tick (crons fire at :17, :37 and :47) of an hour
+      that is not a multiple of 3 UTC (Main Canary starts every third hour on the hour and can run 60 minutes), with
+      VP 16's FROZEN still true: Settings, Transfer, new owner otl-labs, new repository name ontheloop, in one operation.
       TRANSFER_TS is the UTC time of the operator's "done" message, with its offset (for example 2026-10-23T18:49Z). Write TRANSFER_TS and the next step to
       state.env and RESUME.md before anything else. From here this build session makes no GitHub write.
     command: >-
@@ -535,14 +570,16 @@ verification_plan:
       CHECKLIST 2 (AGENT): the new path serves the same repository (its id equals the one in the otl-labs trust entry;
       no id printed), the projection diffs clean against pre-transfer.json apart from the name fields, and the old
       path redirects to the new full name (the old surface answers only as a redirect; the literal sweep is
-      rec-3903's).
+      rec-3903's). The post-transfer snapshot stays in a temporary directory (inherited organisation rulesets can
+      carry repository ids in their conditions); only the printed diff result goes into EVIDENCE.md.
     command: |-
       set -euo pipefail
       D=/mnt/project-files/transfer-runbook/draft; S=/mnt/project-files/transfer-runbook/snapshot
+      T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
       echo "eb7f24b141e727fdf29aad1eb2424b9a5da2093be46d1965d80f099170f208c9  $D/snapshot_projection.py" | sha256sum -c -
       bin/venv-python -I "$D/snapshot_projection.py" repo-id otl-labs/ontheloop terraform/personal/oidc.tf
-      bin/venv-python -I "$D/snapshot_projection.py" snapshot otl-labs/ontheloop "$S/post-transfer.json"
-      bin/venv-python -I - "$S/pre-transfer.json" "$S/post-transfer.json" <<'PY'
+      bin/venv-python -I "$D/snapshot_projection.py" snapshot otl-labs/ontheloop "$T/post-transfer.json"
+      bin/venv-python -I - "$S/pre-transfer.json" "$T/post-transfer.json" <<'PY'
       import json, sys
       def flat(n, p=''):
           if isinstance(n, dict):
@@ -618,9 +655,11 @@ verification_plan:
       CHECKLIST 6 (AGENT): right after VP 20 the fresh thread builds PR B's first commit (P2 and identity.phase
       transferred; GH-01 moved with its new location, the GH-11 re-read entry and I1; the oidc.tf comment refresh),
       runs VP 7, 9, 11, 12 and 23, and runs the full tier (VP 13) in the background while VP 21 runs: the Decision 203
-      hook refuses a push without full-tier evidence for HEAD's tree. Then it pushes, opens PR B with the body
-      public/PR-B-body.md (it passes scan_public.py first) and records PR_B. The step re-runs on the head VP 24
-      pushes. PR B's pull_request run of terraform-apply-sandbox must show the planner role assumed in its
+      hook refuses a push without full-tier evidence for HEAD's tree. I1 cites PR B's own number before it exists:
+      predict it as the highest issue or PR number plus one, and fix a wrong guess in the next commit (VP 23 asserts
+      it once PR_B is recorded). Then it pushes, opens PR B with the body public/PR-B-body.md (it passes
+      scan_public.py first) and records PR_B and PR_B_HEAD (updated on every push). The step re-runs on the head VP
+      24 pushes. PR B's pull_request run of terraform-apply-sandbox must show the planner role assumed in its
       pull-request form (the speculative-plan job's "Surface a failed assume" step skipped) and the pr role's
       terraform-converged status success; both jobs stay green on a failed assume, so their conclusions prove nothing.
     command: |-  # pragma: allowlist secret
@@ -629,7 +668,7 @@ verification_plan:
       F=/mnt/project-files/transfer-runbook
       echo "bb641029db371d61203a42204ab5f673a9c9124c483f18d88c73e32f47db9a77  $F/draft/scan_public.py" | sha256sum -c -
       bin/venv-python -I "$F/draft/scan_public.py" --public "$F/public/PR-B-body.md"
-      test -n "$PR_B"
+      test -n "$PR_B" && test "$PR_B_HEAD" = "$(git rev-parse HEAD)"
       grep -q '^  phase: transferred$' docs/contracts/github-org-transfer.yaml
       bin/venv-python - "$(git rev-parse HEAD)" <<'PY'
       import json, subprocess, sys
@@ -649,8 +688,11 @@ verification_plan:
       echo "PR_B_OPEN $PR_B"
     expected: SCAN_CLEAN 1, PR_B_PLAN_GREEN and PR_B_OPEN with the number printed, for PR B's pushed head.
     fix_if: >-
-      A failed planner assume or a terraform-converged status other than success is a trust failure under the target
-      segment on the pull-request form: stay frozen, RCA, never retry blindly.
+      A failed planner assume, or terraform-converged "error" (UNVERIFIED: the pr role could not read the record), is
+      a trust failure under the target segment on the pull-request form: stay frozen, RCA, never retry blindly.
+      terraform-converged "failure" is a red convergence record whose description names its red_cause: stay frozen,
+      review its ci-rca rec, and heal it with the heal verb deploy-paths.yaml's reconcile row selects (Decision 183)
+      on the operator's word, then re-run this step.
     hermetic: false
     graduation: not-applicable
   - step: 23
@@ -660,11 +702,14 @@ verification_plan:
       comment line changed (the speculative plan's trigger) and no non-comment line, so both trust lists are
       byte-identical; GH-01 is moved, the company's and in its new location, and no other row changed; the inventory
       ledger gains exactly the GH-01 and GH-11 entries and the amendment_log exactly I1; the contract is at
-      transferred; the inventory check and its tests are green (the tests fail here without PR A's date patch).
+      transferred; the inventory check and its tests are green (the tests fail here without PR A's date patch). Once
+      PR_B is recorded, I1 must cite it.
     command: |-
       set -euo pipefail
+      S=/mnt/project-files/transfer-runbook/state.env
+      if [ -f "$S" ]; then set -a && . "$S" && set +a; fi
       bin/venv-python - <<'PY'
-      import datetime, re, subprocess, yaml
+      import datetime, os, re, subprocess, yaml
       from scripts.checks.contracts.validate_account_credential_inventory import validate_account_credential_inventory as v
       def git(*a):
           return subprocess.run(['git', *a], capture_output=True, text=True, check=True).stdout
@@ -686,6 +731,7 @@ verification_plan:
       log = inv['amendment_log']
       assert log[:-1] == base['amendment_log'], 'expected exactly one new inventory amendment_log entry'
       assert log[-1]['semantic_break'] is False and log[-1]['change_class'] == 'correction' and I1.fullmatch(log[-1]['summary']), 'I1 missing or reworded'
+      assert not os.environ.get('PR_B') or f"(rec-4550, PR #{os.environ['PR_B']})" in log[-1]['summary'], 'I1 cites another PR number than PR_B'
       datetime.date.fromisoformat(str(log[-1]['date']))
       c = yaml.safe_load(open('docs/contracts/github-org-transfer.yaml', encoding='utf-8'))
       assert c['identity']['phase'] == 'transferred', c['identity']['phase']
@@ -697,18 +743,19 @@ verification_plan:
       bin/venv-python -m pytest -q tests/checks/contracts/test_validate_account_credential_inventory.py
     expected: TRUST_LISTS_UNCHANGED PR_B_FLIPS_OK INVENTORY_CHECK_OK printed, then the inventory tests pass.
     fix_if: >-
-      Revert any non-comment terraform edit; fix the inventory row, entry or I1 text the check names. The two
-      appended-entry tests failing with "earlier than the entry before it" means PR A's date patch is missing.
+      Revert any non-comment terraform edit; fix the inventory row, entry or I1 text the check names (a wrong PR
+      number in I1 is corrected in a new commit). The two appended-entry tests failing with "earlier than the entry
+      before it" means PR A's date patch is missing.
     hermetic: false
     graduation: not-applicable
   - step: 24
     phase: post-deploy
     action: >-
-      CHECKLIST 7 (AGENT, operator's word): dispatch terraform-drift on main of the new path; it assumes the planner
-      role under the target segment. Record RUN_DRIFT. Then append E3 (checklist 1-7), write
-      public/PR-B-evidence.md (the ghas-probe, drift and PR B pull_request run URLs), re-run VP 7 (B 1), 9, 11, 12 and
-      13 (PR B's second full tier), push, re-run VP 22 on the new head, post the evidence comment and run code review
-      on PR B to PROCEED.
+      CHECKLIST 7 (AGENT, operator's word): dispatch terraform-drift on main of the new path while PR B's first CI
+      runs; it assumes the planner role under the target segment. Record RUN_DRIFT. Then append E3 (checklist 1-7),
+      write public/PR-B-evidence.md (the ghas-probe, drift and PR B pull_request run URLs), re-run VP 7 (B 1), 9, 11,
+      12, 23 and 13 (PR B's second full tier), push, record PR_B_HEAD, re-run VP 22 on the new head, post the evidence
+      comment and run code review on PR B to PROCEED.
     command: |-  # pragma: allowlist secret
       set -euo pipefail
       set -a && . /mnt/project-files/transfer-runbook/state.env && set +a
@@ -726,19 +773,39 @@ verification_plan:
   - step: 25
     phase: post-deploy
     action: >-
-      CHECKLIST 8 (HUMAN, operator's word "merge PR B"): squash-merge PR B (no Resolves trailer); record PR_B_SHA. The
-      push run of terraform-apply-sandbox (apply role; its always-run step writes the convergence record, green on
-      success) and CI on main must both be green; a missing CI run fails the check.
-    command: >-
-      set -a && . /mnt/project-files/transfer-runbook/state.env && set +a && git fetch -q origin main && git
-      merge-base --is-ancestor "$PR_B_SHA" origin/main && curl -sSf
-      "https://api.github.com/repos/otl-labs/ontheloop/actions/runs?head_sha=$PR_B_SHA&event=push&per_page=50" |
-      bin/venv-python -c "import json,sys; runs=json.load(sys.stdin)['workflow_runs']; c={}; [c.setdefault(r['name'],
-      r['conclusion']) for r in runs]; assert c.get('terraform-apply-sandbox')=='success' and c.get('CI')=='success', c;
-      print('WINDOW_MERGE_GREEN')"
-    expected: WINDOW_MERGE_GREEN printed once the push runs finish.
+      CHECKLIST 8 (HUMAN, operator's word "merge PR B"): before asking, run this command (WINDOW_MERGE_READY: PR B's
+      pull_request CI is green on PR_B_HEAD, the head VP 22 and 24 checked). Squash-merge PR B (no Resolves trailer);
+      record PR_B_SHA and re-run the command. The push run of terraform-apply-sandbox (apply role; its always-run step
+      writes the convergence record, green on success) and CI on main must both be green; a missing run fails it.
+    command: |-
+      set -euo pipefail
+      set -a && . /mnt/project-files/transfer-runbook/state.env && set +a
+      if [ -n "${PR_B_SHA:-}" ]; then git fetch -q origin main && git merge-base --is-ancestor "$PR_B_SHA" origin/main; fi
+      bin/venv-python - <<'PY'
+      import json, os, subprocess
+      R = 'https://api.github.com/repos/otl-labs/ontheloop/actions/runs'
+      def latest(q):
+          c = {}
+          for r in json.loads(subprocess.run(['curl', '-sSf', R + q], capture_output=True, text=True, check=True).stdout)['workflow_runs']:
+              c.setdefault(r['name'], (r['status'], r['conclusion']))
+          return c
+      pr = latest(f"?head_sha={os.environ['PR_B_HEAD']}&event=pull_request&per_page=50")
+      bad = sorted(k for k, v in pr.items() if v[1] in ('failure', 'cancelled', 'timed_out'))
+      assert pr.get('CI') == ('completed', 'success') and pr.get('terraform-apply-sandbox') == ('completed', 'success') and not bad, (pr.get('CI'), bad)
+      print('WINDOW_MERGE_READY')
+      if os.environ.get('PR_B_SHA'):
+          push = latest(f"?head_sha={os.environ['PR_B_SHA']}&event=push&per_page=50")
+          assert all(push.get(k) == ('completed', 'success') for k in ('terraform-apply-sandbox', 'CI')), push
+          print('WINDOW_MERGE_GREEN')
+      PY
+    expected: >-
+      WINDOW_MERGE_READY before the ask; after the merge, WINDOW_MERGE_READY and WINDOW_MERGE_GREEN once the push runs
+      finish.
     fix_if: >-
-      A red apply latches the convergence record red: heal through the dispatch verb (Decision 183), never a manual apply; stay frozen until green.
+      PR B's CI red on PR_B_HEAD: forward-fix on the branch (VP 22-24 re-run on the new head); a failure that is also
+      red on main (known, not this PR's) is re-run once on the operator's word, and if it stays red the operator
+      decides. A red apply latches the convergence record red: heal through the dispatch verb (Decision 183), never a
+      manual apply; stay frozen until green.
     hermetic: false
     graduation: not-applicable
   - step: 26
@@ -831,10 +898,13 @@ verification_plan:
     action: >-
       PROVE, roles: every CI role was last used after TRANSFER_TS (runs drained at the freeze, so any later assume
       carries the target segment). IAM last-used data lags: re-read every 15 minutes for up to 4 hours. Prints role
-      names and yes/no only. Run it in an ADMIN-environment session (the agent_platform_admin profile exists only
-      there); stderr is discarded so an AccessDenied never prints the caller's ARN.
+      names and yes/no only. It runs in an ADMIN-environment session (the agent_platform_admin profile exists only
+      there), which the build thread asks the coordinator to start on the operator's word; that session may not see
+      state.env, so it is given TRANSFER_TS inline. stderr is discarded so an AccessDenied never prints the caller's
+      ARN.
     command: >-
-      set -a && . /mnt/project-files/transfer-runbook/state.env && set +a && rc=0; for r in planner pr apply deploy
+      S=/mnt/project-files/transfer-runbook/state.env; if [ -f "$S" ]; then set -a && . "$S" && set +a; fi; :
+      "${TRANSFER_TS:?TRANSFER_TS is required}" && rc=0; for r in planner pr apply deploy
       branch; do out=$(aws iam get-role --role-name "agent-platform-github-ci-$r" --profile agent_platform_admin
       --query 'Role.RoleLastUsed.LastUsedDate' --output text 2>/dev/null) || out=GET_ROLE_FAILED; printf '%s' "$out" |
       bin/venv-python -c "import sys,os,datetime as d; raw=sys.stdin.read().strip(); ok=raw not in
@@ -850,10 +920,11 @@ verification_plan:
   - step: 32
     phase: post-deploy
     action: >-
-      PR C: add P3 directly after P2 and append E4 (checklist 8 and the live proofs); flip GH-01, GH-05, GH-06, GH-10
-      and REG-02 to proven (owner_today company) with one inventory ledger entry each, set GH-06's expires to
-      "2027-10-22" (the successor's, public in transfer_credentials) and add I2; run VP 7, 9, 11, 12, 13 and this
-      step; rec-4550's stored oracle (verbatim, read 2026-10-22: the two greps below) must hold. Write
+      PR C: add P3 as the last amendment_log entry and append E4 (checklist 8 and the live proofs); flip GH-01, GH-05,
+      GH-06, GH-10 and REG-02 to proven (owner_today company) with one inventory ledger entry each, set GH-06's
+      expires to "2027-10-22" (the successor's, public in transfer_credentials) and add I2, citing PR C's predicted
+      number (as in VP 22; asserted once PR_C is recorded); run VP 7, 9, 11, 12, 13 and this step; rec-4550's
+      stored oracle (verbatim, read 2026-10-22: the two greps below) must hold. Write
       EVIDENCE-public.md (no message ids) and public/PR-C-body.md; both pass scan_public.py; post the evidence as a
       PR comment before code review. Open, code review, then, on PROCEED, green CI and the operator's word "merge PR
       C", squash-merge with the trailer "Resolves: rec-4550"; that trailer's closure job is the live ops-portal write
@@ -861,12 +932,13 @@ verification_plan:
     command: |-  # pragma: allowlist secret
       set -euo pipefail
       F=/mnt/project-files/transfer-runbook
+      set -a && . "$F/state.env" && set +a
       grep -qE '^  phase: (transferred|proven|predecessor_removed)$' docs/contracts/github-org-transfer.yaml
       grep -qE 'phase: prove, gate:' docs/contracts/github-org-transfer.yaml
       echo "bb641029db371d61203a42204ab5f673a9c9124c483f18d88c73e32f47db9a77  $F/draft/scan_public.py" | sha256sum -c -
       bin/venv-python -I "$F/draft/scan_public.py" --public "$F/EVIDENCE-public.md" "$F/public/PR-C-body.md"
       bin/venv-python - <<'PY'
-      import datetime, re, subprocess, yaml
+      import datetime, os, re, subprocess, yaml
       P = 'docs/contracts/account-credential-inventory.yaml'
       inv = yaml.safe_load(open(P, encoding='utf-8'))
       base = yaml.safe_load(subprocess.run(['git', 'show', f'origin/main:{P}'], capture_output=True, text=True, check=True).stdout)
@@ -884,11 +956,14 @@ verification_plan:
       log = inv['amendment_log']
       assert log[:-1] == base['amendment_log'], 'expected exactly one new inventory amendment_log entry'
       assert log[-1]['semantic_break'] is False and log[-1]['change_class'] == 'correction' and I2.fullmatch(log[-1]['summary']), 'I2 missing or reworded'
+      assert not os.environ.get('PR_C') or f"(rec-4550, PR #{os.environ['PR_C']})" in log[-1]['summary'], 'I2 cites another PR number than PR_C'
       datetime.date.fromisoformat(str(log[-1]['date']))
       print('INVENTORY_FLIPS_OK')
       PY
     expected: SCAN_CLEAN 2 and INVENTORY_FLIPS_OK printed (rec-4550's oracle greps passed first).
-    fix_if: Fix the row, entry or I2 text named; never edit the oracle; SCAN_HITS is removed before posting.
+    fix_if: >-
+      Fix the row, entry or I2 text named (a wrong PR number in a new commit); never edit the oracle; SCAN_HITS is
+      removed before posting.
     hermetic: false
     graduation: not-applicable
   - step: 33
@@ -986,7 +1061,8 @@ constraints:
     rec-3903). No agent-run terraform apply (Decision 126); CI plans and applies.
   - >-
     Window rules (contract phases.transfer): from the go/no-go merge until VP 26 no other merge to main and no
-    dispatch except the checklist's; a failing checklist step keeps the freeze and is forward-fixed; rollback is
+    dispatch except the checklist's (and a heal or re-run the operator names, VP 15, 22 and 25); a failing checklist
+    step keeps the freeze and is forward-fixed; rollback is
     forward-fix on the new identity, never a transfer back. Touch neither claude.ai account's GitHub connection in
     the window.
   - >-
@@ -1003,7 +1079,7 @@ context:
     Approvals, all 2026-10-22: Benjamin "write the transfer runbook plan" (cmsg_017f94mmYqSe3q2p9o6tPW3U39YDQP6VWizjgTLFUhR5L3);
     forks 1 A, 2 A, 3 A (cmsg_017f94mmYqSe3q2p9o6tPW3UKGui9vpwoJMSUh1Z8UMEKg); "approve the wording, write the plan"
     (cmsg_017f94mmYqSe3q2p9o6tPW3UDE7p6JEVowpB8cfuDbJVMx); P1 and P2 (cmsg_017f94mmYqSe3q2p9o6tPW3UUJrKZUGRfZsd3dqdUeaG8L);
-    P3, I1 and I2 (PENDING). Presentation, advice, scout report, critiques, drafts: /mnt/project-files/transfer-runbook/.
+    P3, I1, I2 and the GH-01 and GH-06 row edits (cmsg_017f94mmYqSe3q2p9o6tPW3UCYoXbkUffTkQDB8qNecfY3). Presentation, advice, scout report, critiques, drafts: /mnt/project-files/transfer-runbook/.
   - >-
     Fork 2 A: the project freeze lifts and the AWS account path may start once VP 27-32 are recorded; the contract
     flips to proven only with rec-4355, which may be planned once VP 3's carry-over is recorded.
@@ -1015,14 +1091,15 @@ context:
   - >-
     New lines, exact text in the commands that check them: contract amendment_log P1 (PR A), P2 (PR B) and P3 (PR C)
     in VP 7, flow style with change_class governance_note_add; inventory amendment_log I1 (PR B) in VP 23 and I2 (PR C)
-    in VP 32, block style with change_class correction, semantic_break false. Dates and PR numbers vary.
+    in VP 32, block style with change_class correction, semantic_break false. Dates and PR numbers vary. I1 and I2
+    cite their own PR (predicted, then asserted); ledger entries cite the plan, rec-4550 and merged PRs, never their own.
   - >-
     Ledger templates, one line each ({date, phase, gate, observation, evidence_path}; path "transfer-runbook/EVIDENCE.md"
     or a run URL): E1 pre_stage, "phases.pre_stage gates 1-6" (PRs and runs per gate, incl. VP 4-6); E2 transfer,
     "go/no-go (rec-4356)" (REHEARSAL_AFTER flags incl. SUB_FORMAT immutable, carry-over lines); E3 transfer, "procedure.transfer_window_checklist
     1-7"; E4 prove, "procedure.transfer_window_checklist 8 and phases.prove gate 1 (live; rec-4355 pending)".
   - >-
-    Inventory ledger entries {date, row, status, evidence} citing PR numbers and rec-4550 (no at-sign, no old-path URL): PR B GH-01 moved, GH-11 stays (re-read);
+    Inventory ledger entries {date, row, status, evidence} citing rec-4550 and merged PRs (no at-sign, no old-path URL): PR B GH-01 moved, GH-11 stays (re-read);
     PR C proven: GH-01, GH-05 (five roles assumed under otl-labs), GH-06 (successor in the secret, ghas-probe green),
     GH-10 (claude.yml mention answered; fresh thread pushed PR B), REG-02 (proof_only on the new publisher).
   - >-
@@ -1032,13 +1109,13 @@ context:
     Decision-scout FLAGS_FOUND; triaged 183 of 183; roadmap items 2; CONFLICT 0; RELATED 2. CITE: 218, 172, 94, 101, 166,
     143, 126, 183, 163, 132. Decision 83 WARN deferred to rec-4538; Decision 115 NOTE accepted; T2.48: VP 1 checks no open
     oidc.tf PR. red_overlap (re-run 2026-10-22): verdict clear; rec-4552 red in SLO, no shared files.
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE after 2 round(s) (critique-r1.md, critique-r2.md; all findings taken)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 3 round(s) (critique-r1.md, critique-r2.md, critique-r3.md; all blocking findings taken; r3 advisories 10 taken, 1 declined)"
 pre_implementation_checklist:
   - Branch confirmed not on main; the plan's PR merged before the build
   - docs/contracts/github-org-transfer.yaml, docs/contracts/account-credential-inventory.yaml and docs/contracts/git-ops.yaml read
   - /mnt/project-files/transfer-runbook/ read (step6b-presentation.md, scout-report.md, draft/)
   - Decisions 218, 172, 94, 101, 166, 126, 183 and 83 read (only those sections)
-  - The operator's availability for the window (about 3 hours) agreed before VP 15
+  - The operator's availability for the window (about 3.5 to 4 hours) agreed before VP 15
 execution_steps:
   - VP 1, then the pre-window console steps VP 2-5 in any order the operator prefers (VP 3 after VP 2), and VP 6.
   - >-
@@ -1046,7 +1123,7 @@ execution_steps:
     identity.phase to pre_staged and drop staged_phase, append E1 and E2; apply draft/inventory-test-dates.diff after
     checking its sha256 (skip it if main already has the fix); set implementation_declared true last; run VP 7-13,
     open it (VP 14); code review to PROCEED.
-  - "Window (about 3 hours), in order and frozen throughout: VP 15 (go/no-go merge), 16, 17 (just after a :47 tick), then the fresh thread runs 18-26; PR B's first commit after VP 20 with its full tier during VP 21, and its second full tier after E3 (VP 24)."
+  - "Window (about 3.5 to 4 hours), in order and frozen throughout: VP 15 (go/no-go merge), 16, 17 (just after the :47 tick of an hour that is not a multiple of 3 UTC), then the fresh thread runs 18-26; PR B's first commit after VP 20 with its full tier during VP 21, the drift dispatch (VP 24) while PR B's first CI runs, and its second full tier after E3 (VP 24)."
   - "Prove: VP 27-31 in any order on the operator's words, then PR C (VP 32, evidence posted before review), VP 33 and the close-out VP 34."
   - Keep RESUME.md and state.env current at every step (operator rule, 2026-10-21); a thread that stops mid-window leaves the next step named.
   - 'Report: PRs, run URLs, each operator word by message id, every VP result, and anything left for rec-4355, rec-4538, rec-4551 or rec-4549.'
