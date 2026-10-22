@@ -85,14 +85,14 @@ class TestUpdateLambdaFunctions:
         with patch("scripts.build_lambda.subprocess.run") as mock_run:
             mock_run.side_effect = self._side_effects()
 
-            bd.update_lambda_functions("b", "company-aws-profile", "eu-west-2")
+            bd.update_lambda_functions("b", "test-profile", "eu-west-2")
 
             for c in mock_run.call_args_list:
                 cmd = c[0][0]
                 region_idx = cmd.index("--region")
                 assert cmd[region_idx + 1] == "eu-west-2"
                 profile_idx = cmd.index("--profile")
-                assert cmd[profile_idx + 1] == "company-aws-profile"
+                assert cmd[profile_idx + 1] == "test-profile"
 
     def test_update_subprocess_kwargs(self):
         """Windows-safe subprocess kwargs are set on every call."""
