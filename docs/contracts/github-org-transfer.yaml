@@ -64,6 +64,8 @@ amendment_log:
       personal-owner token cannot reach the moved repository, so revoking either old token early
       removes no fail-safe predecessor. Agents cannot read environments through the proxy, so
       checklist step 2 is HUMAN. rec-4535 aligns the terraform/github prose with the rec-3136 closure.
+  - {date: "2026-10-23", semantic_break: false, change_class: correction, summary: "PLAN-github-transfer-runbook (rec-4550, with rec-4356): the go/no-go adds an issuer-sourced check of the staged owner id by a rehearsal transfer; setup scripts accept both clone paths before the window; the old GitHub MCP token's revocation no longer holds the go/no-go (operator 2026-10-22: wait a week); the window checklist re-points the projects first, splits agent and operator reads by what the agent proxy serves and pauses Dependabot auto-merge; the Dependabot and publish proofs match what the new path can show (rec-4549 owns the pypi reviewer); rows re-pointed off closed rec-3905; evidence_ledger entries become one line each, parsed-identical."}
+  - {date: "2026-10-23", semantic_break: false, change_class: governance_note_add, summary: "PLAN-github-transfer-runbook (rec-4550): go/no-go recorded in evidence_ledger; identity.phase pre_staged and staged_phase cleared."}
 
 planned_evaluator: >-
     validate_github_org_transfer (rec-3902) enforces invariant (1): local.github_repos in
@@ -107,8 +109,7 @@ identity:
     changes at transfer and the REPO name half changes at rename (Decision 172; GitHub mints the
     immutable subject repo:OWNER@OWNER-ID/REPO@REPO-ID for any repository renamed or transferred
     after 2026-07-15). Transfer and rename are ONE operation, so exactly one new segment is staged.
-  phase: pre_transfer
-  staged_phase: pre_staged
+  phase: pre_staged
   phase_values: [pre_transfer, pre_staged, transferred, proven, predecessor_removed]
 
 plan_tier:
@@ -203,12 +204,13 @@ breakage_map:
       job that references it, while the OIDC environment sub still matches: every gated apply and
       every publish runs ungated (PLAN-repo-rename-relicense precedent).
     fix: >-
-      Read both environments and their reviewers by REST on the new path BEFORE the first merge to
-      main or any dispatch; recreate them from terraform/github (tf-gated-apply) or the console
-      (pypi) before unfreezing.
+      The operator reads both environments and their reviewers in Settings on the new path BEFORE the
+      first merge to main or any dispatch (the agent proxy blocks environment reads); recreate them from
+      terraform/github (tf-gated-apply) or the console (pypi) before unfreezing. Proven live by a
+      tf-gated-apply dispatch that waits for its reviewer.
     fix_phase: transferred
     actor: HUMAN
-    rec: rec-3905
+    rec: rec-4550
     detection: live
   - id: org_policy_override
     binding: Organisation-level Actions and token policies that override repository settings
@@ -236,10 +238,13 @@ breakage_map:
     changes_on: [owner]
     timing: silent
     failure_mode: Not documented to carry; a missing ruleset lets unreviewed changes reach main.
-    fix: REST read on the new path in phases.transfer; recreate from terraform/github if absent.
+    fix: >-
+      In the window the agent diffs the ruleset against its pre-transfer snapshot; the operator reads
+      Actions and workflow permissions in Settings (proxy-blocked) and ghas-probe confirms them;
+      recreate from terraform/github if absent.
     fix_phase: transferred
     actor: HUMAN
-    rec: rec-3905
+    rec: rec-4550
     detection: live
   - id: terraform_github_root
     binding: terraform/github provider owner, repository name and name-keyed state
@@ -340,11 +345,13 @@ breakage_map:
       Sessions clone the redirect or nothing; a setup script that tests /home/user/theseus skips its
       repository steps silently once the clone directory is /home/user/ontheloop.
     fix: >-
-      In the transfer window the operator re-points the project repository and edits each setup
-      script's clone path; a fresh thread proves clone, push and PR.
+      Before the window each setup script accepts /home/user/ontheloop or /home/user/theseus, proven by
+      a fresh session in each environment; first in the window the operator re-points every Claude Code
+      project bound to the repository and a fresh thread proves clone, push and PR; the old path is
+      dropped after phases.prove.
     fix_phase: transferred
     actor: HUMAN
-    rec: rec-3905
+    rec: rec-4550
     detection: live
   - id: dependabot_repository_guard
     binding: dependabot-auto-merge job condition pinned to the repository full name
@@ -426,28 +433,29 @@ phases:
     gates:
       - "breakage_map.oidc_trust_segment: target segment applied in BOTH roots; a CI run on the CURRENT path assumes every role (proof the additive edit broke nothing)."
       - "breakage_map.org_policy_override, claude_github_app, terraform_github_plan_app, pypi_trusted_publisher: console steps done and read back; a proof_only publish dispatch on the current path green."
-      - "transfer_credentials: every entry minted or installed, minted date filled; the GHAS_PROBE_TOKEN successor not yet swapped. The GitHub MCP token file holds proxy-injected in DEV and ADMIN, proven by a fresh session in each; the old token revoked."
+      - "transfer_credentials: every entry minted or installed, minted date filled; the GHAS_PROBE_TOKEN successor not yet swapped. The GitHub MCP token file holds proxy-injected in DEV and ADMIN, proven by a fresh session in each. The old token's revocation waits for its last-used re-check (operator, 2026-10-22) and does not hold the go/no-go: no request presents it and a personal-owner token cannot reach the moved repository."
       - "breakage_map.dependabot_repository_guard: both full names accepted, merged green."
       - "prerequisites.terraform-github-pr-time-plan and terraform-github-state-reconciled satisfied."
+      - "procedure.pre_stage 9 and 10: each setup script accepts both clone paths, proven by a fresh session in each environment; no Codespaces prebuild configuration remains; the personal claude.ai account lists an otl-labs repository; the pre-transfer snapshot is in the shared folder."
   - id: transfer
     exit_sets_phase: transferred
     trusted_segments: [current, target]
     gates:
-      - "Go/no-go: every pre_stage gate green, recorded in evidence_ledger; this is the last reversible point."
-      - "Freeze: no merge to main and no workflow dispatch from the go/no-go until unfreeze; in-flight runs drain first."
+      - "Go/no-go: every pre_stage gate green, recorded in evidence_ledger; the rehearsal (procedure.pre_stage 8) found the repository_owner_id claim of tokens from the GitHub OIDC issuer equal to the staged otl-labs owner id after its transfer, with its carry-over read recorded (rec-4356); this is the last reversible point."
+      - "Freeze: no merge to main and no workflow dispatch from the go/no-go until unfreeze, with dependabot-auto-merge disabled; in-flight runs drain first."
       - "The operator transfers to otl-labs and renames to ontheloop in ONE operation (Settings > Transfer)."
       - "Unfreeze only after procedure.transfer_window_checklist passes in order."
   - id: prove
     exit_sets_phase: proven
     trusted_segments: [current, target]
     gates:
-      - "Green CI on main; a converged convergence record; a speculative plan and a tf-gated-apply run on the new path; Dependabot auto-merge; code-owner review; a proof_only publish dispatch through the pypi environment gate (or a release); one @claude comment answered by claude.yml; a Claude Code thread clones, pushes and opens a PR; live RoleLastUsed for every CI role under the target segment."
+      - "Green CI on main; a converged convergence record; a speculative plan and a tf-gated-apply run on the new path; Dependabot auto-merge's job ran, not skipped, on a Dependabot PR under the new full name; code-owner review; a proof_only publish dispatch through the pypi environment on the new publisher (or a release; the environment's reviewer is rec-4549's); one @claude comment answered by claude.yml; a Claude Code thread clones, pushes and opens a PR; live RoleLastUsed for every CI role under the target segment."
       - "breakage_map.terraform_github_root: plan of N to import, 0 to change, 0 to destroy on the new owner and name, except the ruleset's bypass_actors while the plan App cannot read it (the operator's plan is authoritative for that field)."
   - id: predecessor_removal
     exit_sets_phase: predecessor_removed
     trusted_segments: [target]
     gates:
-      - "Each removal is its own gated step with recorded evidence, in this order: old OIDC segment from both roots (gated and admin applies); old PyPI publisher; the classic terraform/github admin PAT revoked after its App successor proves one apply, then its Secrets Manager entry deleted; the plan App uninstalled from the personal account, made private and its key rotated; personal Claude App installation scoped off this repository; every transfer_credentials entry cleaned up as it states; owner_literal_defaults, codeowners and descriptive_literals swept (rec-3903). Exception: the old GHAS_PROBE_TOKEN is inert from transferred and is revoked as soon as its successor's proof is in the ledger."
+      - "Each removal is its own gated step with recorded evidence, in this order: old OIDC segment from both roots (gated and admin applies; rec-4551); old PyPI publisher; the classic terraform/github admin PAT revoked after its App successor proves one apply, then its Secrets Manager entry deleted; the plan App uninstalled from the personal account, made private and its key rotated; personal Claude App installation scoped off this repository; the old GitHub MCP token revoked if it still exists; every transfer_credentials entry cleaned up as it states; owner_literal_defaults, codeowners and descriptive_literals swept (rec-3903). Exception: the old GHAS_PROBE_TOKEN is inert from transferred and is revoked as soon as its successor's proof is in the ledger."
 
 rollback:
   stance: >-
@@ -469,34 +477,23 @@ procedure:
     - {step: 4, tag: HUMAN, action: "Register the second PyPI Trusted Publisher for otl-labs/ontheloop (same workflow filename and environment); read the pypi environment's required reviewer in Settings, then dispatch publish-ontheloop with proof_only from main and approve it."}
     - {step: 5, tag: HUMAN, action: "Mint the GHAS_PROBE_TOKEN successor and create the terraform/github apply App per transfer_credentials (the App's key and ids into a new Secrets Manager entry); do not swap yet."}
     - {step: 6, tag: AGENT-RUNNABLE, action: "Land the dependabot guard and test that accept both full names."}
-    - {step: 7, tag: HUMAN, action: "Write the literal proxy-injected into the GitHub MCP token file in the DEV and ADMIN setup scripts; a fresh session in each passes readiness and one github-full read; then revoke the old token."}
+    - {step: 7, tag: HUMAN, action: "Write the literal proxy-injected into the GitHub MCP token file in the DEV and ADMIN setup scripts; a fresh session in each passes readiness and one github-full read; revoke the old token once its last-used re-check clears it (not a go/no-go condition)."}
+    - {step: 8, tag: HUMAN, action: "Rehearse on a throwaway public repository under the personal account, never named ontheloop: an OIDC workflow prints only ISS_OK or ISS_BAD, OWNER_ID MATCH or MISMATCH against the otl-labs entry of terraform/personal/oidc.tf, and SUB_FORMAT; transfer it into otl-labs with a rename, run it again, read what carried over, then delete it (rec-4356)."}
+    - {step: 9, tag: HUMAN, action: "Make each environment setup script cd into the first of /home/user/ontheloop and /home/user/theseus that holds bin/setup-cloud-env.sh; a fresh session in each passes. Delete any Codespaces prebuild configuration. Confirm the personal claude.ai account's repository picker lists an otl-labs repository, reconnecting GitHub there if not."}
+    - {step: 10, tag: AGENT-RUNNABLE, action: "Snapshot, as id-free projections in the shared folder, the repository GET with security_and_analysis, the main ruleset with bypass actors and the workflow states, for the window diff."}
   transfer_window_checklist:
-    - {step: 1, tag: AGENT-RUNNABLE, action: "Repository GET on the new path: new full name, same numeric id."}
-    - {step: 2, tag: HUMAN, action: "Both environments exist with their required reviewers, read in Settings: the agent proxy blocks environment reads (breakage_map.environment_fail_open)."}
-    - {step: 3, tag: AGENT-RUNNABLE, action: "Main ruleset active with code-owner review and the admin bypass role; Actions and workflow permissions match terraform/github/repo.tf."}
-    - {step: 4, tag: AGENT-RUNNABLE, action: "Secret and variable NAMES present (values are never read)."}
-    - {step: 5, tag: HUMAN, action: "Re-point the Claude Code project and edit each environment setup script's clone path; paste the pre-minted GHAS_PROBE_TOKEN successor into the secret and dispatch ghas-probe once (breakage_map.fine_grained_pat)."}
-    - {step: 6, tag: AGENT-RUNNABLE, action: "A fresh Claude Code thread clones, pushes a branch and opens a PR."}
+    - {step: 1, tag: HUMAN, action: "Re-point every Claude Code project bound to the repository to otl-labs/ontheloop; a fresh thread continues the window from the shared-folder RESUME (breakage_map.claude_code_project_binding)."}
+    - {step: 2, tag: AGENT-RUNNABLE, action: "Repository GET on the new path: new full name, same numeric id; the pre-transfer snapshot diffs clean apart from owner and name (security_and_analysis; main ruleset with code-owner review and the admin bypass role; workflow states)."}
+    - {step: 3, tag: HUMAN, action: "tf-gated-apply exists with its required reviewer and pypi exists, read in Settings: the agent proxy blocks environment reads (breakage_map.environment_fail_open; pypi's reviewer is rec-4549's)."}
+    - {step: 4, tag: HUMAN, action: "Actions and workflow permissions match terraform/github/repo.tf and secret and variable NAMES are present (values are never read), read in Settings: the agent proxy blocks both."}
+    - {step: 5, tag: HUMAN, action: "Paste the pre-minted GHAS_PROBE_TOKEN successor into the secret and dispatch ghas-probe once (breakage_map.fine_grained_pat)."}
+    - {step: 6, tag: AGENT-RUNNABLE, action: "The fresh thread pushes a branch and opens the window PR."}
     - {step: 7, tag: AGENT-RUNNABLE, action: "A read-only OIDC job (the drift plan, dispatched on the operator's word) assumes its role under the target segment."}
-    - {step: 8, tag: HUMAN, action: "Merge one trivial PR; the post-merge apply run and CI on main are green. Unfreeze."}
+    - {step: 8, tag: HUMAN, action: "Merge the window PR; the post-merge apply run and CI on main are green. Re-enable dependabot-auto-merge. Unfreeze."}
 
 evidence_ledger:
-  - date: "2026-10-17"
-    phase: pre_stage
-    gate: prerequisites.terraform-github-state-reconciled
-    observation: >-
-      Drift recorded before the reconcile: the PR-time terraform/github plan read 0 to import, 0 to
-      add, 5 to change, 0 to destroy, the five name-keyed resources still keyed on agent-platform.
-    evidence_path: "https://github.com/benjamin-blake/theseus/actions/runs/39051144313/attempts/1"
-  - date: "2026-10-20"
-    phase: pre_stage
-    gate: prerequisites.terraform-github-state-reconciled
-    observation: >-
-      Reconciled (rec-3136): state rm of the five addresses and an import-only apply from AWS
-      CloudShell (5 imported, 0 added, 0 changed, 0 destroyed); the PR-time terraform/github plan
-      then read 0 to import, 0 to add, 0 to destroy and 1 to change: the ruleset's bypass_actors,
-      which the plan App cannot read (visibility-gated). The operator's CloudShell plan read No changes.
-    evidence_path: "https://github.com/benjamin-blake/theseus/actions/runs/39051144313/attempts/3"
+  - {date: "2026-10-17", phase: pre_stage, gate: prerequisites.terraform-github-state-reconciled, observation: "Drift recorded before the reconcile: the PR-time terraform/github plan read 0 to import, 0 to add, 5 to change, 0 to destroy, the five name-keyed resources still keyed on agent-platform.", evidence_path: "https://github.com/benjamin-blake/theseus/actions/runs/39051144313/attempts/1"}
+  - {date: "2026-10-20", phase: pre_stage, gate: prerequisites.terraform-github-state-reconciled, observation: "Reconciled (rec-3136): state rm of the five addresses and an import-only apply from AWS CloudShell (5 imported, 0 added, 0 changed, 0 destroyed); the PR-time terraform/github plan then read 0 to import, 0 to add, 0 to destroy and 1 to change: the ruleset's bypass_actors, which the plan App cannot read (visibility-gated). The operator's CloudShell plan read No changes.", evidence_path: "https://github.com/benjamin-blake/theseus/actions/runs/39051144313/attempts/3"}
 # Append-only. Entry shape: {date, phase, gate, observation, evidence_path}. evidence_path names a
 # file under the project's shared folder or a CI run URL; never a value.
 
@@ -510,7 +507,8 @@ tracking:
     - "rec-4537: credential pre-stage (org policies, App installs, apply App, GHAS successor minted, second PyPI publisher and proof_only, MCP token retired)"
     - "rec-4538: post-transfer credential cutover and clean-up (GHAS swap, plan App, transfer_credentials, old publisher)"
     - "rec-4355: terraform/github re-key and its admin successor"
-    - "the transfer runbook plan: freeze, transfer, checklist, proof"
+    - "rec-4550 (with rec-4356): the transfer runbook: rehearsal, go/no-go, freeze, transfer, checklist, live proofs"
+    - "rec-4551: the old OIDC owner segment removed from both roots after phases.prove"
   decision_172_review: >-
     Decision 172's reversal stanza was re-armed by the OIDC pre-stage plan (rec-3902); its
     review_by and conditions live in the stanza itself.
