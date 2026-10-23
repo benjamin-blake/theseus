@@ -70,7 +70,8 @@ def _hermetic_logging_and_spawn(monkeypatch: pytest.MonkeyPatch) -> Iterator[Non
     # An earlier test on the same worker can leave logging.disable(CRITICAL) set, which empties caplog (rec-4553).
     previous = logging.root.manager.disable
     logging.disable(logging.NOTSET)
-    monkeypatch.setattr(sched_mod.subprocess, "Popen", MagicMock(side_effect=AssertionError("unmocked subprocess.Popen")))
+    # pytest.fail raises a BaseException, so the product's broad `except Exception` cannot swallow an unmocked spawn.
+    monkeypatch.setattr(sched_mod.subprocess, "Popen", MagicMock(side_effect=lambda *a, **k: pytest.fail("unmocked Popen")))
     yield
     logging.disable(previous)
 
@@ -92,11 +93,12 @@ def _smoke_with_s3(stdout: str, returncode: int = 0) -> int:
     deploy = MagicMock(returncode=0, stdout="", stderr="")
     s3 = MagicMock(returncode=returncode, stdout=stdout, stderr="s3 error" if returncode else "")
     with (
-        patch.object(sched_mod.subprocess, "run", side_effect=[deploy, s3]),
+        patch.object(sched_mod.subprocess, "run", side_effect=[deploy, s3]) as mock_run,
         patch.object(sched_mod, "_trigger_lambda", return_value=0) as mock_trigger,
     ):
         rc = _smoke_test("doc-freshness")
     mock_trigger.assert_called_once_with("doc-freshness")
+    assert "list-objects-v2" in mock_run.call_args.args[0]
     return rc
 
 
@@ -540,23 +542,25 @@ def test_trigger_lambda_json_parse_failure(capsys: pytest.CaptureFixture[str]) -
 @pytest.mark.parametrize(
     ("run_effect", "exit_code", "stdout", "log"),
     [
-        (_invoke_writing(""), 0, "(empty Lambda response body)\n", ""),
+        (_invoke_writing(""), 0, "(empty Lambda response body)\n", None),
         (_invoke_writing(None), 0, "", "Could not read Lambda response file"),
         (FileNotFoundError("aws"), 1, "", "Lambda invocation error"),
     ],
+    ids=["empty-body", "unreadable-outfile", "invoke-raises"],
 )
 def test_trigger_lambda_response_and_error_paths(
     run_effect: Any,
     exit_code: int,
     stdout: str,
-    log: str,
+    log: str | None,
     capsys: pytest.CaptureFixture[str],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     with patch.object(sched_mod.subprocess, "run", side_effect=run_effect):
         assert _trigger_lambda("doc-freshness") == exit_code
     assert capsys.readouterr().out == stdout
-    assert log in caplog.text
+    problems = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert problems == [] if log is None else any(log in m for m in problems)
 
 
 def test_smoke_test_s3_missing_last_modified(caplog: pytest.LogCaptureFixture) -> None:
