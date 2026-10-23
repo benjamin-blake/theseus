@@ -2,6 +2,60 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 234: User-owned persona execution -- a sandboxed per-run clone host, owner-only subscriptions and a forge-neutral core (amends Decision 206 clause 2 and Decision 212 clause 5) (Decided)
+
+```yaml
+number: 234
+status: Decided
+decided_date: "2026-10-23"
+amends: [206, 212]
+significance:
+  value: numbered_decision
+  justification: >-
+    Durable, reversal-relevant execution and credential rule for user-owned substrate. Not a
+    contract note: ports.yaml registers adapters, never rules. Not amendment_forms: it amends two
+    entries.
+```
+
+**Status:** Decided
+**Date:** 2026-10-23
+**Warehouse ID:** dec-234 (per Decision 84 backfill)
+
+**Problem:** Decision 206 clause 5 names no OS sandbox and persona_compute_host has no container-free adapter for a user's own machine; Claude Code's built-in sandbox covers its shell commands only. Decision 206 clause 2 lets one person's subscription run verdict personas on others' work; Decision 212 clause 5 orders no forge after GitHub.
+
+**Intent:** A persona runs on its owner's machine in a sandbox applied from outside, whatever the model; a subscription never pays for another person's work; the core assumes no one forge.
+
+**Decision:**
+1. Adapter. The default local persona_compute_host adapter is a per-run git clone plus Anthropic's open-source sandbox-runtime (srt; Apache-2.0; research preview) wrapping the WHOLE persona process (Decision 206 clause 5), for any persona_backend: sandbox_runtime (macOS, Linux, WSL2) is supported, sandbox_runtime_windows (alpha upstream) experimental (Decision 212 clause 7). srt is pinned to an exact version. It is write-scoping plus network control, not containment: reads are not isolated across sandboxed sessions. On Windows, OS-TLS tools cannot make HTTPS calls inside it: Decision 205 clause 2 keeps GitHub work in the shell, and an in-persona package restore is an experimental limit. WSL2, containers (local_container) and remote hosts stay the stronger tiers. On user-owned substrate the planning, implementation and consult personas default here; Decision 205 clause 1's verdict personas default to GitHub Actions and may be configured here, still posting a check run.
+2. Conformance. Both adapters run persona_compute_host's one gating suite against its local_container oracle (Decision 212 clauses 1-2), plus deterministic confinement legs -- a write outside the workspace is denied, a direct egress connection is denied -- with no LLM or credentials on GitHub-hosted Linux, macOS and Windows runners (Decision 205 clause 3, Decision 212 clause 2(a)), the Windows legs alarm-not-gate while experimental; their minutes count in T4.15 c10. A pin bump runs the suite. The provisional run_image verb generalises to a pinned runtime reference when these adapters land. Parity here is T4.27 c7's suite, not the one-digest rule (Decision 205 clause 2, T4.2 c13, T4.32 c1), which binds the Actions shell, twin and compute plane.
+3. Subscription rule (Decision 206 clause 2). A subscription runs only work its owner initiated: a run the owner starts, the owner's own unattended queue included (Decision 206 clause 6), never one another person's action triggers. A subscription-backed verdict persona on GitHub Actions runs only on a pull request its owner authored: the thin shell checks the pull request's author and the run's triggering actor against the subscription owner, and any other pull request runs on a team API key (byok) through LiteLLM or the verdict fails, never skips (Decision 205 clause 2). The backend runs on per-run state signed in by a credential passed by name (Decision 206 clause 2's setup-token), never the owner's own configuration. The vendor's terms of service still apply. First-party operator use (Decision 184 clause 4) is unchanged.
+4. Forge hedge (Decision 212 clause 5). GitHub first. On demand the candidate order is a self-hosted forge (Forgejo or Gitea: one binary, built-in reviews, Actions-compatible CI), then GitLab, then bare git, each first needing Decision 184 clause 3 and Decision 205 clause 2 re-decided (coupling PC-02); no adapter row is registered before demand (Decision 212 clause 7). Core surfaces specified after this Decision reference a generic change id, never a pull request number; the existing pull-request coupling (ports.yaml PC-09) is accepted while the repository bootstraps. Local model servers (Ollama, vLLM) are reached through LiteLLM, no port (Decision 212 clause 6); their calls carry billing_shape local -- tokens stored, cost derived at read (Decision 199 clause 1, Decision 217 clause 4) -- the vocabulary change being rec-4561.
+5. Timing. The adapters are post-MVP (T4.34, Decision 93).
+
+**Options considered:** Claude Code on the web as persona compute -- parked: vendor platform risk (a vendor may restrict such a lane at scale even where currently permitted), never load-bearing. A linked worktree -- rejected: its commits write the owner's shared .git. Containers by default -- rejected: heavier to install.
+
+```yaml reversal-conditions
+decision: 234
+review_by: 2027-06-30
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: srt-preview-ends
+    kind: manual
+    description: "srt leaves preview with breaking changes, relicenses or is abandoned: re-pin, fork or replace it."
+  - id: confinement-fails
+    kind: manual
+    description: "A confinement leg fails on a supported OS at the pinned version: demote that adapter to experimental."
+  - id: forge-or-local-versioning
+    kind: manual
+    description: "A non-GitHub forge is needed, fully local product work starts in earnest, or demand forces local versioning: plan clause 4's next candidate; re-decide PC-09."
+```
+
+**Coverage (Decision 181 cl.2):** the adapter rows and PC-09 -- validate_ports_contract and the graduated shards; T4.34's deferred status -- validate_platform_roadmap; cl.1-3 -- T4.34 c1-c8 and T4.27 c10-c11, residual until built; cl.4's change-id rule -- T4.19 c6, unenforced; its billing_shape local -- rec-4561; cl.3's saved-login contract rows -- rec-4566.
+
+**Related:** Decisions 93, 184, 185, 194, 199, 205, 206, 211, 212, 217; T4.15, T4.27, T4.32, T4.34.
+
+---
+
 ## Decision 233: The open core is customer-owned -- scale is never blocked and the tooling that makes it painless is paid, the free tier is a framework with no identity system of its own and GitHub holds approval authority, champion first (amends Decision 209 clause 1 and Decision 184 clauses 1-2) (Decided)
 
 ```yaml
@@ -1415,6 +1469,8 @@ conditions:
 
 > **Amended by Decision 224 (2026-10-18):** Clause 8's `ontheloop/platform.yaml` also holds every project setting, under the adapter that reads it or a `clouds.<vendor>` block, and names the variable of every secret and private setting without holding its value; docs/contracts/project-configuration.yaml registers each setting.
 
+> **Amended by Decision 234 (2026-10-23):** Clause 5's future change-surface adapters are ordered by demand: a self-hosted forge (Forgejo or Gitea), then GitLab, then bare git, each first needing Decision 184 clause 3 and Decision 205 clause 2 re-decided (coupling PC-02); none is registered before demand (clause 7). Core surfaces specified after Decision 234 reference a generic change id, never a pull request number, and the existing pull-request coupling is accepted while the repository bootstraps (Decision 234 clause 4). persona_compute_host gains the local sandbox_runtime adapters (Decision 234 clauses 1-2, T4.34).
+
 ---
 
 ## Decision 211: Brownfield adoption model -- otl init attaches to the code and its history, replaces only the change process and builds the verification plane; the house style is an optional profile and autonomy is earned by coverage (Decided)
@@ -1780,6 +1836,8 @@ conditions:
 **Related:** Decisions 116, 122, 164, 173, 184, 185, 199, 205; CD.27, CD.28; T4.10a, T4.15, T4.27; PLAN-persona-event-origin-plans-in-git.
 
 > **Amended by Decision 217 (2026-10-14):** Clause 6's plan-limit pause, with turn and wall-clock budgets, is the subscription lane's binding budget unit; its shadow dollars are never a spend, and cost per verified merge is the top-line metric (Decision 217 clause 4).
+
+> **Amended by Decision 234 (2026-10-23):** Clause 2: a subscription runs only work its owner initiated -- a run the owner starts, the owner's own unattended queue included -- never one another person's action triggers; a subscription-backed verdict persona on GitHub Actions runs only when the pull request's author and the run's triggering actor are its owner, the thin shell checking both, and any other pull request runs on a team API key (byok) through LiteLLM or the verdict fails, never skips (Decision 205 clause 2). On the local adapter the backend runs on per-run state signed in by a credential passed by name (for the Claude CLI, a token from claude setup-token), never the owner's own configuration, so the laptop row's saved login no longer applies there. On a user's own machine, clause 5's OS sandbox is Decision 234 clause 1's local adapter, a per-run git clone under sandbox-runtime around the whole persona process (T4.34).
 
 ---
 
@@ -2677,6 +2735,8 @@ conditions:
 **Related:** Decision 171 (amended -- licence terms only), Decision 184 (clause 5 grant gate),
 Decisions 93, 111, 133, 178; T4.22-T4.24, T4.24 c6; rec-3148, rec-3153, rec-3906. Contributor
 assignment (Decision 171 clause 5, rec-3154) is out of scope.
+
+> **Update (2026-10-23):** Decision 234's local-first users are licence-sensitive -- source-available terms such as BUSL draw objections -- which informs the grant-widening point (clause 4, T4.24 c6) as context only; the two stanza conditions remain the flip's sole trigger, and contributor copyright assignment stays Decision 171 clause 5's matter (rec-3154).
 
 ---
 
