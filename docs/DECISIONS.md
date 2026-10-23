@@ -2,6 +2,110 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 233: The open core is customer-owned -- scale is never blocked and the tooling that makes it painless is paid, the free tier is a framework with no identity system of its own and GitHub holds approval authority, champion first (amends Decision 209 clause 1 and Decision 184 clauses 1-2) (Decided)
+
+```yaml
+number: 233
+status: Decided
+decided_date: "2026-10-23"
+amends: [184, 209]
+significance:
+  value: numbered_decision
+  justification: >-
+    Durable, reversal-relevant product-boundary commitment re-reading Decision 184's local-first
+    and rewording Decision 209 clause 1, plus the free tier's identity and approval model. Not a
+    contract note: no docs/contracts file owns the commercial boundary or approval authority. Not
+    amendment_forms: it amends two entries and adds clauses neither carries.
+```
+
+**Status:** Decided
+**Date:** 2026-10-23
+**Warehouse ID:** dec-233 (per Decision 84 backfill)
+
+**Problem:** Decision 184's "local-first" reads as laptop-only, though Decision 209 clause 4 keeps a customer's own cloud free. Decision 209 clause 1 lists multi-repository operation as paid, which reads as blocking scale. No entry says who may read data or approve a change when several people share one free-tier install.
+
+**Intent:** Anyone runs On The Loop at any scale on substrate they own, free; On The Loop charges for the tooling that makes scale painless and for carrying risk.
+
+**Decision:**
+1. **Customer-owned.** Decision 184's "local-first" (its title) and "locally" (its Intent) read "customer-owned": the free tier of its clauses 1-2 runs on substrate the customer owns, a laptop by default (Decision 224 clause 4) and the customer's own cloud through the public adapters; clause 2's local adapters stay the default and its module boundary stays literal. Decision 184's title is never rewritten (Decision 177's append-only dialect).
+2. **Scale is never blocked; the tooling that makes scale painless is paid.** Decision 209 clause 1 is reworded, not reversed. Running the governed loop on any number of repositories, self-hosted through the public adapters, is free. Paid: the multi-tenant control plane and what it carries -- cross-repository DAG aggregation, org-wide distribution of north stars and Tier C overrides, fleet dashboards, SSO/RBAC, audit and retention policy -- and operating it for you, On The Loop-hosted compute being one paid option. At least one paid capability stays absent from the core (Decision 194 condition (b)). Durable paid value: fleet learning over allow-listed metadata (Decision 209 clause 2(b); Decision 209 clause 5(ii)'s routing add-on is a candidate) and risk transfer (SLA, support). "Free" here is price only: the Additional Use Grant stays with Decision 194 clause 4 and T4.24 c6, and this clause sets no licence term.
+3. **Champion first.** Go-to-market starts with a champion, Decision 232's Signaller, who installs and hosts On The Loop for a team; a managed trial comes much later and is undefined.
+4. **A framework, no identity system.** Like dbt Core, the free tier has no identity system of its own. Data access is the shared store's own permissions (Postgres roles, bucket IAM). Approval authority is GitHub (branch protection, required reviewers, Environments): the UI acts under the user's own GitHub identity, beside the free-tier write token (Decision 217 clause 3), and approve or deny is never an engine verb. Each user's UI is a thin display over one shared store. Several users need a Postgres catalog plus object storage, since the local file catalog is single-user; a generic Postgres catalog is an adapter row beside docs/contracts/ports.yaml's neon_postgres, not a new port (Decision 212).
+5. **Open; nothing decided.** (i) With several engines writing directly to one store, the closed named-verb boundary (Decision 84 I-3) and the single write chokepoint of Decision 81 clauses 5 and 7 hold by trust, and Decision 210 clause 5's write-boundary rule has no single enforcement point, unless the writer runs as a service: rec-4558. (ii) Writer-allocated ids (Decision 84 I-2) are unproven with several writers: rec-4559.
+
+**Options considered:** An identity system in the free tier -- rejected: it duplicates GitHub and the store's own permissions, and SSO/RBAC is paid. Approve or deny as an engine verb -- rejected: a second approval authority beside branch protection. Multi-repository operation itself paid -- rejected: it blocks scale.
+
+```yaml reversal-conditions
+decision: 233
+review_by: 2027-06-30
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: multi-writer-unsafe
+    kind: manual
+    description: "rec-4558 or rec-4559 finds several direct writers cannot hold the named-verb boundary or writer-allocated ids: re-decide clause 4 with a writer service."
+  - id: approval-authority-absent
+    kind: manual
+    description: "A supported change surface lacks GitHub-grade approval controls: re-decide clause 4's approval authority."
+```
+
+**Coverage (Decision 181 cl.2):** clause 4 -- T4.33 c3 and c8, residual until built; clause 5 -- rec-4558 and rec-4559.
+
+**Related:** Decisions 81, 84, 177, 184, 194, 196, 209, 210, 212, 217, 224, 232; T4.23, T4.24, T4.33; rec-4558, rec-4559.
+
+---
+
+## Decision 232: User archetypes and one human surface -- a persona is an AI role and a user archetype a human target user, the Signaller is served first, and one web UI supervises the loop over the named verbs and GitHub, CLI plus localhost first (Decided)
+
+```yaml
+number: 232
+status: Decided
+decided_date: "2026-10-23"
+significance:
+  value: numbered_decision
+  justification: >-
+    Durable, reversal-relevant product commitment: who On The Loop serves first and the one
+    surface humans supervise through, which T4.33 builds. Not a contract note:
+    inference-provider.yaml carries the vocabulary rows, never the audience or the surface. Not
+    amendment_forms: no prior entry owns either.
+```
+
+**Status:** Decided
+**Date:** 2026-10-23
+**Warehouse ID:** dec-232 (per Decision 84 backfill)
+
+**Problem:** "Persona" names both AI roles and imagined human users. No entry says whom the product serves first, or how a human steers, watches and approves the loop, so human surfaces could multiply per role.
+
+**Intent:** One kind of human, the Signaller, supervises the loop through one surface that leads with intent and evidence, never with a diff.
+
+**Decision:**
+1. **Vocabulary.** "Persona" names an AI role only (plan-critique, implementation, consult, ...). A human target-user type is a "user archetype", always two words, reserved in inference-provider.yaml's vocabulary. A user archetype is not the buyer (the organisation).
+2. **Archetypes.** (a) The Signaller, after a railway signaller who watches a live line diagram and sets signals at junctions but never drives the train: an engineer moving into supervision who watches the dependency map, steers intent and approves or denies at gates; also the champion who installs and hosts On The Loop, with local admin rights. Served first. (b) A non-technical lead, product manager or founder without admin rights: served later through a champion-hosted setup, much later through a managed trial (undefined). These are the product's target users; Decision 101 point (f)'s marketing-surface audience stands until rec-4389's successor reconciles the two.
+3. **One human surface for supervising the loop.** A web UI to steer, watch, get interrupted and approve or deny. Every read and write it makes goes through the engine's API, the closed named-verb surface (Decision 84 I-3, Decision 184 clause 2), except approve or deny, which it sends to GitHub under the user's own identity (Decision 233 clause 4). Analytical, docs and marketing pages are not supervision surfaces. Steering writes intent and work items, never a loop-policy value past the kernel ceilings (Decision 185 clause 3). v1 is the CLI plus that UI on localhost, with no localhost assumption, so it can be served anywhere later; no desktop app. It is free-tier core (Decision 209 clause 3(1)'s single-project dashboards). The operator's own CC-web /plan -> /implement workflow (Decision 90, Decision 184 clause 4) and Decision 229's interim coordinator are unchanged.
+4. **Gate cards and altitude.** A gate card leads with the intent, the criteria met in plain language with evidence, contested options with a recommendation, and what the change unblocks; never a diff first. Altitude zooms intent -> work item -> plan -> PR -> diff, so an engineer can always drop to code.
+5. **Headline: the dependency map.** Work-item dependency mapping over Decision 197's work-item model, drawn in a transit-map, schematic network-diagram visual language inspired by intuitive relationship mapping; a later contract owns its grammar.
+6. **Grounded Q&A and comment intake.** Q&A runs a read-only persona contract (T4.10a) on the same persona backend selection as any persona (Decisions 173 and 206; API keys go through LiteLLM), so a subscription-only champion gets it too; every answer cites a receipt (check run, PR, Decision), and an answer with none is withheld. A human review comment becomes a proposed work item visibly: a bot reply links it, it is deduplicated into the Signaller's triage inbox, and none enters the queue untriaged. Intake keeps Decision 205 clauses 1-2: any LLM step in it is verdict-shaped and never calls the GitHub API, and non-persona code posts the reply.
+7. **Presentation boundary.** CD.42's (a), (c) and (e) bind the UI, restated here because CD.42 stays unratified until T2.53's verdict: business semantics stay in the server-side named verbs and the UI owns only presentation; its reads call named read verbs only, never caller SQL; its build output is data, so no build artefact is tracked and a failed refresh never shows false zeroes or replaces the last good view. It is the fresh Decision CD.42's scope fence requires for an operational-control UI. Decision 127 clause 1 binds by audience-of-record, not file extension (T2.53 c5's principled reading): a UI page is code rendering a query result on request, outside the taxonomy whatever its extension while it holds no standing narrative for a human reader; a page that holds one is inside it. T2.53 c5 records this; its amendment question stays T2.53's.
+8. **Timing.** Post-MVP (Decision 93): T4.33 tracks the build.
+
+```yaml reversal-conditions
+decision: 232
+review_by: 2027-06-30
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: signaller-unvalidated
+    kind: manual
+    description: "Two quarters after the first free-tier release, no champion matching clause 2(a) runs On The Loop for a team: re-decide the first archetype."
+  - id: named-verbs-insufficient
+    kind: manual
+    description: "A UI view needs data no named verb can serve: re-decide clause 3 before adding any other data path."
+```
+
+**Coverage (Decision 181 cl.2):** clause 1 -- the inference-provider.yaml vocabulary rows, an advisory residual owned by rec-4560; clauses 3-7 -- T4.33 c1-c7, residual until built; clause 7's Decision 127 reading -- unenforced, as validate_prose_allowlist reads only *.md (T4.33 c1).
+
+**Related:** Decisions 84, 90, 93, 101, 127, 173, 184, 185, 197, 205, 206, 209, 229, 233; CD.42; T2.53, T4.10a, T4.33; rec-4389, rec-4560.
+
+---
+
 ## Decision 231: Persona evaluation is an offline lane -- a persona run is the unit of record, graded by code, real outcomes and blind operator ratings and never by an LLM, on point-in-time inputs (amends Decision 221 clauses 2 and 7) (Decided)
 
 ```yaml
@@ -1443,6 +1547,8 @@ significance:
 **Problem:** Decision 184 makes this repository the free tier and the paid plane a separate repository, but not where the paywall falls, how tenant data is held, where products live, or whether cloud adapters stay public (its `adapter-residency` condition), so an agent could paywall capability.
 
 **Intent:** One team runs the whole governed loop on one repository for free; On The Loop charges for organisational scale.
+
+> **Amended by Decision 233 (2026-10-23):** Clause 1 is reworded, not reversed: scale is never blocked, and the tooling that makes scale painless is paid. Running the loop on any number of repositories through the public adapters is free, so this Intent's "on one repository" no longer bounds what is free and multi-repository operation itself is no longer paid; the multi-tenant control plane and what it carries, and operating it for you, stay paid (Decision 233 clause 2). Clauses 2-5 are unchanged.
 
 **Decision:**
 1. **Paywall.** The line is organisational scale, never capability (here: single-team governed-loop function). Everything one team needs to run the full governed loop on one repository is free. Paid: multi-repository operation; the multi-tenant control plane (tenancy-enforcement code stays in the public cloud adapter, Decision 200 clause 2); SSO/RBAC; audit, and retention policy set in the control plane over data that stays in the data plane; org-wide distribution of north stars and Tier C overrides (Decision 196; per-repository tiers and the Tier B snapshot stay free); fleet telemetry dashboards over allow-listed Decision 199 metadata; the cross-product DAG layer (multi-repository aggregation, not Decision 197's edge model); hosted compute. These are the capability absent from the core that Decision 194 condition (b) requires. Pattern: dbt Core/Cloud, Dagster/Dagster+, Databricks, HashiCorp Cloud. Decision 101 point (f) is discharged for boundary and architecture only; no commercial surface, pricing or terms is built here.
@@ -3352,6 +3458,8 @@ significance:
 **Problem:** rec-3386 records the operator's product direction: an open-core platform whose governed loop runs on user-owned substrate with no Theseus cloud, so that a user with an LLM API key and a GitHub token can install it and go. No entry records that requirement, so the corpus optimised every substrate choice for the operator's cloud deployment alone, and hosted GitHub runners were still a candidate for persona compute.
 
 **Intent:** Theseus is open-core: this repository is the free tier and runs the full governed loop locally; the operator's cloud deployment runs the same loop through adapters; the paid management plane is a separate repository importing the platform.
+
+> **Amended by Decision 233 (2026-10-23):** Read "customer-owned" for "locally" here and for "local-first" in the title: the free tier of clauses 1-2 runs on substrate the customer owns, a laptop by default (Decision 224 clause 4) and the customer's own cloud through the public adapters; clause 2's module boundary stays literal. The title is never rewritten (Decision 233 clause 1).
 
 **Decision:**
 1. Boundary. The free tier IS the platform (this repository, BUSL-1.1); the paid management plane is a separate repository importing it (Decision 178). The AWS adapters stay here today; whether they remain open or move private is OPEN (reversal stanza), never pre-decided.
