@@ -21,8 +21,8 @@ verification_tier: V1
 plan_path: docs/plans/PLAN-user-owned-persona-execution.yaml
 phase: >-
   Platform T4, post-MVP free-tier substrate. Creates deferred_post_mvp T4.34 (the local sandboxed persona host,
-  depending on live T4.32 and deferred T4.27) and annotates T4.27 c11; cites T4.15 c10, T4.32 c1, T4.23 c6 and T4.24
-  c11 without changing them. Overseer run otl-product-direction: implemented after Decisions 232/233
+  depending on live T4.32, with deferred T4.27 blocking only its c7 and c8) and annotates T4.27 c10 and c11 and T4.19
+  c6; cites T4.15 c10, T4.32 c1, T4.23 c6 and T4.24 c11 without changing them. Overseer run otl-product-direction: implemented after Decisions 232/233
   (product-surface-and-open-core) and before Decision 235 (verification-weakening-earned-autonomy).
 scope:
 - file: docs/DECISIONS.md
@@ -58,7 +58,7 @@ scope:
     c11 plus 234 in T4.27's related_decisions; and a dated bracketed amendment on T4.19 c6 (the owner of Decision 234
     clause 4's change-id rule for loop identifiers) plus 234 in T4.19's related_decisions.
 bundled_recommendations: []
-followon_recs: [rec-4561]
+followon_recs: [rec-4561, rec-4566]
 infrastructure_dependencies:
 - >-
   LAMBDA-DEPLOY DEFERRED (CD.16 / Decision 79), per-artifact disposition. compute_affected_artifacts(<this plan's scope>)
@@ -91,11 +91,13 @@ acceptance_criteria:
   billing_shape local, with no tier row selecting them, and passes validate_inference_provider_registry (VP 6); at
   merge both rows cite rec-4561 (VP 9).
 - >-
-  T4.34 exists with depends_on including T4.32 and T4.27, criteria c1-c8 as STEP 6 drafts them (c6 and c7 blocked_by
-  T4.24) and Decision 234 in related_decisions; T4.27 c11 and T4.19 c6 carry their dated Decision 234 brackets and
-  both items list 234 (VP 7); at merge T4.34 is deferred_post_mvp with every criterion open and no live item depends on
-  it (VP 9).
-- rec-4561 is open (VP 11). The full presubmit tier passes on the committed, rebased tree (VP 1); after merge dec-N is in ops_decisions (VP 10).
+  T4.34 exists with depends_on including T4.32, criteria c1-c8 as STEP 6 drafts them and Decision 234 in
+  related_decisions; T4.27 c10, T4.27 c11 and T4.19 c6 carry their dated Decision 234 brackets and both items list 234
+  (VP 7); at merge T4.34 is deferred_post_mvp, depends exactly on [T4.32], has every criterion open with c6 blocked_by
+  T4.24, c7 by T4.24 and T4.27 and c8 by T4.27, and no live item depends on it (VP 9).
+- >-
+  rec-4561 is open (VP 11) and rec-4566 is open after merge (VP 12). The full presubmit tier passes on the committed,
+  rebased tree (VP 1); after merge dec-N is in ops_decisions (VP 10).
 verification_plan:
 - step: 1
   phase: pre-deploy
@@ -117,7 +119,9 @@ verification_plan:
   action: >-
     THE DECISION EXISTS, IS ENVELOPED, CARRIES EVERY CLAUSE, CITES THE FORGE-NEUTRAL COUPLING ROW AND STAYS INSIDE THE
     PUBLIC-CONTENT BOUNDARY. Located by title, so it survives renumbering; its size is left to validate_decisions_size
-    (VP 1) so the shard never pins an amendable entry's span (rec-4562's defect class). Red on origin/main.
+    (VP 1), and the edge and token asserts read only the pre-annotation body (split at the first '> **' or bare
+    '[Amendment' trailer), so a later sanctioned dated line never falsifies the shard (rec-4390's defect class; VP 9
+    checks the body is whole at merge). Red on origin/main.
   command: &vp2cmd >-
     bin/venv-python -c "import re,pathlib,yaml; from scripts.decisions_md import extract_amends_edges as ae;
     t=pathlib.Path('docs/DECISIONS.md').read_text(encoding='utf-8'); es=[m for m in re.finditer(r'^## Decision (\d+):
@@ -126,10 +130,11 @@ verification_plan:
     n=es[0].group(1); b=es[0].group(0); assert re.search('^'+chr(96)*3+r'yaml\s*\nnumber: '+n+r'\b', b, re.M), 'no bare
     yaml envelope carrying number '+n; assert 'value: numbered_decision' in b and chr(10)+'amends: [206, 212]'+chr(10) in
     b, 'envelope amends list'; assert ae(es[0].group(2))==[206, 212], ('title amends edges', ae(es[0].group(2)));
-    edges=re.findall(r'(?:amends|Amends|supersedes|Supersedes) Decision (\d+)', b); assert edges==['206'], ('unexpected
-    amends/supersedes edges', edges); assert 'dec-'+n+' (per Decision 84' in b and 'decision: '+n+chr(10) in b,
-    'Warehouse ID or stanza number drift'; bad=[w for w in ['Theseus','Guerdon','arn:',chr(36),chr(163),chr(8364)] if w
-    in b]+re.findall(r'\b\d{12}\b', b); assert not bad, ('public-boundary token', bad);
+    core=re.split(r'\n> \*\*|\n\[Amendment ', b)[0]; edges=re.findall(r'(?:amends|Amends|supersedes|Supersedes)
+    Decision (\d+)', core); assert edges==['206'], ('unexpected amends/supersedes edges', edges); assert 'dec-'+n+' (per
+    Decision 84' in b and 'decision: '+n+chr(10) in b, 'Warehouse ID or stanza number drift'; bad=[w for w in
+    ['Theseus','Guerdon','arn:',chr(36),chr(163),chr(8364)] if w in core]+re.findall(r'\b\d{12}\b', core); assert not
+    bad, ('public-boundary token', bad);
     p=yaml.safe_load(open('docs/contracts/ports.yaml')); pc=re.search(r'ports\.yaml (PC-\d+)', b); assert pc and
     pc.group(1) in [c['id'] for c in p['coupling_findings']], ('cited coupling row absent from ports.yaml', pc and
     pc.group(1)); need=['per-run git clone plus
@@ -170,9 +175,9 @@ verification_plan:
 - step: 3
   phase: pre-deploy
   action: >-
-    DECISIONS 206 AND 212 CARRY ONE DATED AMENDED-BY LINE NAMING N, AND 194 ONE DATED UPDATE LINE NAMING N, each after
-    its Related paragraph (later annotations may follow it); each original body survives (Decision 177). Red on
-    origin/main, where no line cites the new Decision.
+    DECISIONS 206 AND 212 CARRY A DATED AMENDED-BY LINE NAMING N, AND 194 A DATED UPDATE LINE NAMING N, each after its
+    Related paragraph, the first such line carrying this plan's phrases (later sanctioned lines naming N may follow);
+    each original body survives (Decision 177). Red on origin/main, where no line cites the new Decision.
   command: >-
     bin/venv-python -c "import re,pathlib; t=pathlib.Path('docs/DECISIONS.md').read_text(encoding='utf-8'); es=[m for m
     in re.finditer(r'^## Decision (\d+): (.*?)\n', t, re.M) if m.group(2).startswith('User-owned persona execution')];
@@ -187,7 +192,7 @@ verification_plan:
     point (clause 4, T4.24 c6)','the two stanza conditions remain the flip','Decision 171 clause 5','rec-3154']};
     keep={'206':'One subscription serves one individual, never shared or pooled.','212':'Change surface as
     verbs.','194':'Staged flip.'}; got={k:[l for l in blk(k).splitlines() if re.match(pat[k], l) and 'Decision '+n in l]
-    for k in need}; probs=[(k,'expected exactly one dated line naming '+n, len(got[k])) for k in need if len(got[k])!=1];
+    for k in need}; probs=[(k,'expected a dated line naming '+n) for k in need if not got[k]];
     assert not probs, probs; probs=[(k,[w for w in ws if w not in got[k][0]]) for k,ws in need.items() if [w for w in ws
     if w not in got[k][0]]]; probs+=[(k,'annotation sits before the Related paragraph') for k in need if
     blk(k).find(got[k][0]) < blk(k).find('**Related:**')]; probs+=[(k,'original body edited') for k,s in keep.items() if s
@@ -226,7 +231,7 @@ verification_plan:
     ad={a['id'] for a in h['adapters']}; assert {'sandbox_runtime','sandbox_runtime_windows'}<=ad, sorted(ad); assert
     h['oracle']['ref']=='local_container', h['oracle']; c=[x for x in p['coupling_findings'] if x['id']==pc.group(1)];
     assert len(c)==1, pc.group(1); c=c[0]; assert {'work_item_storage','orchestration_host','change_surface'}<=set(c['ports']),
-    c['ports']; miss=[w for w in ('execution_pr_url','pull-request number','T4.31 c2','node identifiers','T4.9a
+    c['ports']; miss=[w for w in ('execution_pr_url','pull-request number','T4.31 c2','plan_agent tuple','node identifiers','T4.9a
     c2','correlation ids of T4.9 and CD.38','T4.16 c3','T4.5 c4','telemetry_sessions','generic change id','Decision 234
     clause 4','T4.19 c6','T4.23 c6') if w not in c['description']]; assert not miss, miss; assert any('Decision 234' in
     r.get('summary','') and 'sandbox_runtime' in r.get('summary','') for r in p['amendment_log']), 'no amendment_log
@@ -268,18 +273,17 @@ verification_plan:
 - step: 7
   phase: pre-deploy
   action: >-
-    ROADMAP: T4.34 parses under the roadmap schema, depends on T4.32 and T4.27, carries c1-c8 with their pinned phrases,
-    cites Decision 234; T4.27 c11 and T4.19 c6 carry their dated Decision 234 brackets and both items list 234.
-    Lifecycle state (status,
-    criterion status, blocked_by, exact edge set) is VP 9's, so this shard survives T4.34's own work. Red on
-    origin/main.
+    ROADMAP: T4.34 parses under the roadmap schema, depends on T4.32, carries c1-c8 with their pinned phrases, cites
+    Decision 234; T4.27 c10, T4.27 c11 and T4.19 c6 carry their dated Decision 234 brackets and both items list 234.
+    Lifecycle state (status, criterion status, blocked_by including the T4.27 edge on c7 and c8, exact edge set) is VP
+    9's, so this shard survives T4.34's own work. Red on origin/main.
   command: &vp7cmd >-
     bin/venv-python -c "import yaml; from pathlib import Path; from scripts.platform_roadmap_state import load;
     load(Path('docs/ROADMAP-PLATFORM.yaml')); d=yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml')); ti={x['id']:x for x
     in d['tier_items']}; t=ti.get('T4.34'); assert t and 'sandbox-runtime' in t['name'], t and t['name']; assert
-    {'T4.32','T4.27'}<=set(t['depends_on']) and 234 in t['related_decisions'], (t['depends_on'],
-    t['related_decisions']); ec={c['id']:c for c in t['exit_criteria']}; need={'c1':('git clone --shared','never
-    hardlinked','workspace commit','owner repository is read-only','whole persona process','only writable
+    'T4.32' in t['depends_on'] and 234 in t['related_decisions'], (t['depends_on'], t['related_decisions']);
+    ec={c['id']:c for c in t['exit_criteria']}; need={'c1':('git clone --shared','never hardlinked','workspace
+    commit','owner repository is read-only','holds a ref on the run','whole persona process','only writable
     root','proxy allowlist','collects the run branch outside the sandbox','run clone is removed','pinned runtime
     reference','graduated shards'),'c2':('exact version','Decision 74','is not the pin','pin-bump PR'),'c3':('one
     gating suite','local_container oracle','a write outside the workspace is denied','a direct egress connection is
@@ -287,15 +291,18 @@ verification_plan:
     recorded by the Linux job','AppArmor'),'c4':('Decision 117 boundary path','base-ref check','cannot widen
     confinement'),'c5':('every credential store','saved login included','T4.24 c11','all network','Decision 211 clause
     3'),'c6':('T4.27 c7','one-digest rule','mandatory deny paths','.git/hooks/','routes to local_container or a remote
-    host','curl.exe','in-persona package restore','not isolated','WSL','/mnt/c','Docker Desktop','stronger
-    tiers'),'c7':('planning, implementation and consult personas','verdict personas default to the Actions
+    host','curl.exe','in-persona package restore','not isolated','WSL','/mnt/c','unprivileged user namespaces','Docker
+    Desktop','stronger tiers'),'c7':('planning, implementation and consult personas','verdict personas default to the Actions
     shell','check run','triggering actor','verdict fails, never skips','ontheloop/platform.yaml','Decision
     224'),'c8':('per-run state and config directory','config-directory override','never on the owner','never writable
     from the sandbox','outcome parity','passed by name','claude setup-token','never reads the value')}; assert
     set(need)<=set(ec), sorted(ec); miss={k:[w for w in ws if w not in ec[k]['text']] for k,ws in need.items()};
     miss={k:v for k,v in miss.items() if v}; assert not miss, miss; c11=[c for c in ti['T4.27']['exit_criteria'] if
-    c['id']=='c11'][0]['text']; assert all(w in c11 for w in ('[Amendment ','Decision 234 clause 3','triggering
-    actor','workflow_run chain','re-run','team API key (byok)','verdict fails, never skips')), c11[-400:]; c6=[c for c in
+    c['id']=='c11'][0]['text']; assert all(w in c11 for w in ('[Amendment ','Decision 234 clause 3','saved login gives
+    way','setup-token passed by name','T4.34 c8','both the verdict run attempt','triggering actor','workflow_run
+    chain','re-run','team API key (byok)','verdict fails, never skips')), c11[-500:]; c10=[c for c in
+    ti['T4.27']['exit_criteria'] if c['id']=='c10'][0]['text']; assert all(w in c10 for w in ('[Amendment ','Decision
+    234 clause 3','only subscription_setup_token','T4.34 c8')), c10[-300:]; c6=[c for c in
     ti['T4.19']['exit_criteria'] if c['id']=='c6'][0]['text']; assert all(w in c6 for w in ('[Amendment ','Decision
     234 clause 4','generic change id','accepted coupling')), c6[-300:]; assert 234 in ti['T4.27']['related_decisions']
     and 234 in ti['T4.19']['related_decisions'], (ti['T4.27']['related_decisions'], ti['T4.19']['related_decisions']);
@@ -324,8 +331,9 @@ verification_plan:
 - step: 9
   phase: pre-deploy
   action: >-
-    LIFECYCLE STATE AT MERGE. Roadmap: T4.34 is deferred_post_mvp, depends exactly on [T4.32, T4.27], every criterion
-    is open, c6 and c7 are blocked_by T4.24, and no item that is not deferred_post_mvp depends on it (Decision 93).
+    LIFECYCLE STATE AT MERGE. Decision 234's body carries no annotation yet (its pre-annotation body equals the whole
+    entry). Roadmap: T4.34 is deferred_post_mvp, depends exactly on [T4.32], every criterion is open, c6 is blocked_by
+    T4.24, c7 by T4.24 and T4.27, c8 by T4.27, and no item that is not deferred_post_mvp depends on it (Decision 93).
     Ports: the two adapters are pending with tiers supported and experimental and owner T4.34:c1, run_image is still
     the verb, local_container the pending oracle, change_surface has only its github adapter, the cited coupling row is
     accepted and owned by dec-N, and the open-coupling count equals origin/main's. Inference provider: both local-server
@@ -333,11 +341,14 @@ verification_plan:
   command: >-
     bin/venv-python -c "import re,pathlib,subprocess,yaml; t=pathlib.Path('docs/DECISIONS.md').read_text(encoding='utf-8');
     m=re.search(r'^## Decision (\d+): User-owned persona execution(.*?)(?=^## Decision |\Z)', t, re.M|re.S); assert m,
-    'Decision absent'; n=m.group(1); pcid=re.search(r'ports\.yaml (PC-\d+)', m.group(2)).group(1);
+    'Decision absent'; n=m.group(1); pcid=re.search(r'ports\.yaml (PC-\d+)', m.group(2)).group(1); b=m.group(0);
+    assert re.split(r'\n> \*\*|\n\[Amendment ', b)[0]==b, 'Decision 234 already carries an annotation';
     d=yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml')); ti={x['id']:x for x in d['tier_items']}; t4=ti.get('T4.34');
-    assert t4 and t4['status']=='deferred_post_mvp' and t4['depends_on']==['T4.32','T4.27'], t4 and (t4['status'],
+    assert t4 and t4['status']=='deferred_post_mvp' and t4['depends_on']==['T4.32'], t4 and (t4['status'],
     t4['depends_on']); ec={c['id']:c for c in t4['exit_criteria']}; assert all(c['status']=='open' for c in
-    ec.values()); assert all(ec[k].get('blocked_by')==[{'ref':'T4.24','until':'complete'}] for k in ('c6','c7'));
+    ec.values()); T24={'ref':'T4.24','until':'complete'}; T27={'ref':'T4.27','until':'complete'}; assert
+    ec['c6'].get('blocked_by')==[T24] and ec['c7'].get('blocked_by')==[T24,T27] and ec['c8'].get('blocked_by')==[T27],
+    [(k, ec[k].get('blocked_by')) for k in ('c6','c7','c8')];
     live=[i for i,x in ti.items() if 'T4.34' in (x.get('depends_on') or []) and x.get('status')!='deferred_post_mvp'];
     assert not live, live; p=yaml.safe_load(open('docs/contracts/ports.yaml')); h=[x for x in p['ports'] if
     x['id']=='persona_compute_host'][0]; ad={a['id']:a for a in h['adapters']}; assert
@@ -362,9 +373,10 @@ verification_plan:
   hermetic: false
   graduation: waive
   graduation_waiver_reason: >-
-    Every leg is lifecycle state that later work legitimately changes (T4.34 starting, an adapter landing or being
+    Every leg is lifecycle state that later work legitimately changes (a dated line on Decision 234, T4.34 starting or
+    its blockers completing, an adapter landing or being
     demoted under confinement-fails, a forge adapter under forge-or-local-versioning, rec-4561 rewriting the rows), and
-    the count leg compares against origin/main, so a standing shard would rot (rec-4562's defect class); the standing
+    the count leg compares against origin/main, so a standing shard would rot (rec-4390's defect class); the standing
     guards are validate_platform_roadmap and validate_ports_contract in both tiers.
 - step: 10
   phase: post-deploy
@@ -390,6 +402,19 @@ verification_plan:
   fix_if: A missing or closed rec means the plan-time file_rec did not land or was resolved; re-read it with recs_by_ids and report.
   hermetic: false
   graduation: not-applicable
+- step: 12
+  phase: post-deploy
+  action: >-
+    After merge, the stored-login follow-on rec (filed at plan time; it may start only once Decision 234 is on main) is
+    open and names subscription_stored_login, so the retirement of the saved-login path in project-configuration.yaml
+    and inference-provider.yaml has a live owner.
+  command: >-
+    bin/venv-python -c "from scripts.ops_data_portal import _fetch_rec_from_reader as f; r=f('rec-4566'); assert r and
+    r.get('status')=='open' and 'subscription_stored_login' in str(r.get('title')), r and (r.get('status'),
+    r.get('title')); print('STORED_LOGIN_REC_OK')"
+  expected: Prints STORED_LOGIN_REC_OK on an up-to-date main checkout.
+  fix_if: A missing or closed rec means the follow-on owner is gone; re-read it with recs_by_ids and re-file it through the portal if needed.
+  hermetic: false
 test_obligations:
 - source: docs/DECISIONS.md
   behavior: Decision 234 exists with its envelope, clauses, reversal stanza, Coverage line and public-boundary hygiene; VP 3 separately guards the 206/212/194 lines.
@@ -449,7 +474,8 @@ constraints:
 - No rescue agents or workaround loops (Decision 55); no emojis, ASCII hyphens, no eval or exec; commands run via bin/venv-python on bash.
 context:
 - "Decision-scout verdict FLAGS_FOUND (round 1, gate_run_id user-owned-persona-execution-decision-scout-r1-e6f477f3); CITE: 206, 212, 167, 177, 181, 93, 173, 211, 229; Decisions triaged: 183 of 183; Roadmap items intersected: 5; CONFLICT: 0; RELATED: 4"
-- "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE after 2 round(s) (r1 gate_run_id user-owned-persona-execution-plan-critique-r1-3802429b, r2 user-owned-persona-execution-plan-critique-r2-c600e600); round 3 pending"
+- "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE after 3 round(s) (r1 gate_run_id user-owned-persona-execution-plan-critique-r1-3802429b, r2 user-owned-persona-execution-plan-critique-r2-c600e600, r3 user-owned-persona-execution-plan-critique-r3-8a2d41ab); round 4 pending"
+- "Critique r3 dispositions (orchestrator decided-with-notice): F1 fixed -- STEP 6(b) and (c) bracket T4.27 c11 and c10 (the laptop saved login gives way to a setup-token passed by name; preflight derives only subscription_setup_token), pinned in VP 7, and follow-on rec-4566 owns retiring vendor_store from project-configuration.yaml's claude_cli credential row and subscription_stored_login from inference-provider.yaml (with the vocabulary shard's deprecated/ lifecycle), after Decision 234 is on main (VP 12); F2 fixed (Coverage c1-c8); F3 fixed (VP 2's edge and token asserts read the pre-annotation body, VP 9 checks it is whole at merge, VP 3 needs at least one line); O1 fold of decision-index-blast-radius-bounded into rec-4565 (14 red: 6 rec-4390, 8 rec-4565); O2 Problem reads no container-free adapter; O3 both triggering actors; O4 AppArmor in c6; O5 STEP 0 census re-check against T4.33; risk 3 the shell holds a ref on the run base (c1); Q2 T4.27 moves from item depends_on to c7 and c8 blocked_by (criterion-level blocked_by is supported); Q3 skipped (T4.34's own plan)."
 - "Critique r2 dispositions (orchestrator decided-with-notice): F1 fixed by changing the primitive -- a per-run git clone --shared replaces the linked worktree (whose commits write the owner's shared .git; a plain local clone hardlinks objects), the shell collecting the run branch outside the sandbox (T4.34 c1), and the backend runs on per-run state signed in by a credential passed by name, never the owner's configuration (cl.3, 206 annotation, T4.34 c8; c5 denies every credential store); F2 fixed (the thin shell checks the pull request's author and the run's triggering actor; detail in T4.27 c11 and T4.34 c7); F3 PC-09 census completed (T4.1, T4.9, CD.38, telemetry_sessions.pr_url as a pointer only); F4 VP 5 pins only this plan's adapters; F5 Coverage names the graduated shards and T4.19 c6 (bracketed) owns the change-id rule; F6 amends and introduces fields added; F7 VP 8 uses --numstat; rec-3846 cited; T4.34 effort L; c6 names srt's mandatory deny paths, checked against the README -- routed to local_container or a remote host, not WSL2, which runs the same srt profile; c3 names the hosted-runner legs. Byte budget: Windows tool list, Docker licence and Windows mechanism moved from the Decision to T4.34; the CLI-built-in-sandbox option line dropped (the Problem states it). STEP 1's Date placeholders, found literal, restored to DATE."
 - "Critique r1 dispositions (orchestrator decided-with-notice, inside the operator-confirmed approach): F1 fixed (PC-09 widened to orchestration_host with a census of T4.9a c2/c7/c9, T4.16 c3 and T4.5 c4; cl.4 reads 'Core surfaces specified after this Decision'; Coverage names the change-id rule's residual owner T4.23 c6); F2 fixed ('or the verdict fails, never skips (Decision 205 clause 2)' in cl.3, the 206 annotation and the T4.27 c11 bracket); F3 fixed (T4.34 c1 and c5 carve out the selected backend's own login and state for persona runs; c11 characterisation runs deny all credentials and network); F4 fixed (lifecycle legs moved from VP 5 and VP 7 to waived VP 9); F5 fixed (STEP 8 separates readiness, validator evidence, postflight evidence and push/PR outcome); F6 fixed (VP 2 and VP 5 find the row by the id Decision 234 cites; VP 6 drops the rec-4561 text pin); F7 fixed (exact pin); F8 fixed ('team API key (byok)'; the 206 annotation is scoped to a user's own machine); rec-4561's context gains the billing_shape reserved_meaning reconciliation (update_rec)."
 - "Flag dispositions (operator, Step 6b 2026-10-23): F1 WARN 184 pivot (every forge candidate first needs the 184 cl.3 / 205 cl.2 re-decision, PC-02); F2a NOTE 212 pivot (a coupling row, accepted); F2b NOTE 212 pivot (Windows legs alarm-not-gate); F3 NOTE 205 pivot (GitHub work only; in-persona OS-TLS restore is a limit); F4 NOTE 199 pivot (billing_shape local, rec-4561); F5 SPIRIT 185 pivot (T4.34 c4); F6 SPIRIT 194 pivot (grant-widening context only); CITE notes 206, 211, 181 and 93 adopted."
@@ -467,12 +493,12 @@ context:
 - "fork: decision number | chosen: 234, operator-allocated (232/233 -> 234 -> 235) | class: consistency-only | precedent: operator allocation, run otl-product-direction | precedent_kind: answered-fork | reversible: yes | persisted: STEP 1"
 - "fork: Coverage line | chosen: added per Decision 181 cl.2 (scout CITE) | class: consistency-only | precedent: Decision 181 cl.2; Decisions 229-231 | precedent_kind: decision | reversible: yes | persisted: Decision 234 Coverage line"
 - "Evidence: github.com/anthropics/sandbox-runtime README, retrieved 2026-10-23 -- Apache-2.0; Beta Research Preview; macOS sandbox-exec Seatbelt; Linux bubblewrap with a network namespace; Windows alpha (srt-sandbox local user, WFP egress fence, write-restricted token, one UAC prompt); Schannel tools cannot complete HTTPS inside; reads allowed by default; WSL not covered by the Windows network filter."
-- "Decision 93: T4.34 -> T4.32 is a deferred-to-live edge, legal (T4.27 -> T4.2 precedent); only live-to-deferred edges are barred."
+- "Decision 93: T4.34 -> T4.32 is a deferred-to-live edge, legal (T4.27 -> T4.2 precedent); only live-to-deferred edges are barred. T4.27 is a criterion-level blocked_by on c7 and c8 only, so c1-c6 can land for litellm-backend personas."
 - "Siblings (run otl-product-direction): product-surface-and-open-core (Decisions 232/233, T4.33; adds an inference-provider.yaml vocabulary row) implements first; verification-weakening-earned-autonomy (Decision 235) after. STEP 0 rebases onto them."
 - "Graduated shards (VP 2, 3, 5, 6, 7) are written to survive later lifecycle edits: no size, adapter tier or status, owner, run_image, exact adapter-list, other plans' adapters, coupling-status, blocked_by, tier-item-status or rec-pointer pin; VP 9 (waived) holds that merge-time state."
-- "Out of scope, filed at plan time: rec-4562 (three graduated shards red on main and never replayed: the Decision 184 and 209 size pins; the sibling's 184/209 annotations raise them further). rec-4191 (seed structural_assumptions) is adjacent, not bundled."
+- "Out of scope: rec-4562 was filed at plan time for three red shards (the Decision 184 and 209 size pins) and is superseded as a duplicate of rec-4390, which owns that span-cap class; rec-4565 owns the eight other red shards; standing replay is rec-3341, now depending on both. rec-4191 (seed structural_assumptions) is adjacent, not bundled."
 - 'red_overlap (Decision 226) at plan write, main 57c2ae53: {"verdict": "clear", "slo_hours": 4, "reds": []} -- rec-4552 closed by #1613, so the operator waiver (Decision 226 halt rule 1, run otl-product-direction) was not needed; STEP 0 re-runs it.'
-- "Dry run after critique r2 (STEPS 1-6 applied, then set aside): VP 2-9 green after (Decision 234 at 6,061 bytes; 2 open couplings, unchanged) and VP 2/3/5/6/7/9 red before (assertion_failed); decision conformance, size, supersession, currency, stanzas, roadmap schema, liveness, ports and inference checks PASS. Of 139 shards touching the edited files, 13 are red, and all 13 are equally red on clean main 57c2ae53 (three are rec-4562's), so none is caused by this change."
+- "Dry run after critique r3 (STEPS 1-6 applied, then set aside): VP 2-9 green after (Decision 234 at 6,076 bytes; 2 open couplings, unchanged) and VP 2/3/5/6/7/9 red before (assertion_failed); with a dated Update on 234 and a second 194 line naming 234 added, VP 2 and VP 3 stay green and only waived VP 9 flags it. Decision, roadmap, ports and inference checks PASS. Of 149 shards touching the five scope files, 14 are red, identically before and after (0 status changes): six rec-4390, eight rec-4565."
 pre_implementation_checklist:
 - Branch confirmed not on main; git fetch origin main and rebase FIRST (STEP 0)
 - docs/PROJECT_CONTEXT.md read
@@ -487,8 +513,12 @@ execution_steps:
   '## Decision 232:' and '## Decision 233:' headers and tier item T4.33 (product-surface-and-open-core); if not, STOP as
   blocked. Confirm no '## Decision 234:' header and no T4.34 item exists (operator and overseer allocations); if either
   is taken, STOP as blocked. The coupling id is the next free PC-NN in ports.yaml (PC-09 at drafting); if it is not
-  PC-09, substitute it in STEP 1's clause 4, reversal condition and Coverage line, in STEP 4 and in STEP 6(d) (VP 2,
-  VP 5 and VP 9 find the row by the id Decision 234 cites). DATE is the implement date. Confirm rec-4561 is open (VP 11). Re-run bin/venv-python -m
+  PC-09, substitute it in STEP 1's clause 4, reversal condition and Coverage line, in STEP 4 and in STEP 6(e) (VP 2,
+  VP 5 and VP 9 find the row by the id Decision 234 cites). Census re-check: once T4.33 is on main, read what it
+  specifies (its pull-request and diff views, its pull-request receipts in Q&A, its GitHub approvals) and add every
+  pull-request identifier it specifies to STEP 4(b)'s PC-09 census; STOP as blocked only if a new identifier class falls
+  outside PC-09's accepted scope (work-item storage, persona and loop identifiers, the plan projection, telemetry
+  pointers). DATE is the implement date. Confirm rec-4561 is open (VP 11). Re-run bin/venv-python -m
   scripts.session.preflight and bin/venv-python -m scripts.ci_rca.red_overlap --plan
   docs/plans/PLAN-user-owned-persona-execution.yaml; a block halts the session (Decision 226).
 - |
@@ -513,7 +543,7 @@ execution_steps:
   **Date:** DATE
   **Warehouse ID:** dec-234 (per Decision 84 backfill)
 
-  **Problem:** Decision 206 clause 5 names no OS sandbox and persona_compute_host has no adapter for a user's own machine; Claude Code's built-in sandbox covers its shell commands only. Decision 206 clause 2 lets one person's subscription run verdict personas on others' work; Decision 212 clause 5 orders no forge after GitHub.
+  **Problem:** Decision 206 clause 5 names no OS sandbox and persona_compute_host has no container-free adapter for a user's own machine; Claude Code's built-in sandbox covers its shell commands only. Decision 206 clause 2 lets one person's subscription run verdict personas on others' work; Decision 212 clause 5 orders no forge after GitHub.
 
   **Intent:** A persona runs on its owner's machine in a sandbox applied from outside, whatever the model; a subscription never pays for another person's work; the core assumes no one forge.
 
@@ -542,7 +572,7 @@ execution_steps:
       description: "A non-GitHub forge is needed, fully local product work starts in earnest, or demand forces local versioning: plan clause 4's next candidate; re-decide PC-09."
   ```
 
-  **Coverage (Decision 181 cl.2):** the adapter rows and PC-09 -- validate_ports_contract and the graduated shards; T4.34's deferred status -- validate_platform_roadmap; cl.1-3 -- T4.34 c1-c7 and T4.27 c10-c11, residual until built; cl.4's change-id rule -- T4.19 c6, unenforced; its billing_shape local -- rec-4561.
+  **Coverage (Decision 181 cl.2):** the adapter rows and PC-09 -- validate_ports_contract and the graduated shards; T4.34's deferred status -- validate_platform_roadmap; cl.1-3 -- T4.34 c1-c8 and T4.27 c10-c11, residual until built; cl.4's change-id rule -- T4.19 c6, unenforced; its billing_shape local -- rec-4561.
 
   **Related:** Decisions 93, 184, 185, 194, 199, 205, 206, 211, 212, 217; T4.15, T4.27, T4.32, T4.34.
 
@@ -615,15 +645,16 @@ execution_steps:
           bubblewrap) is supported and sandbox_runtime_windows (a dedicated local user, a write-restricted token and Windows
           Filtering Platform filters; one-time elevation; alpha upstream) experimental (Decision 212 clause 7).
           deferred_post_mvp (Decision 93), a free-tier substrate like T4.27; its edge to live T4.32 is legal, since only
-          live-to-deferred edges are barred.
-        depends_on: [T4.32, T4.27]
+          live-to-deferred edges are barred, and T4.27 blocks only c7 and c8 (the CLI-backend legs), so c1-c6 also serve
+          litellm-backend personas.
+        depends_on: [T4.32]
         files_in_scope:
           - src/persona_hosts/sandbox_runtime/    # new
           - tests/persona_hosts/sandbox_runtime/    # new
           - .github/workflows/persona-host-conformance.yml    # new -- ubuntu, macos and windows runners, no LLM, no credentials
         exit_criteria:
           - id: c1
-            text: "ADAPTER (Decision 234 clause 1) -- each run gets its own clone made with git clone --shared (objects reached through alternates, never hardlinked), so every git write, the workspace commit included (Decision 205 clause 5), stays inside the run directory and the owner repository is read-only to the persona; the whole persona process starts under the pinned srt with the run directory as its only writable root and egress only through srt's proxy allowlist, for any persona_backend; after the run the thin shell collects the run branch outside the sandbox (Decision 205 clause 2) and the run clone is removed; run_image's input generalises to a pinned runtime reference (an image digest on container hosts, the installed kernel and srt version here) by a provisional ports.yaml amendment that moves the graduated shards pinning run_image in the same change"
+            text: "ADAPTER (Decision 234 clause 1) -- each run gets its own clone made with git clone --shared (objects reached through alternates, never hardlinked), so every git write, the workspace commit included (Decision 205 clause 5), stays inside the run directory and the owner repository is read-only to the persona; the shell holds a ref on the run's base in the owner's repository for the run's duration, so the --shared clone cannot lose objects to a prune mid-run; the whole persona process starts under the pinned srt with the run directory as its only writable root and egress only through srt's proxy allowlist, for any persona_backend; after the run the thin shell collects the run branch outside the sandbox (Decision 205 clause 2) and the run clone is removed; run_image's input generalises to a pinned runtime reference (an image digest on container hosts, the installed kernel and srt version here) by a provisional ports.yaml amendment that moves the graduated shards pinning run_image in the same change"
             status: open
           - id: c2
             text: "PIN -- srt is pinned to an exact version (Decision 74's pin pattern, as T4.27 c8 pins the CLI); preflight refuses an installed srt whose version is not the pin; a pin-bump PR runs c3's suite before it merges"
@@ -638,27 +669,30 @@ execution_steps:
             text: "READS (Decision 211 clause 3) -- the profile denies reads of every credential store (cloud, git and agent credential files), the backend's own saved login included; a T4.24 c11 characterisation run under this adapter also denies all network, and a host that cannot deny those reads is not a c11 sandbox"
             status: open
           - id: c6
-            text: "PARITY AND LIMITS -- this lane's parity is T4.27 c7's suite, never the one-digest rule (Decision 205 clause 2, T4.2 c13, T4.32 c1); srt always write-denies its mandatory deny paths inside the checkout (.mcp.json, .gitmodules, .claude/commands/, .claude/agents/, .vscode/, .idea/, .git/hooks/, .git/config and the shell rc files), so a change touching them routes to local_container or a remote host (WSL2 runs the same srt profile); end-user documentation (T4.27 c13's class, shipped with T4.24's package) states the Windows limits -- OS-TLS tools (curl.exe, Invoke-WebRequest, dotnet restore, winget) fail HTTPS inside it, an in-persona package restore included; reads are not isolated across sandboxed sessions; its network filter does not cover WSL; on a WSL2 /mnt/c mount Windows ACLs, not Linux, decide writes -- and the stronger tiers (WSL2; local_container, where Docker Desktop needs a paid licence at larger companies; remote hosts)"
+            text: "PARITY AND LIMITS -- this lane's parity is T4.27 c7's suite, never the one-digest rule (Decision 205 clause 2, T4.2 c13, T4.32 c1); srt always write-denies its mandatory deny paths inside the checkout (.mcp.json, .gitmodules, .claude/commands/, .claude/agents/, .vscode/, .idea/, .git/hooks/, .git/config and the shell rc files), so a change touching them routes to local_container or a remote host (WSL2 runs the same srt profile); end-user documentation (T4.27 c13's class, shipped with T4.24's package) states the Windows limits -- OS-TLS tools (curl.exe, Invoke-WebRequest, dotnet restore, winget) fail HTTPS inside it, an in-persona package restore included; reads are not isolated across sandboxed sessions; its network filter does not cover WSL; on a WSL2 /mnt/c mount Windows ACLs, not Linux, decide writes; on Linux, Ubuntu 23.10 and later (24.04 included) restrict unprivileged user namespaces through AppArmor, which must admit bubblewrap -- and the stronger tiers (WSL2; local_container, where Docker Desktop needs a paid licence at larger companies; remote hosts)"
             status: open
             blocked_by: [{ref: T4.24, until: complete}]
           - id: c7
             text: "PLACEMENT (Decision 234 clauses 1 and 3) -- on user-owned substrate the planning, implementation and consult personas default to sandbox_runtime; Decision 205 clause 1's verdict personas default to the Actions shell and may be configured onto it, the verdict still a check run under the dedicated verdict App (Decision 205 clause 2); a subscription-backed verdict run there proceeds only when the pull request's author and the run's triggering actor are the subscription owner, and otherwise runs on a team API key (byok) or its verdict fails, never skips; the choice is a per-persona setting in ontheloop/platform.yaml with a docs/contracts/project-configuration.yaml row (Decision 224)"
             status: open
-            blocked_by: [{ref: T4.24, until: complete}]
+            blocked_by: [{ref: T4.24, until: complete}, {ref: T4.27, until: complete}]
           - id: c8
             text: "BACKEND STATE (Decision 234 clause 3) -- the backend runs on a per-run state and config directory inside the run directory (for the Claude CLI, its config-directory override), never on the owner's own configuration, so the owner's settings, hooks, memory, MCP, plugin, skill, agent and command configuration are never writable from the sandbox and never load into a run (Decision 206 clause 5; outcome parity with the Actions and container twins, Decision 206 clause 4); it signs in with a credential passed by name -- for the Claude CLI a token the owner minted with claude setup-token (Decision 206 clause 2) -- and On The Loop never reads the value"
             status: open
+            blocked_by: [{ref: T4.27, until: complete}]
         related_decisions: [74, 185, 205, 206, 211, 212, 224, 234]
         effort: L
         strategic: false
         status: deferred_post_mvp
         note: "Created by PLAN-user-owned-persona-execution (Decision 234)."
     (b) T4.27 c11: append one line at the end of its folded text (same indentation, no existing line changed):
-          [Amendment DATE, Decision 234 clause 3 -- a subscription-backed verdict job runs only when the pull request's author and the run attempt's triggering actor (on the workflow_run chain, the upstream run's) are the subscription owner: a collaborator's push or a maintainer's re-run fails the check while the owner's own re-run passes, and any other pull request runs on a team API key (byok) through LiteLLM or the verdict fails, never skips (Decision 205 clause 2)]
-    (c) T4.27 related_decisions: [164, 184, 185, 199, 205, 206, 234].
-    (d) T4.19 c6: insert, before the closing double quote of its one-line text, a space and:
+          [Amendment DATE, Decision 234 clause 3 -- on the local adapter the laptop row's saved login gives way to per-run state signed in by a claude setup-token passed by name (T4.34 c8); a subscription-backed verdict job runs only when the pull request's author and both the verdict run attempt's triggering actor and, on the workflow_run chain, the upstream run's are the subscription owner: a collaborator's push or a maintainer's re-run fails the check while the owner's own re-run passes, and any other pull request runs on a team API key (byok) through LiteLLM or the verdict fails, never skips (Decision 205 clause 2)]
+    (c) T4.27 c10: append one line at the end of its folded text (same indentation, no existing line changed):
+          [Amendment DATE, Decision 234 clause 3 -- with the laptop's saved login retired (a persona run on the local adapter signs in with a setup-token passed by name, T4.34 c8), preflight derives only subscription_setup_token]
+    (d) T4.27 related_decisions: [164, 184, 185, 199, 205, 206, 234].
+    (e) T4.19 c6: insert, before the closing double quote of its one-line text, a space and:
           [Amendment DATE, Decision 234 clause 4 -- an identifier this item newly specifies for a change is a generic change id, never a pull request number; identifiers specified before Decision 234 are accepted coupling PC-09]
-    (e) T4.19 related_decisions: [39, 55, 75, 185, 212, 234].
+    (f) T4.19 related_decisions: [39, 55, 75, 185, 212, 234].
 - >-
   STEP 7 -- Run VP 2-9 and VP 11 on the working tree; loop until green; on an unrecoverable failure stop and RCA
   (Decision 55). Then register VP 2, 3, 5, 6 and 7 as graduated verification-registry shards under their
