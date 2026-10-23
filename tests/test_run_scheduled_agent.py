@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from typing import Any, Callable
+from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 import yaml
@@ -14,9 +16,11 @@ import scripts.run_scheduled_agent as sched_mod
 from scripts.run_scheduled_agent import (
     _match_cron_field,
     _smoke_test,
+    _trigger_lambda,
     is_agent_due,
     load_manifest,
     main,
+    parse_findings,
     run_agent,
 )
 
@@ -155,18 +159,10 @@ class TestRunAgent:
             "description": "Test agent",
         }
 
-    def test_dry_run_returns_true(self, tmp_path: Path, prompt_file: Path) -> None:
-        agent = self._make_agent(str(prompt_file))
-        with patch.object(sched_mod, "_REPO_ROOT", tmp_path):
-            # dry_run=True; make prompt_path absolute so REPO_ROOT / path doesn't break
-            # Override agent's prompt_path to be absolute
-            agent["prompt_path"] = str(prompt_file)
-            # Patch _REPO_ROOT to root so Path(_REPO_ROOT) / prompt_path works
-        # Use absolute path so join doesn't depend on _REPO_ROOT
+    def test_dry_run_returns_true(self, prompt_file: Path) -> None:
+        agent = self._make_agent(prompt_file.name)
         with patch.object(sched_mod, "_REPO_ROOT", prompt_file.parent):
-            agent2 = dict(agent)
-            agent2["prompt_path"] = prompt_file.name
-            result = run_agent(agent2, dry_run=True)
+            result = run_agent(agent, dry_run=True)
         assert result is True
 
     def test_missing_prompt_returns_false(self, tmp_path: Path) -> None:
@@ -223,9 +219,6 @@ class TestRunAgent:
 
 
 class TestMain:
-    def _patch_manifest(self, manifest_path: Path) -> list[dict]:
-        return VALID_MANIFEST["agents"]
-
     def test_list_flag_returns_zero(self, manifest_file: Path) -> None:
         with patch("scripts.run_scheduled_agent.load_manifest", return_value=VALID_MANIFEST["agents"]):
             exit_code = main(["--list"])
@@ -354,22 +347,13 @@ class TestTriggerLambda:
 
     def test_trigger_lambda_constructs_correct_subprocess_command(self) -> None:
         """--trigger-lambda passes the correct aws lambda invoke command."""
-        import json as _json
-
-        from scripts.run_scheduled_agent import _trigger_lambda
-
         mock_result = MagicMock()
         mock_result.returncode = 0
-
-        tmp_response = '{"StatusCode": 200}'
-        _file_ctx = MagicMock()
-        _file_ctx.__enter__ = MagicMock(return_value=MagicMock(read=MagicMock(return_value=tmp_response)))
-        _file_ctx.__exit__ = MagicMock(return_value=False)
 
         with (
             patch("scripts.run_scheduled_agent.subprocess.run", return_value=mock_result) as mock_run,
             patch("scripts.run_scheduled_agent.tempfile.mkstemp", return_value=(0, "/tmp/test-out.json")),
-            patch("builtins.open", MagicMock(return_value=_file_ctx)),
+            patch("builtins.open", mock_open(read_data='{"StatusCode": 200}')),
             patch("scripts.run_scheduled_agent.os.close"),
             patch("scripts.run_scheduled_agent.os.unlink"),
         ):
@@ -385,13 +369,11 @@ class TestTriggerLambda:
         assert "agent-platform-scheduled-agent-dispatcher" in cmd
         assert "--payload" in cmd
         payload_idx = cmd.index("--payload") + 1
-        payload = _json.loads(cmd[payload_idx])
+        payload = json.loads(cmd[payload_idx])
         assert payload == {"force_agent": "rec-curator"}
 
     def test_trigger_lambda_returns_1_on_subprocess_failure(self) -> None:
         """Returns exit code 1 when the aws CLI invocation fails."""
-        from scripts.run_scheduled_agent import _trigger_lambda
-
         mock_result = MagicMock()
         mock_result.returncode = 1
         mock_result.stderr = "An error occurred"
@@ -435,10 +417,6 @@ class TestSmokeTest:
         s3_result = MagicMock(returncode=0, stdout=s3_response, stderr="")
 
         # _trigger_lambda reads a temp file for Lambda response
-        _file_ctx = MagicMock()
-        _file_ctx.__enter__ = MagicMock(return_value=MagicMock(read=MagicMock(return_value='{"StatusCode": 200}')))
-        _file_ctx.__exit__ = MagicMock(return_value=False)
-
         with (
             patch(
                 "scripts.run_scheduled_agent.subprocess.run",
@@ -448,7 +426,7 @@ class TestSmokeTest:
                 "scripts.run_scheduled_agent.tempfile.mkstemp",
                 return_value=(0, "/tmp/smoke.json"),
             ),
-            patch("builtins.open", MagicMock(return_value=_file_ctx)),
+            patch("builtins.open", mock_open(read_data='{"StatusCode": 200}')),
             patch("scripts.run_scheduled_agent.os.close"),
             patch("scripts.run_scheduled_agent.os.unlink"),
         ):
@@ -503,10 +481,6 @@ class TestSmokeTest:
         invoke_result = MagicMock(returncode=0, stdout="", stderr="")
         s3_result = MagicMock(returncode=0, stdout=s3_response, stderr="")
 
-        _file_ctx = MagicMock()
-        _file_ctx.__enter__ = MagicMock(return_value=MagicMock(read=MagicMock(return_value='{"StatusCode": 200}')))
-        _file_ctx.__exit__ = MagicMock(return_value=False)
-
         with (
             patch(
                 "scripts.run_scheduled_agent.subprocess.run",
@@ -516,7 +490,7 @@ class TestSmokeTest:
                 "scripts.run_scheduled_agent.tempfile.mkstemp",
                 return_value=(0, "/tmp/smoke.json"),
             ),
-            patch("builtins.open", MagicMock(return_value=_file_ctx)),
+            patch("builtins.open", mock_open(read_data='{"StatusCode": 200}')),
             patch("scripts.run_scheduled_agent.os.close"),
             patch("scripts.run_scheduled_agent.os.unlink"),
         ):
@@ -530,10 +504,6 @@ class TestSmokeTest:
         invoke_result = MagicMock(returncode=0, stdout="", stderr="")
         s3_result = MagicMock(returncode=0, stdout="null", stderr="")
 
-        _file_ctx = MagicMock()
-        _file_ctx.__enter__ = MagicMock(return_value=MagicMock(read=MagicMock(return_value='{"StatusCode": 200}')))
-        _file_ctx.__exit__ = MagicMock(return_value=False)
-
         with (
             patch(
                 "scripts.run_scheduled_agent.subprocess.run",
@@ -543,7 +513,7 @@ class TestSmokeTest:
                 "scripts.run_scheduled_agent.tempfile.mkstemp",
                 return_value=(0, "/tmp/smoke.json"),
             ),
-            patch("builtins.open", MagicMock(return_value=_file_ctx)),
+            patch("builtins.open", mock_open(read_data='{"StatusCode": 200}')),
             patch("scripts.run_scheduled_agent.os.close"),
             patch("scripts.run_scheduled_agent.os.unlink"),
         ):
@@ -557,10 +527,6 @@ class TestSmokeTest:
         invoke_result = MagicMock(returncode=0, stdout="", stderr="")
         s3_result = MagicMock(returncode=1, stdout="", stderr="s3 error")
 
-        _file_ctx = MagicMock()
-        _file_ctx.__enter__ = MagicMock(return_value=MagicMock(read=MagicMock(return_value='{"StatusCode": 200}')))
-        _file_ctx.__exit__ = MagicMock(return_value=False)
-
         with (
             patch(
                 "scripts.run_scheduled_agent.subprocess.run",
@@ -570,7 +536,7 @@ class TestSmokeTest:
                 "scripts.run_scheduled_agent.tempfile.mkstemp",
                 return_value=(0, "/tmp/smoke.json"),
             ),
-            patch("builtins.open", MagicMock(return_value=_file_ctx)),
+            patch("builtins.open", mock_open(read_data='{"StatusCode": 200}')),
             patch("scripts.run_scheduled_agent.os.close"),
             patch("scripts.run_scheduled_agent.os.unlink"),
         ):
@@ -603,3 +569,90 @@ class TestSmokeTest:
 
         assert exit_code == 0
         mock_st.assert_called_once_with("doc-freshness")
+
+
+def test_extract_findings_empty_output() -> None:
+    assert parse_findings("  \n") == []
+
+
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [('[{"id": 1}]', [{"id": 1}]), ('{"id": 1}', [{"raw": '{"id": 1}'}]), ("not json", [{"raw": "not json"}])],
+)
+def test_extract_findings_non_empty_output(output: str, expected: list[dict]) -> None:
+    assert parse_findings(output) == expected
+
+
+def _invoke_writing(body: str | None) -> Callable[..., MagicMock]:
+    def _run(cmd: list[str], **_kwargs: Any) -> MagicMock:
+        if body is None:
+            os.unlink(cmd[-1])
+        else:
+            Path(cmd[-1]).write_text(body, encoding="utf-8")
+        return MagicMock(returncode=0, stderr="")
+
+    return _run
+
+
+def test_trigger_lambda_json_parse_failure(capsys: pytest.CaptureFixture[str]) -> None:
+    with patch.object(sched_mod.subprocess, "run", side_effect=_invoke_writing("plain text body")):
+        assert _trigger_lambda("doc-freshness") == 0
+    assert capsys.readouterr().out.strip() == "plain text body"
+
+
+@pytest.mark.parametrize(
+    ("run_effect", "exit_code", "expected"),
+    [
+        (_invoke_writing(""), 0, "(empty Lambda response body)"),
+        (_invoke_writing(None), 0, "Could not read Lambda response file"),
+        (FileNotFoundError("aws"), 1, "Lambda invocation error"),
+    ],
+)
+def test_trigger_lambda_response_and_error_paths(
+    run_effect: Any, exit_code: int, expected: str, capsys: pytest.CaptureFixture[str], caplog: pytest.LogCaptureFixture
+) -> None:
+    with patch.object(sched_mod.subprocess, "run", side_effect=run_effect):
+        assert _trigger_lambda("doc-freshness") == exit_code
+    assert expected in capsys.readouterr().out + caplog.text
+
+
+def _smoke_with_s3_stdout(stdout: str) -> int:
+    ok = MagicMock(returncode=0, stdout="", stderr="")
+    s3 = MagicMock(returncode=0, stdout=stdout, stderr="")
+    with (
+        patch.object(sched_mod.subprocess, "run", side_effect=[ok, s3]),
+        patch.object(sched_mod, "_trigger_lambda", return_value=0),
+    ):
+        return _smoke_test("doc-freshness")
+
+
+def test_smoke_test_s3_missing_last_modified(caplog: pytest.LogCaptureFixture) -> None:
+    assert _smoke_with_s3_stdout(json.dumps({"Key": "agents/doc-freshness/a.jsonl"})) == 3
+    assert "LastModified missing" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("stdout", "message"),
+    [("not json", "could not parse S3 response"), ('{"LastModified": "yesterday"}', "could not parse LastModified")],
+)
+def test_smoke_test_s3_unparseable_returns_3(stdout: str, message: str, caplog: pytest.LogCaptureFixture) -> None:
+    assert _smoke_with_s3_stdout(stdout) == 3
+    assert message in caplog.text
+
+
+@pytest.mark.parametrize(("name", "dispatched"), [("Bad_Name", 0), ("doc-freshness", 1)])
+def test_main_trigger_lambda_validates_then_dispatches(name: str, dispatched: int) -> None:
+    with patch.object(sched_mod, "_trigger_lambda", return_value=0) as mock_trigger:
+        assert main(["--trigger-lambda", name]) == 1 - dispatched
+    assert mock_trigger.call_count == dispatched
+
+
+def test_main_due_branch_runs_due_agents(capsys: pytest.CaptureFixture[str]) -> None:
+    with (
+        patch.object(sched_mod, "load_manifest", return_value=VALID_MANIFEST["agents"]),
+        patch.object(sched_mod, "is_agent_due", return_value=True),
+        patch.object(sched_mod, "run_agent", side_effect=[True, False]) as mock_run,
+    ):
+        assert main(["--due"]) == 1
+    assert [c.args[0]["name"] for c in mock_run.call_args_list] == ["doc-freshness", "orphan-code"]
+    assert "Running 2 agent(s) due" in capsys.readouterr().out
