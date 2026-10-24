@@ -1,7 +1,6 @@
-"""close / telemetry-session concern: tests/session/postflight/test_close.py (rec-2709 Wave 10).
+"""close concern: tests/session/postflight/test_close.py (rec-2709 Wave 10).
 
-Split from the former tests/test_session_postflight.py monolith: TestCloseMode,
-TestCloseTelemetrySession.
+Split from the former tests/test_session_postflight.py monolith: TestCloseMode.
 """
 
 from __future__ import annotations
@@ -102,35 +101,3 @@ class TestCloseMode:
         captured = capsys.readouterr()
         data = json.loads(captured.out)
         assert data["intent_achieved"] is None
-
-
-class TestCloseTelemetrySession:
-    """Tests for close_telemetry_session()."""
-
-    def test_state_file_exists_removes_state_file(self, tmp_path: Path) -> None:
-        """When the state file exists, close_telemetry_session consumes and removes it."""
-        import json as _json
-
-        state_file = tmp_path / ".telemetry-active-session.json"
-        state = {
-            "session_id": "test-uuid-1234",
-            "workflow": "implement",
-            "branch": "agent/test",
-            "started_at": "2025-01-01T00:00:00+00:00",
-        }
-        state_file.write_text(_json.dumps(state), encoding="utf-8")
-
-        with patch("scripts.postflight._common.TELEMETRY_ACTIVE_SESSION_FILE", state_file):
-            _postflight.close_telemetry_session(outcome="success", files_changed=3)
-
-        assert not state_file.exists()
-
-    def test_missing_state_file_does_not_crash(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
-        """When state file is absent, logs a warning and returns without error."""
-        missing = tmp_path / ".telemetry-active-session.json"
-        with patch("scripts.postflight._common.TELEMETRY_ACTIVE_SESSION_FILE", missing):
-            _postflight.close_telemetry_session(outcome="success")
-
-        captured = capsys.readouterr()
-        assert "WARNING" in captured.err
-        assert "Skipping" in captured.err

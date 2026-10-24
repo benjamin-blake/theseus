@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
+import subprocess  # noqa: F401  (tests/session/preflight/test_env_git.py patches session_preflight.subprocess.run)
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -158,7 +158,6 @@ from scripts.roadmap import platform_roadmap
 from scripts.sync.ops import _rebuild_local_cache as _sync_ops_pull  # noqa: F401  (kept for back-compat test patch targets)
 
 PREFLIGHT_REPORT = _common.ROOT / "logs" / ".preflight-report.json"
-TELEMETRY_ACTIVE_SESSION_FILE = _common.ROOT / "logs" / ".telemetry-active-session.json"
 
 
 def main(roadmap_detail: str = "slim") -> int:
@@ -464,27 +463,6 @@ def _slim_roadmap_state(state: dict, full: bool = False) -> dict:
     }
 
 
-def open_telemetry_session(workflow: str, branch: str) -> str:
-    """Open a session and record its state to the active-session file.
-
-    Writes ``logs/.telemetry-active-session.json`` containing the session_id,
-    workflow, branch, and started_at timestamp.  Returns the session_id UUID.
-    """
-    import uuid  # noqa: PLC0415
-
-    session_id = str(uuid.uuid4())
-
-    state = {
-        "session_id": session_id,
-        "workflow": workflow,
-        "branch": branch,
-        "started_at": datetime.now(timezone.utc).isoformat(),
-    }
-    TELEMETRY_ACTIVE_SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-    TELEMETRY_ACTIVE_SESSION_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
-    return session_id
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Pre-session environment and context check",
@@ -493,22 +471,6 @@ if __name__ == "__main__":
         "--health",
         action="store_true",
         help=("Run only the data-quality health check and print the telemetry-store gauge. Exits 0."),
-    )
-    parser.add_argument(
-        "--open-session",
-        action="store_true",
-        dest="open_session",
-        help="Open a telemetry session and write state to logs/.telemetry-active-session.json",
-    )
-    parser.add_argument(
-        "--workflow",
-        default="manual",
-        help="Workflow name for telemetry (used with --open-session)",
-    )
-    parser.add_argument(
-        "--branch",
-        default="",
-        help="Branch name for telemetry (used with --open-session; defaults to current git branch)",
     )
     parser.add_argument(
         "--roadmap-detail",
@@ -526,22 +488,6 @@ if __name__ == "__main__":
     if args.health:
         context_docs.print_data_quality_health()
         print(telemetry_health.format_gauge(telemetry_health.check_telemetry_health()))
-        sys.exit(0)
-
-    if args.open_session:
-        branch = args.branch
-        if not branch:
-            result = subprocess.run(
-                ["git", "branch", "--show-current"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                cwd=_common.ROOT,
-            )
-            branch = result.stdout.strip() if result.returncode == 0 else "unknown"
-        sid = open_telemetry_session(workflow=args.workflow, branch=branch)
-        print(sid)
         sys.exit(0)
 
     sys.exit(main(roadmap_detail=args.roadmap_detail))
