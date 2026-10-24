@@ -35,7 +35,7 @@ You are a Lead Software Developer writing production-quality Python. Primary dev
 - Terraform apply model: see `environment-taxonomy.yaml` (Axis A + Guard classification subsection) -- that file is the sole SoT. Short form: sandbox auto-applies behind the deterministic guard (Decision 77); in-budget IAM inline-policy/attachment UPDATEs on managed boundary-carrying roles now auto-apply (T2.25 / Decision 92 point 5); trust/destroy/out-of-budget IAM route to the `tf-gated-apply` Environment. Bootstrap root is admin-only out-of-band.
 - **Deployment model (Decision 126):** three agent intents, one trigger each -- infra = open a PR touching `terraform/**`, CI plans and applies; code = the governed code-deploy channel (Terraform not involved); red/drift = the heal verb `docs/contracts/deploy-paths.yaml`'s reconcile row selects. Agents never run terraform apply as a self-directed, routine action -- the sole exception is the human-gated break-glass admin tier (below/`terraform/CLAUDE.md`), where a human reviews and explicitly directs the apply before an agent executes it; operators may always invoke it directly. See `docs/contracts/deploy-paths.yaml` for the full intent -> trigger -> recovery index.
 - **Lambda deploy channel (Decision 125/126):** the DuckLake Lambdas' code is decoupled from `terraform/personal` infra apply as of #544 (see `environment-taxonomy.yaml` (conformance) and `docs/contracts/build-lambda.yaml`'s `deploy_channels`) and deploy through a governed code-deploy CD channel; `bin/venv-python -m scripts.build_lambda --ducklake-only --deploy` is break-glass-only, never the routine default. See `docs/contracts/deploy-paths.yaml` for the authoritative channel status. Heuristic: when a production action (e.g. a Lambda code deploy) is auto-denied or has no obvious in-session path, check `docs/contracts/deploy-paths.yaml` first, then grep `.github/workflows/` for a governed CD path before falling back to a local permission grant.
-- Windows subprocess: pass `encoding='utf-8', errors='replace'` with `text=True`. Use `sys.executable` — not the string `'python'` or `'pip'`.
+- Windows subprocess: pass `encoding='utf-8', errors='replace'` with `text=True`. Use `sys.executable` - not the string `'python'` or `'pip'`.
 - Scope boundary (LOCATION touched-files + CONTENT never-weaken invariants, evaluator `validate_scope_boundary`) is `docs/contracts/implement-scope-boundary.yaml` (Decision 59); out-of-scope bugs become recommendations via `scripts/ops_data_portal.py`, not inline fixes.
 - Executor/adapter/port code: record cross-port couplings and repo-structure assumptions in `docs/contracts/ports.yaml` (Decision 212).
 
@@ -45,7 +45,7 @@ You are a Lead Software Developer writing production-quality Python. Primary dev
 - A budget raise is a deliberate, reviewable exception: the entry line in `config/sloc_budgets.yaml` must carry an inline `# raise-approved: dec-NNN <reason>` marker naming a real `## Decision NNN:` header that AUTHORIZES the entry (Decision 165) -- `validate_sloc_budget_raises` fails the PR on any unmarked increase, new >500-SLOC registration, or unauthorized marker; decreases and removals are always unrestricted.
 - `--update-sloc-budgets` never auto-seeds a newly-oversized, unregistered file -- decompose it, or register it deliberately with the marker.
 
-## Branching — never edit or commit on `main`
+## Branching - never edit or commit on `main`
 **Hard rule: do not run `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, or any `git commit` / `git push` command while the current branch is `main`.** If you're on main, the only allowed actions are read-only commands and creating a new branch. See `## Git-ops procedure` for the full branching topology.
 
 - **See current branch**: the statusline at the bottom of the prompt shows it. It will read `WARNING: ON MAIN` if you're on main. Or run `git branch --show-current`.
@@ -64,11 +64,11 @@ You are a Lead Software Developer writing production-quality Python. Primary dev
   build + deploy + smoke-test (V3 tier); stub artifacts do not. `config/agent/` is NOT
   Lambda-packaged. See the planning skill for the affected-artifact detection method.
 
-## Memory policy — CLAUDE.md is canonical persistence
+## Memory policy - CLAUDE.md is canonical persistence
 Do **not** write to the auto-memory system (`~/.claude/projects/.../memory/`) in this project. The user's persistence model is git-tracked CLAUDE.md files (root + per-directory) plus structured logs (`docs/SESSION_LOG.md`, `docs/DECISIONS.md`).
 
 - When you learn something durable, **propose** adding it to the appropriate CLAUDE.md and let the user approve. Do not silently save.
-- When the user says "remember this", propose a CLAUDE.md edit — don't reach for auto-memory.
+- When the user says "remember this", propose a CLAUDE.md edit - don't reach for auto-memory.
 
 ## Agent-First Repository
 
@@ -94,11 +94,11 @@ skills, slash commands -- are optimised for agent loading efficiency, not human 
 ## Skills and slash commands
 
 Decision 90 four-tier workflow (end-goal: /orient -> /plan -> /implement -> /develop-executor; current: /orient -> /plan -> /implement, executor frozen per Decision 67):
-- `/orient` — read-only orientation: surfaces eligible work, CI-RCA triage, ranked what-to-work-on, and up to 5 disjoint `/plan` prompts with an overlap matrix and keystone-first sequencing. Run before `/plan` to choose what to work on. Produces a chat reply only; writes nothing. Invokes the `orient` skill.
-- `/plan` — clarifies intent, runs preflight, produces `docs/plans/PLAN-{slug}.yaml`. Assumes a specific item has been chosen (run `/orient` first). Invokes the `planning` skill.
-- `/implement` — executes an IMPLEMENTATION plan or scopes a STRATEGIC plan into recommendations. Invokes the `implement` and `code-review` skills.
-- `/develop-executor` — supervisor for executor (Lambda) development.
-- `/audit` — composes a self-contained audit prompt (`docs/audit-prompts/AUDIT-{slug}.md`) for a high-capability model to execute in a fresh session; deep recon + zero-context subagent verification happen in the composing session so the expensive model pays only for judgment. Performs no audit itself. Invokes the `audit-prompt` skill.
+- `/orient` - read-only orientation: surfaces eligible work, CI-RCA triage, ranked what-to-work-on, and up to 5 disjoint `/plan` prompts with an overlap matrix and keystone-first sequencing. Run before `/plan` to choose what to work on. Produces a chat reply only; writes nothing. Invokes the `orient` skill.
+- `/plan` - clarifies intent, runs preflight, produces `docs/plans/PLAN-{slug}.yaml`. Assumes a specific item has been chosen (run `/orient` first). Invokes the `planning` skill.
+- `/implement` - executes an IMPLEMENTATION plan or scopes a STRATEGIC plan into recommendations. Invokes the `implement` and `code-review` skills.
+- `/develop-executor` - supervisor for executor (Lambda) development.
+- `/audit` - composes a self-contained audit prompt (`docs/audit-prompts/AUDIT-{slug}.md`) for a high-capability model to execute in a fresh session; deep recon + zero-context subagent verification happen in the composing session so the expensive model pays only for judgment. Performs no audit itself. Invokes the `audit-prompt` skill.
 
 `/overseer` is an orchestration meta-layer, not a fifth tier: it composes the existing `/plan`
 and `/implement` subagents to drive an entire platform roadmap item or audit to completion largely
@@ -106,9 +106,9 @@ unattended, with the human gating intake and completion. It never bypasses the f
 above or the Decision 67 executor freeze -- it is interactive/human-gated, IMPLEMENTATION-only, and
 does not consume the recommendation queue. Invokes the `overseer` skill.
 
-When a slash command instructs you to "apply" or "invoke" a skill, use the `Skill` tool — do **not** manually `Read` `SKILL.md` files. The Skill tool loads them on demand.
+When a slash command instructs you to "apply" or "invoke" a skill, use the `Skill` tool - do **not** manually `Read` `SKILL.md` files. The Skill tool loads them on demand.
 
-## Operational data governance — Single Portal Invariant
+## Operational data governance - Single Portal Invariant
 All recommendation and decision writes go through `python -m scripts.ops_data_portal`. Never `Edit` or `Write` to `logs/.decisions-index.jsonl` directly -- `validate.py` will fail CI. Recommendations have no local cache (Decision 215): read them through the ducklake-reads named verbs. Recommendation IDs are allocated BY THE WRITER atomically with the insert (`file_ops`, Decision 84 I-2) -- never client-side; decision numbering authority is `DECISIONS.md` (callers supply `decision_id`). The local decisions JSONL is a read-only cache.
 
 Agent surface is three functions: `file_rec`, `update_rec`, `sync`. Do not call `sync.ops` or any pull CLI directly. Portal calls require the `agent_platform` (PlatformDev) assume-role profile to reach the reader/writer Function URLs. If unreachable, confirm the chain with `aws sts get-caller-identity --profile agent_platform` (the session-start hook `.claude/hooks/session_start_aws.sh` reports this each session); locally, refresh the `agent_static` key if it has been rotated. There is no SSO login in the static-key model. A write that cannot complete FAILS LOUDLY at the call site -- there is no offline outbox (Decision 84 I-4); re-file after restoring connectivity.
@@ -121,7 +121,7 @@ This is an append-only lakehouse. The warehouse is the single source of truth fo
 
 Local files have exactly one valid role:
 
-1. **Read cache** (`logs/.decisions-index.jsonl`) — derivative projection rebuilt FROM the warehouse (the DuckLake reader). Recommendations have none (Decision 215). Downstream of the warehouse, never upstream. There is no staging outbox: a write that cannot reach the warehouse fails loudly (Decision 84 I-4).
+1. **Read cache** (`logs/.decisions-index.jsonl`) - derivative projection rebuilt FROM the warehouse (the DuckLake reader). Recommendations have none (Decision 215). Downstream of the warehouse, never upstream. There is no staging outbox: a write that cannot reach the warehouse fails loudly (Decision 84 I-4).
 
 **Hard rule: a read cache is never a write source.** Reading any file in `logs/` and replaying it
 back into the warehouse is the CRUD anti-pattern in lakehouse clothing, and the row-resurrection
