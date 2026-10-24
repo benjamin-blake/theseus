@@ -67,7 +67,7 @@ scope:
     signature class, is unchanged). New nodes test_status_marker_grammar_round_trips (format_status_marker output parses
     back to the same source, signature and result, with and without reason), test_status_marker_refuses_bad_tokens (a
     source or reason outside the signature class, a source over 192 characters, or a result outside
-    done|skipped|failed raises ValueError) and test_status_lines_parse_only_as_whole_lines (indented, quoted, prefixed
+    done|skipped|failed raises ValueError) and test_overlong_status_source_is_not_a_marker (a whole line whose source fullmatches the class but exceeds 192 characters is no marker, and count_overlong_status_lines counts it once), test_status_lines_parse_only_as_whole_lines (indented, quoted, prefixed
     or suffixed lines, and v2, are not markers; ANSI and CR are normalised as for gate markers).
 - file: tests/telemetry/test_retire_session_cli_contract_notes.py
   action: Create
@@ -164,7 +164,7 @@ scope:
     Class C (Benjamin's word). session_id's semantics drops the "live producer ... open_telemetry_session still mints a
     bare UUID4 ... pending rec-4030" sentence for "No producer mints a session id: the UUID4 minter was retired rather
     than migrated (rec-4589)"; populated_by drops its LIVE legacy producer sentence; governance_notes' dangling-reference
-    note keeps rec-4030 as the planning_session_ref re-grounding and drops "the live-producer migration" and the "legacy
+    note keeps rec-4030 as the owner of re-grounding planning_session_id on the Decision 199 derivation (worded without rec-4030's acceptance token planning_session_ref, so new prose cannot satisfy that rec's grep) and drops "the live-producer migration" and the "legacy
     UUID4 minter" clause. One amendment_log entry (governance_note_add, semantic_break true: it withdraws the live-producer
     claim the 2026-09-24 entry added). The joins_using_this_key comment on planning_session_id_join_execution_plans_to_sessions drops "pending the legacy-producer migration, rec-4030" for "the value is the executor CLI's opaque session id; rec-4030 owns its re-grounding". History (older amendment_log entries, previous_versions) is never edited.
 - file: docs/contracts/_joins.yaml
@@ -194,8 +194,7 @@ scope:
 - file: src/turn_capture/markers.py
   action: Modify
   purpose: >-
-    STATUS_MARKER_PREFIX "STATUS", STATUS_MARKER_VERSION 1, STATUS_RESULTS (done, skipped, failed), STATUS_SOURCE_MAX
-    192, format_status_marker(source, result, reason=None) and the ST-1 parse (execution step 6). Marker gains a result
+    STATUS_MARKER_PREFIX "STATUS", STATUS_MARKER_VERSION 1, STATUS_RESULTS (done, skipped, failed), STATUS_SOURCE_MAX 192, format_status_marker(source, result, reason=None), count_overlong_status_lines(text) and the ST-1 parse (execution step 6). Marker gains a result
     field defaulting to None, so every existing Marker(...) equality holds. The docstring names the third grammar and
     that the sibling prevention plan's CLIs are its only intended emitters.
 - file: src/turn_capture/gate_events.py
@@ -232,10 +231,12 @@ scope:
     repo-structure assumption, Decision 212 and the scout's Decision 211 note: an adopting repository with other skill
     names reads the fallback values, never a wrong value; making the map adopter-declared is T4.24-era work, not this
     plan's). amendment_log entry. No new port.
-- file: tests/turn_capture/test_workflow_attribution.py
-  action: Create
+- file: tests/turn_capture/test_sessions.py
+  action: Modify
   purpose: >-
-    Mirror nodes for WA-1..WA-3: test_command_name_tag_still_wins_for_the_root,
+    sessions.py's mirror file, the one validate_test_coverage runs for its 100% per-file floor (map_source_to_test), so
+    the WA nodes live here; existing nodes unchanged; stays under 500 SLOC (359 today) by building the new streams
+    through tests/fixtures/turn_capture_v6_cases.py. New nodes for WA-1..WA-3: test_command_name_tag_still_wins_for_the_root,
     test_first_workflow_skill_names_a_relay_root (plain first prompt, a non-workflow Skill call then an errored Skill
     planning call: workflow plan, counter 1), test_subagent_reads_its_own_gate_skill (a child invoking Skill code-review
     reads code-review; a child with no Skill call reads subagent), test_child_command_name_tag_is_not_trusted (a child
@@ -244,18 +245,21 @@ scope:
     test_workflow_skills_name_real_repo_skills (every WORKFLOW_SKILLS key is a directory under .claude/skills/, every
     value is a WORKFLOWS member or its own key) and test_workflow_reads_no_tool_result (removing the Skill call's
     tool_result changes nothing).
-- file: tests/turn_capture/test_status_events.py
-  action: Create
+- file: tests/turn_capture/test_gate_events.py
+  action: Modify
   purpose: >-
-    Mirror nodes for ST-2..ST-4 (test_gate_events.py stays unchanged): test_status_rows_have_the_pinned_shape (skipped ->
+    gate_events.py's mirror file (the per-file coverage floor runs it), so the ST nodes live here; existing nodes
+    unchanged. New nodes for ST-2..ST-4: test_status_rows_have_the_pinned_shape (skipped ->
     warning, failed -> error, done -> no row, name status:<source>.<result>, metadata keys exactly marker_version and
     tool_use_id), test_skipped_and_failed_lines_of_one_source_give_two_rows,
     test_status_markers_count_only_from_repo_cli_commands (an echo or cat of the same line in a command without a status
     token emits nothing), test_status_markers_count_only_in_the_last_200_lines,
     test_gate_scanning_is_unchanged_for_status_commands (a GATE-FAILURE line in a status-token-only command emits
-    nothing), test_overlong_status_source_is_dropped_and_counted (a 193-character source emits no row, diag
-    status_source_too_long 1; a 192-character source's name fullmatches the contract pattern) and
-    test_no_status_emitter_outside_markers (no file under scripts/, src/ or .claude/hooks other than src/turn_capture/markers.py contains the literal "STATUS v1" or calls format_status_marker, and no tracked file holds a column-0 whole line matching the skipped or failed STATUS v1 grammar; a temporary release-order guard run by VP 10, never graduated, which the sibling plan relaxes as a planned change to admit its one emitter helper).
+    nothing), test_overlong_status_source_is_dropped_and_counted (a 193-character source in a status-token command's tail emits no row and diag status_source_too_long 1; the same line in a non-status command or above the 200-line floor counts 0; a 192-character source's name fullmatches the contract pattern).
+- file: tests/turn_capture/test_status_events.py
+  action: Create
+  purpose: >-
+    Holds only test_no_status_emitter_outside_markers (path agreed with the sibling plan; no file under scripts/, src/ or .claude/hooks other than src/turn_capture/markers.py contains the literal "STATUS v1" or calls format_status_marker, and no tracked file holds a column-0 whole line matching the skipped or failed STATUS v1 grammar; a temporary release-order guard run by VP 10, never graduated, which the sibling plan relaxes as a planned change to admit its one emitter helper). It has no source mirror, so the coverage floor is unaffected.
 - file: tests/turn_capture/test_record_turn.py
   action: Modify
   purpose: >-
@@ -544,8 +548,7 @@ verification_plan:
   action: The STATUS v1 grammar round-trips, refuses bad tokens and matches only whole lines.
   command: >-
     bin/venv-python -m pytest tests/turn_capture/test_markers.py::test_status_marker_grammar_round_trips
-    tests/turn_capture/test_markers.py::test_status_marker_refuses_bad_tokens
-    tests/turn_capture/test_markers.py::test_status_lines_parse_only_as_whole_lines -q
+    tests/turn_capture/test_markers.py::test_status_marker_refuses_bad_tokens tests/turn_capture/test_markers.py::test_overlong_status_source_is_not_a_marker tests/turn_capture/test_markers.py::test_status_lines_parse_only_as_whole_lines -q
   expected: Exit 0, every node passes. Red before because format_status_marker and the nodes are absent.
   fix_if: A prefixed or quoted line parses, or a token outside its class (or a source over 192 characters) formats.
   hermetic: true
@@ -568,14 +571,14 @@ verification_plan:
   phase: pre-deploy
   action: Workflow attribution rules WA-1..WA-3.
   command: >-
-    bin/venv-python -m pytest tests/turn_capture/test_workflow_attribution.py::test_command_name_tag_still_wins_for_the_root
-    tests/turn_capture/test_workflow_attribution.py::test_first_workflow_skill_names_a_relay_root
-    tests/turn_capture/test_workflow_attribution.py::test_subagent_reads_its_own_gate_skill
-    tests/turn_capture/test_workflow_attribution.py::test_child_command_name_tag_is_not_trusted
-    tests/turn_capture/test_workflow_attribution.py::test_skill_after_the_open_bound_is_ignored
-    tests/turn_capture/test_workflow_attribution.py::test_workflow_skills_name_real_repo_skills
-    tests/turn_capture/test_workflow_attribution.py::test_workflow_reads_no_tool_result -q
-  expected: Exit 0, every node passes. Red before because the module is absent.
+    bin/venv-python -m pytest tests/turn_capture/test_sessions.py::test_command_name_tag_still_wins_for_the_root
+    tests/turn_capture/test_sessions.py::test_first_workflow_skill_names_a_relay_root
+    tests/turn_capture/test_sessions.py::test_subagent_reads_its_own_gate_skill
+    tests/turn_capture/test_sessions.py::test_child_command_name_tag_is_not_trusted
+    tests/turn_capture/test_sessions.py::test_skill_after_the_open_bound_is_ignored
+    tests/turn_capture/test_sessions.py::test_workflow_skills_name_real_repo_skills
+    tests/turn_capture/test_sessions.py::test_workflow_reads_no_tool_result -q
+  expected: Exit 0, every node passes. Red before because the nodes are absent.
   fix_if: >-
     A Skill call past the bound changes the open row (an R7 purity defect), a tool_result is read, or a child's
     command-name tag sets its workflow.
@@ -586,11 +589,11 @@ verification_plan:
   phase: pre-deploy
   action: Status rows (ST-2..ST-4), the contract and Decision notes, and the ports validator (the temporary no-emitter guard runs in VP 10).
   command: >-
-    bin/venv-python -m pytest tests/turn_capture/test_status_events.py::test_status_rows_have_the_pinned_shape tests/turn_capture/test_status_events.py::test_skipped_and_failed_lines_of_one_source_give_two_rows tests/turn_capture/test_status_events.py::test_status_markers_count_only_from_repo_cli_commands tests/turn_capture/test_status_events.py::test_status_markers_count_only_in_the_last_200_lines tests/turn_capture/test_status_events.py::test_gate_scanning_is_unchanged_for_status_commands tests/turn_capture/test_status_events.py::test_overlong_status_source_is_dropped_and_counted tests/telemetry/test_retire_session_cli_contract_notes.py::test_observations_declares_the_status_rows
+    bin/venv-python -m pytest tests/turn_capture/test_gate_events.py::test_status_rows_have_the_pinned_shape tests/turn_capture/test_gate_events.py::test_skipped_and_failed_lines_of_one_source_give_two_rows tests/turn_capture/test_gate_events.py::test_status_markers_count_only_from_repo_cli_commands tests/turn_capture/test_gate_events.py::test_status_markers_count_only_in_the_last_200_lines tests/turn_capture/test_gate_events.py::test_gate_scanning_is_unchanged_for_status_commands tests/turn_capture/test_gate_events.py::test_overlong_status_source_is_dropped_and_counted tests/telemetry/test_retire_session_cli_contract_notes.py::test_observations_declares_the_status_rows
     tests/telemetry/test_retire_session_cli_contract_notes.py::test_sessions_declares_workflow_attribution
     tests/telemetry/test_retire_session_cli_contract_notes.py::test_session_id_names_no_live_legacy_producer tests/telemetry/test_retire_session_cli_contract_notes.py::test_joins_names_no_live_legacy_minter tests/telemetry/test_retire_session_cli_contract_notes.py::test_decision_199_records_the_retirement -q && bin/venv-python
     -c "from scripts.checks.contracts.validate_ports_contract import validate_ports_contract as v;f=[];v(f);assert not f, f;print('PORTS_OK')"
-  expected: Exit 0, every node passes, then PORTS_OK. Red before because the modules and texts are absent.
+  expected: Exit 0, every node passes, then PORTS_OK. Red before because the nodes, modules and texts are absent.
   fix_if: >-
     A status row from a non-CLI command, a done row, a new metadata key, a gate row from a status-only command, or an
     overlong source that reaches a row.
@@ -857,12 +860,12 @@ test_obligations:
 - source: src/turn_capture/sessions.py
   behavior: WA-1..WA-3 workflow attribution within the open bound; a child's command-name tag is never read.
   verification_step: 5
-  test_selector: tests/turn_capture/test_workflow_attribution.py::test_first_workflow_skill_names_a_relay_root
-  red_green_expectation: red before (module absent; the root reads claude_code), green after
+  test_selector: tests/turn_capture/test_sessions.py::test_first_workflow_skill_names_a_relay_root
+  red_green_expectation: red before (nodes absent; the root reads claude_code), green after
 - source: src/turn_capture/gate_events.py
   behavior: ST-2..ST-4 status rows from repo CLI outputs only; gate scanning unchanged.
   verification_step: 6
-  test_selector: tests/turn_capture/test_status_events.py::test_status_rows_have_the_pinned_shape
+  test_selector: tests/turn_capture/test_gate_events.py::test_status_rows_have_the_pinned_shape
   red_green_expectation: red before (module absent), green after
 - source: src/turn_capture/record_turn.py
   behavior: Version 6.
@@ -960,6 +963,8 @@ constraints:
   and fixtures build those lines at run time (format_status_marker, or JSON whose line breaks are escaped), so no
   command output before this plan's deploy can carry one. The sibling's emitters merge only after VP 13 passes.
 - >-
+  Tests assert on built STATUS lines by value and never print, log or echo one (pytest's captured-output section prints at column 0), so the build session's own v6 capture of a scripts.validate run cannot send a status row to the not-yet-deployed writer.
+- >-
   Graduated checks (turn-capture-*, telemetry-parser-version-registry) keep resolving and are never weakened; the only
   assertion changes are the sanctioned ones in scope, and the only deleted tests are the retirement rows. Any further weakening candidate the PR surfaces is recorded in this plan's weakening_dispositions (validate_weakening_dispositions reads only those; the PR body lists it) or the change is reworked. The shrunk FROZEN_EXPORTS parametrize cases are named in the PR body (the candidate surfacer keys on functions, not parametrize ids).
 - >-
@@ -975,7 +980,7 @@ context:
   and no whole-line literal, the sibling's emitters after the deploy). SPIRIT 211 (folded in: the skill map is a
   declared constant recorded in ports.yaml SA-02; adopters read the fallbacks). ROADMAP T3.20 c9 and T3.22 c5 cited in
   phase and the workflow note. Decisions triaged: 187 of 187. Roadmap items intersected: 17; CONFLICT: 0; RELATED: 15.
-- 'gates: decision-scout=FLAGS_FOUND (both notes folded in); plan-critique=round 1 REVISE (F1-F11 addressed), round 2 REVISE (F1-F9 addressed), round 3 REVISE (M1-M3, J1-J5 addressed), confirming round pending'
+- 'gates: decision-scout=FLAGS_FOUND (both notes folded in); plan-critique=round 1 REVISE (F1-F11 addressed), round 2 REVISE (F1-F9 addressed), round 3 REVISE (M1-M3, J1-J5 addressed), confirming round REVISE (M1, J1-J3 addressed after the cap; not re-critiqued)'
 - >-
   Evidence: /mnt/project-files/rec-4589/FINDINGS.md (claims reproduced, root causes), fable-independent-advice.md
   (disposition), retire-session-cli/ADVICE.md (Fable consult on the v6 forks, adopted except reason storage and the
@@ -1038,8 +1043,7 @@ execution_steps:
   'STATUS v1 source=S result=R' or 'STATUS v1 source=S result=R reason=T' where S and T fullmatch SIGNATURE_PATTERN, S
   is at most STATUS_SOURCE_MAX (192) characters so status:S.R fits the 200-character name class, and R is done, skipped
   or failed; parse_markers returns Marker("status", f"{S}.{R}", line, result=R), so the gate_events dedupe key and the
-  row name agree. A line whose S fullmatches the class but exceeds 192 characters is not a marker and counts diag
-  status_source_too_long. format_status_marker builds exactly the line and raises ValueError on any token outside its
+  row name agree. A line whose S fullmatches the class but exceeds 192 characters is not a marker; parse_markers has no diagnostics channel, so markers.py exposes count_overlong_status_lines(text), and gate_events adds its result to diag status_source_too_long only for the text it scans for status markers (a status-token command, at or after the 200-line floor), so the count means the same lines the row rule reads. format_status_marker builds exactly the line and raises ValueError on any token outside its
   class or bound.
 - >-
   6. Workflow attribution (sessions.py). WA-1 (root stream only): the open-row workflow is the first prompt record's
