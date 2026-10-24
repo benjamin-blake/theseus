@@ -21,6 +21,7 @@ _CONTRACT = "docs/contracts/account-credential-inventory.yaml"
 _REAL_ROOT = Path(__file__).resolve().parents[3]
 _REAL = yaml.safe_load((_REAL_ROOT / _CONTRACT).read_text(encoding="utf-8"))
 _Mutator = Callable[[dict[str, Any]], None]
+_LATEST = max(str(e["date"]) for e in _REAL["evidence_ledger"])
 
 
 def _ref_files() -> set[str]:
@@ -91,7 +92,7 @@ def _closed_on_open_target(d: dict[str, Any]) -> None:
 
 def _ledger(**fields: Any) -> _Mutator:
     return lambda d: d["evidence_ledger"].append(
-        {"date": "2026-10-22", "row": "GH-03", "status": "company", "evidence": "t", **fields}
+        {"date": _LATEST, "row": "GH-03", "status": "company", "evidence": "t", **fields}
     )
 
 
@@ -130,7 +131,7 @@ _RED: list[tuple[str, _Mutator, str]] = [
     ("ledger status unknown", _ledger(status="bogus"), "not in status_values"),
     (
         "ledger missing field",
-        lambda d: d["evidence_ledger"].append({"date": "2026-10-22", "row": "GH-03", "status": "company"}),
+        lambda d: d["evidence_ledger"].append({"date": _LATEST, "row": "GH-03", "status": "company"}),
         "missing",
     ),
     ("ledger unknown key", _ledger(extra="x"), "unknown keys"),
@@ -227,7 +228,7 @@ class TestValidateAccountCredentialInventory:
     def test_billing_stays_paid_personally_is_green(self, tmp_path: Path) -> None:
         def mutate(d: dict[str, Any]) -> None:
             _row(d, "BILL-01").update(status="stays")
-            d["evidence_ledger"].append({"date": "2026-10-22", "row": "BILL-01", "status": "stays", "evidence": "t"})
+            d["evidence_ledger"].append({"date": _LATEST, "row": "BILL-01", "status": "stays", "evidence": "t"})
 
         _build(tmp_path, _mutated(mutate))
         assert _run(tmp_path) == []
