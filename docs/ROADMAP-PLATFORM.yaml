@@ -7344,10 +7344,10 @@ tier_items:
         text: "Persona Task states reference T4.10a contract ids"
         status: open
       - id: c6
-        text: "MVP-critical (Decision 212 clause 5): every change-surface operation a loop state performs is one of the change-surface verbs docs/contracts/ports.yaml registers for change_surface -- the sole verb registry, which docs/contracts/executor-loop-definition.yaml references by name without restating a second list -- never a raw GitHub API call baked into a state; naming the verbs in the definition from the start is the cheap path, while retrofitting them after GitHub calls are embedded in the loop is the expensive one"
+        text: "MVP-critical (Decision 212 clause 5): every change-surface operation a loop state performs is one of the change-surface verbs docs/contracts/ports.yaml registers for change_surface -- the sole verb registry, which docs/contracts/executor-loop-definition.yaml references by name without restating a second list -- never a raw GitHub API call baked into a state; naming the verbs in the definition from the start is the cheap path, while retrofitting them after GitHub calls are embedded in the loop is the expensive one [Amendment 2026-10-23, Decision 234 clause 4 -- an identifier this item newly specifies for a change is a generic change id, never a pull request number; identifiers specified before Decision 234 are accepted coupling PC-09]"
         status: open
     related_candidate_decisions: [CD.27, CD.44]
-    related_decisions: [39, 55, 75, 185, 212]
+    related_decisions: [39, 55, 75, 185, 212, 234]
     effort: S
     strategic: false
     status: not_started
@@ -7784,6 +7784,7 @@ tier_items:
           cloud-provider flag is present, derives auth_method (subscription_stored_login or
           subscription_setup_token) from what the CLI will resolve, refuses on the hosted paid plane, and
           offers no configuration that shares one token across people
+          [Amendment 2026-10-23, Decision 234 clause 3 -- with the laptop's saved login retired (a persona run on the local adapter signs in with a setup-token passed by name, T4.34 c8), preflight derives only subscription_setup_token]
         status: open
       - id: c11
         text: >-
@@ -7792,6 +7793,7 @@ tier_items:
           takes a claude setup-token token by env file, the end user's own Actions takes it as their
           repository secret for Decision 205 clause 1 verdict personas only, and the end user's own AWS runs
           on Fargate with native secret injection, never Lambda
+          [Amendment 2026-10-23, Decision 234 clause 3 -- on the local adapter the laptop row's saved login gives way to per-run state signed in by a claude setup-token passed by name, which T4.34 c8 owns (this criterion keeps no laptop leg); a subscription-backed verdict job runs only when the pull request's author and both the verdict run attempt's triggering actor and, on the workflow_run chain, the upstream run's are the subscription owner: a collaborator's push or a maintainer's re-run fails the check while the owner's own re-run passes, and any other pull request runs on a team API key (byok) through LiteLLM or the verdict fails, never skips (Decision 205 clause 2)]
         status: open
         blocked_by: [{ref: T4.24, until: complete}]
       - id: c12
@@ -7815,7 +7817,7 @@ tier_items:
           codex_cli leaves RESERVED only after an OpenAI-terms equivalency check is recorded as passed; a
           failed check drops it (Decision 206 reversal condition openai-terms-fail)
         status: open
-    related_decisions: [164, 184, 185, 199, 205, 206]
+    related_decisions: [164, 184, 185, 199, 205, 206, 234]
     effort: L
     strategic: false
     status: deferred_post_mvp
@@ -8065,6 +8067,57 @@ tier_items:
     strategic: false
     status: deferred_post_mvp
     note: "Created by PLAN-product-surface-and-open-core (Decisions 232 and 233). L with strategic false: CD.17 freeze override, authored as a tree of atomic IMPLEMENTATION plans."
+
+  - id: T4.34
+    tier: T4
+    name: 'Local sandboxed persona host -- a per-run git clone under sandbox-runtime around the whole persona process (Decision 234)'
+    intent: >-
+      Per Decision 234 clauses 1-3, the default local persona_compute_host adapters on a user's own machine: a per-run
+      git clone plus Anthropic's sandbox-runtime (srt) wrapping the whole persona process for any persona_backend, so
+      Decision 206 clause 5's OS sandbox sits outside the persona. sandbox_runtime (macOS Seatbelt; Linux and WSL2
+      bubblewrap) is supported and sandbox_runtime_windows (a dedicated local user, a write-restricted token and Windows
+      Filtering Platform filters; one-time elevation; alpha upstream) experimental (Decision 212 clause 7).
+      deferred_post_mvp (Decision 93), a free-tier substrate like T4.27; its edge to live T4.32 is legal, since only
+      live-to-deferred edges are barred, and T4.27 blocks only c7 and c8 (the CLI-backend legs), so c1-c6 also serve
+      litellm-backend personas.
+    depends_on: [T4.32]
+    files_in_scope:
+      - src/persona_hosts/sandbox_runtime/    # new
+      - tests/persona_hosts/sandbox_runtime/    # new
+      - .github/workflows/persona-host-conformance.yml    # new -- ubuntu, macos and windows runners, no LLM, no credentials
+    exit_criteria:
+      - id: c1
+        text: "ADAPTER (Decision 234 clause 1) -- each run gets its own clone made with git clone --shared (objects reached through alternates, never hardlinked), so every git write, the workspace commit included (Decision 205 clause 5), stays inside the run directory and the owner repository is read-only to the persona; the shell holds a ref on the run's base in the owner's repository for the run's duration, so the --shared clone cannot lose objects to a prune mid-run; the whole persona process starts under the pinned srt with the run directory as its only writable root and egress only through srt's proxy allowlist, for any persona_backend; after the run the thin shell collects the run branch outside the sandbox (Decision 205 clause 2) and the run clone is removed; run_image's input generalises to a pinned runtime reference (an image digest on container hosts, the installed kernel and srt version here) by a provisional ports.yaml amendment that moves the graduated shards pinning run_image in the same change"
+        status: open
+      - id: c2
+        text: "PIN -- srt is pinned to an exact version (Decision 74's pin pattern, as T4.27 c8 pins the CLI); preflight refuses an installed srt whose version is not the pin; a pin-bump PR runs c3's suite before it merges"
+        status: open
+      - id: c3
+        text: "CONFORMANCE (Decision 212 clauses 1-2) -- both adapters run persona_compute_host's one gating suite against the local_container oracle, plus confinement legs (a write outside the workspace is denied; a direct egress connection is denied) on GitHub-hosted ubuntu, macos and windows runners with no LLM and no credentials; the Windows legs are alarm-not-gate while sandbox_runtime_windows is experimental; the runner minutes are their own class in T4.15 c10's burden record; this item's plan settles the hosted-runner legs -- the macOS and Windows legs compare against oracle output recorded by the Linux job, since those runners cannot run the Linux container oracle, and bubblewrap on ubuntu-24.04 meets the AppArmor restriction on unprivileged user namespaces"
+        status: open
+      - id: c4
+        text: "LEASH (Decision 185 clause 3) -- the srt profile (write roots, egress allowlist, deny-read paths) and its pin sit under a Decision 117 boundary path behind the base-ref check, so an executor-authored diff cannot widen confinement"
+        status: open
+      - id: c5
+        text: "READS (Decision 211 clause 3) -- the profile denies reads of every credential store (cloud, git and agent credential files), the backend's own saved login included; a T4.24 c11 characterisation run under this adapter also denies all network, and a host that cannot deny those reads is not a c11 sandbox"
+        status: open
+      - id: c6
+        text: "PARITY AND LIMITS -- this lane's parity is T4.27 c7's suite, never the one-digest rule (Decision 205 clause 2, T4.2 c13, T4.32 c1); srt always write-denies its mandatory deny paths inside the checkout (.mcp.json, .gitmodules, .claude/commands/, .claude/agents/, .vscode/, .idea/, .git/hooks/, .git/config and the shell rc files), so a change touching them routes to local_container or a remote host (WSL2 runs the same srt profile); end-user documentation (T4.27 c13's class, shipped with T4.24's package) states the Windows limits -- OS-TLS tools (curl.exe, Invoke-WebRequest, dotnet restore, winget) fail HTTPS inside it, an in-persona package restore included; reads are not isolated across sandboxed sessions; its network filter does not cover WSL; on a WSL2 /mnt/c mount Windows ACLs, not Linux, decide writes; on Linux, Ubuntu 23.10 and later (24.04 included) restrict unprivileged user namespaces through AppArmor, which must admit bubblewrap -- and the stronger tiers (WSL2; local_container, where Docker Desktop needs a paid licence at larger companies; remote hosts)"
+        status: open
+        blocked_by: [{ref: T4.24, until: complete}]
+      - id: c7
+        text: "PLACEMENT (Decision 234 clauses 1 and 3) -- on user-owned substrate the planning, implementation and consult personas default to sandbox_runtime; Decision 205 clause 1's verdict personas default to the Actions shell and may be configured onto it, the verdict still a check run under the dedicated verdict App (Decision 205 clause 2); a subscription-backed verdict run there proceeds only when the pull request's author and the run's triggering actor are the subscription owner, and otherwise runs on a team API key (byok) or its verdict fails, never skips; the choice is a per-persona setting in ontheloop/platform.yaml with a docs/contracts/project-configuration.yaml row (Decision 224)"
+        status: open
+        blocked_by: [{ref: T4.24, until: complete}, {ref: T4.27, until: complete}]
+      - id: c8
+        text: "BACKEND STATE (Decision 234 clause 3) -- the backend runs on a per-run state and config directory inside the run directory (for the Claude CLI, its config-directory override), never on the owner's own configuration, so the owner's settings, hooks, memory, MCP, plugin, skill, agent and command configuration are never writable from the sandbox and never load into a run (Decision 206 clause 5; outcome parity with the Actions and container twins, Decision 206 clause 4); it signs in with a credential passed by name -- for the Claude CLI a token the owner minted with claude setup-token (Decision 206 clause 2) -- and On The Loop never reads the value; this item's plan confirms that the config-directory override and c5's credential-file deny also hide the macOS Keychain login, the T4.27 c10 bracket's setup-token-only derivation being the refusal backstop"
+        status: open
+        blocked_by: [{ref: T4.27, until: complete}]
+    related_decisions: [74, 185, 205, 206, 211, 212, 224, 234]
+    effort: L
+    strategic: false
+    status: deferred_post_mvp
+    note: "Created by PLAN-user-owned-persona-execution (Decision 234)."
 
   # ----- T5: Decommissioning & cleanup -----
   - id: T5.1
