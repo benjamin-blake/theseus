@@ -71,12 +71,12 @@ scope:
     when inserted and skipped when not, one literal emit_status call per reason (ci_rca_open_duplicate,
     ci_rca_stale_rerun) so E3 checks every reason; missing required fields, an invalid --context-v2-json (refused
     inside the branch, after the missing-required check) and the ValidationError/ValueError path emit failed
-    (missing_required, invalid_context_v2_json, invalid_fields) and keep exit 1; a writer or reader RuntimeError
-    (transport failure, refused dependency id, OCC exhaustion, reader unreachable) emits failed (writer_error) and
+    (missing_required, invalid_context_v2_json, invalid_fields) and keep exit 1; any other exception (a writer or
+    reader RuntimeError, a missing AWS profile or credentials) is caught as Exception, emits failed (writer_error) and
     re-raises, so the traceback and non-zero exit are unchanged. --update-rec emits ops_portal.update_rec done after its
     confirmation line, failed (invalid_update) on the rejected-flag, no-field and ValidationError/ValueError paths and
-    failed (writer_error) before re-raising a RuntimeError; exit codes unchanged. The only silent path is the --dry-run
-    refusal, which runs before any recording mode. rec-3875: add
+    failed (writer_error) before re-raising any other exception; exit codes unchanged. The only silent paths are the
+    --dry-run refusal and argparse usage errors, both before any recording mode runs. rec-3875: add
     `if __name__ == "__main__": sys.exit(main())` so python -m scripts.ops_portal.cli is the CLI, not a silent no-op.
 - file: tests/ops_data_portal/test_cli_status_lines.py
   action: Create
@@ -103,14 +103,16 @@ scope:
   action: Modify
   purpose: >-
     run_metrics emits postflight.metrics done when both child steps exit 0, else failed with reason
-    metrics_exit_nonzero or plan_audit_exit_nonzero (the first failing child), after printing its JSON; it still
+    metrics_exit_nonzero or plan_audit_exit_nonzero (the first failing child), after printing its JSON, and failed
+    (metrics_error) before re-raising any exception (e.g. prune_telemetry_logs OSError); it still
     returns 0 and its stdout is still exactly the JSON (exit code unchanged by design: --auto chains on it). --auto
     inherits the line because it redirects only stdout.
 - file: scripts/session/postflight.py
   action: Modify
   purpose: >-
     --evidence emits postflight.evidence done after write and render, and failed (invalid_evidence) before re-raising
-    when the file is unreadable, not JSON, or postflight_evidence.validate refuses it (exit stays non-zero).
+    when the file is unreadable, not JSON, or postflight_evidence.validate refuses it, and failed (evidence_error)
+    before re-raising any later exception from write or render (exit stays non-zero).
 - file: tests/session/postflight/test_status_lines.py
   action: Create
   purpose: >-
@@ -274,7 +276,8 @@ infrastructure_dependencies:
     as a standing verification-monitor silent check, so it does not rest on this one-off probe.
 acceptance_criteria:
   - >-
-    Every roster CLI mode reports its outcome on every path except the --dry-run refusal: --file-rec prints done for
+    Every roster CLI mode reports its outcome on every path except the --dry-run refusal and argparse usage errors
+    (both before any mode runs): --file-rec prints done for
     an insert, skipped with ci_rca_open_duplicate or ci_rca_stale_rerun when it returns an existing id, and failed on
     every refusal and on a writer or reader error; --update-rec (a writer error included), postflight --metrics and
     --evidence print done or failed; each line parses through the v6 parser's markers.parse_markers as a status marker;
@@ -294,8 +297,7 @@ verification_plan:
   - step: 1
     phase: pre-deploy
     action: >-
-      Precondition: PLAN-retire-session-cli is merged with the grammar this plan builds on, this branch is rebased, and
-      the freeze is lifted. Its deploy verification being green is confirmed with the coordinator before execution
+      Precondition: PLAN-retire-session-cli is merged with the grammar this plan builds on and this branch is rebased. Its deploy verification being green is confirmed with the coordinator before execution
       step 1, not only before the merge (not checkable from the tree; infrastructure_dependencies[1]).
     command: >-
       git fetch origin main --quiet && git merge-base --is-ancestor origin/main HEAD && grep -q "def
@@ -596,7 +598,7 @@ weakening_dispositions:
 constraints:
   - Freeze (Benjamin, 2026-10-24) -- nothing is pushed, PR'd or merged until he lifts the repo-transfer freeze; the build merge needs his word (Class A contract change).
   - Exit codes and stdout of every touched CLI mode are unchanged; STATUS lines go to stderr only, built only through emit_status and format_status_marker.
-  - Tests never print a built STATUS line (the sibling plan's constraint); stderr is read with capsys.readouterr() and asserted through parse results.
+  - The new tests never print a built STATUS line (the sibling plan's constraint); stderr is read with capsys.readouterr() and asserted through parse results. Residual, owned by rec-4608 (its silent check counts lines against rows) - an existing test that drives a roster mode without consuming stderr shows the line in pytest's captured-stderr section only when it fails.
   - No parser, grammar, contract name-rule, writer or reader change (PLAN-retire-session-cli and rec-4605 own those); no deploy.
   - No prose, SLOC or structural budget raise (Decisions 128/166); relief is trimming, em-dash normalisation or amendment compaction.
   - The rec rules are guidance plus parity in this plan; write-time refusal is rec-4603's, never improvised here.
@@ -606,7 +608,7 @@ context:
     Decision-scout verdict FLAGS_FOUND (shared scout for both rec-4589 prevention plans, 187 of 187 triaged); CITE 66,
     65, 201, 181, 170, 169, 210, 124. Flags folded in: 181 (per-surface coverage, below), 65 (contract authored,
     ops.yaml served, parity test), 166/128 (budgets).
-  - "gates: decision-scout=FLAGS_FOUND (addressed); plan-critique=<verdict> after <N> round(s)"
+  - "gates: decision-scout=FLAGS_FOUND (addressed); plan-critique=PROCEED after 4 round(s) (3 REVISE, confirming PROCEED; its three advisories applied)"
   - "red_overlap: {\"verdict\": \"clear\", \"slo_hours\": 4, \"reds\": []} (2026-10-24)"
   - >-
     Approval: Benjamin's "write the plans" (2026-10-24, cmsg_012XgaFy8VaDQbxP5D8nC958WHezqzm2qaVW4TZy3avTyU) approved
