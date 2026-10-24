@@ -8,9 +8,10 @@ intent: >-
   outcome as a STATUS v1 line (PLAN-retire-session-cli's grammar and parser), so the capture records a skip as a skip
   and a failure as a failure row, not only as transcript text; a roster and a fast-tier check keep the emitters
   honest. First roster: the two modes that exit 0 on a skip or failure -- ops portal --file-rec (its ci_rca dedup and
-  stale-rerun paths return an existing id with exit 0, indistinguishable from a fresh filing) and postflight --metrics
-  (returns 0 when its child steps fail) -- plus --update-rec and postflight --evidence, the other two recording modes
-  every /implement closure calls, whose failures today leave no row. (2) Rec hygiene:
+  stale-rerun paths return an existing id with exit 0, indistinguishable from a fresh filing; those paths run mostly
+  in the ci-rca GitHub Actions agent, captured once T3.20 c9 lands) and postflight --metrics (returns 0 when its child
+  steps fail) -- plus --update-rec and postflight --evidence, the other two recording modes every /implement closure
+  calls, whose failures today leave only an unattributed tool_call error row. (2) Rec hygiene:
   never append unrelated work to an existing rec, a rec's file is the surface its acceptance checks, and followon_recs
   defers to an existing rec only when that rec's acceptance fails while the work is undone -- authored in the
   contracts, served through get_rec_write_guidance, pinned by a parity test. (3) Deleting a writer disposes of every
@@ -22,8 +23,8 @@ verification_tier: V2
 plan_path: docs/plans/PLAN-silent-failure-prevention.yaml
 phase: >-
   ad_hoc_rec (defect prevention for rec-4589, with PLAN-telemetry-field-realization; Benjamin approved 2026-10-24).
-  Closes no roadmap exit criterion: closes_criteria is empty by design. Related tier item, none of whose criteria this
-  plan flips: T3.20 (its capture records the status rows). PLAN-retire-session-cli (rec-4589 plan 1) builds first and
+  Closes no roadmap exit criterion: closes_criteria is empty by design (see context for the related tier item).
+  PLAN-retire-session-cli (rec-4589 plan 1) builds first and
   owns the STATUS v1 grammar, formatter, parser and writer deploy.
 closes_criteria: []
 scope:
@@ -52,11 +53,13 @@ scope:
     branch returns FileRecOutcome(existing_id, inserted=False, reason="ci_rca_open_duplicate"), the closed-head drop
     branch FileRecOutcome(head.rec_id, inserted=False, reason="ci_rca_stale_rerun"), the insert FileRecOutcome(rec_id,
     inserted=True, reason=None). SLOC: 480 at main 2850f7be and the counter includes docstring lines, so the long
-    docstring moves to file_rec_with_outcome and file_rec keeps a one-line docstring; measured result at or under 500,
-    never a budget raise.
-- file: scripts/ops_portal/_common.py
-  action: Modify
-  purpose: FileRecOutcome NamedTuple (rec_id str, inserted bool, reason str | None), re-exported by the facade.
+    docstring moves to file_rec_with_outcome and file_rec keeps a one-line docstring (estimate about 490). If the
+    measured count still exceeds 500, decompose into a facade submodule (Decision 128), never a budget raise.
+- file: scripts/ops_portal/outcomes.py
+  action: Create
+  purpose: >-
+    FileRecOutcome NamedTuple (rec_id str, inserted bool, reason str | None), re-exported by the facade. Its own small
+    module because _common.py's docstring scopes it to shared ROOT and region constants.
 - file: scripts/ops_portal/cli.py
   action: Modify
   purpose: >-
@@ -71,8 +74,9 @@ scope:
 - file: tests/ops_data_portal/test_cli_status_lines.py
   action: Create
   purpose: >-
-    Through main() with the existing patch points (_ducklake_write, find_open_ci_rca_rec_by_fingerprint,
-    closed_head_of_chain): an insert emits done; an open fingerprint match emits skipped reason=ci_rca_open_duplicate
+    Through main() with the existing patch points (_ducklake_write, _run_ci_rca_cross_check,
+    find_open_ci_rca_rec_by_fingerprint, bump_ci_rca_occurrence, closed_head_of_chain, current_commit_sha,
+    classify_closed_head; precedent tests/ops_data_portal/test_ci_rca_close_then_recur.py): an insert emits done; an open fingerprint match emits skipped reason=ci_rca_open_duplicate
     and the stale-rerun drop skipped reason=ci_rca_stale_rerun; invalid fields and missing required fields emit failed
     with exit 1; --update-rec done and failed; in every case stdout is byte-identical to today's (the rec id line or the
     confirmation line). test_emitted_lines_parse_as_status_markers feeds the captured stderr through
@@ -109,7 +113,7 @@ scope:
     The emitter roster, one row per source: ops_portal.file_rec, ops_portal.update_rec, postflight.metrics,
     postflight.evidence, each with module (repo path), command (the documented invocation, e.g. "bin/venv-python -m
     scripts.ops_data_portal --file-rec") and results (the subset it emits). Header names the residual owner rec-4602
-    (recording CLIs not yet listed).
+    (recording CLIs not yet listed, postflight --auto's own evidence, validate and verify-head steps included).
 - file: scripts/checks/hygiene/validate_status_line_emitters.py
   action: Create
   purpose: >-
@@ -143,7 +147,8 @@ scope:
 - file: tests/checks/hygiene/test_validate_status_line_emitters.py
   action: Create
   purpose: >-
-    test_each_rule_fails_closed, parametrised over a planted defect per rule E1-E6 (each asserting its own error);
+    test_each_rule_fails_closed, parametrised over every planted defect VP 5 lists for E1-E6 (each asserting its own
+    error; the needle is built at run time, so this file never holds it);
     test_clean_synthetic_roster_passes; test_live_repository_passes (the real roster and tree yield no errors).
 - file: tests/turn_capture/test_status_events.py
   action: Modify
@@ -176,7 +181,10 @@ scope:
     or through a test that exercises it, so file-keyed discovery (recs_related) returns the rec. A probe whose verdict
     never depends on file means the rec is mis-keyed." context gains: "Never append unrelated work to an existing rec
     (a rider): file a new rec and cite the first in its context; use dependencies only when the new work cannot start
-    before the first is done. A context change through update_rec refines the rec's own problem only." Each field gets one
+    before the first is done. A context change through update_rec refines the rec's own problem only." Each
+    governance_notes string ends, on the same line, with its Decision 181 clause: "Decision 181: served as guidance
+    (get_rec_write_guidance) and parity-tested; write-time refusal unenforced, owned by rec-4603." The parity-test
+    constants are the rule sentences only.Each field gets one
     flow-form governance_note_add amendment entry. Budget 556 effective lines, 552 at main: compact file's 2026-10-04
     block-form entry to one flow line first, then measure; never a raise.
 - file: config/agent/data_quality/ops.yaml
@@ -196,7 +204,8 @@ scope:
   purpose: >-
     Parity: each rule sentence (two module constants) appears, whitespace-normalised, in the contract field's
     governance_notes and in get_rec_write_guidance()["<field>"]["semantics"]; the ledger rule appears in
-    plan_followon_recs governance_notes. Red before (sentences absent).
+    plan_followon_recs governance_notes. Red before (sentences absent). Its module docstring names T2.29 c7: when
+    get_rec_write_guidance moves to reading the contract, the c7 implementer carries these sentences into what it reads.
 - file: docs/contracts/tier-item-lifecycle.yaml
   action: Modify
   purpose: >-
@@ -242,6 +251,9 @@ infrastructure_dependencies:
     No Lambda-packaged file, Terraform or IAM change: compute_affected_artifacts over scope is empty (scripts/, tests/,
     config/telemetry, config/agent, .claude/skills and docs/contracts are not packaged), and field_semantics.yaml is
     untouched (ops_recommendations governance_notes do not project; VP 9).
+  - >-
+    VP 13 (live status row) depends on rec-4292: the telemetry read verbs read the smoke catalog until slice 2c, so the
+    step is "not run: unmeasurable" while rec-4292 is open.
 acceptance_criteria:
   - >-
     Every roster CLI mode reports its outcome: --file-rec prints done for an insert and skipped with
@@ -320,8 +332,10 @@ verification_plan:
       tests/checks/hygiene/test_validate_status_line_emitters.py::test_each_rule_fails_closed -q
     expected: >-
       The node passes; it is parametrised over E1 (bad source, overlong source), E2 (unknown result), E3 (module
-      missing the call, missing a declared result, bad reason), E4 (unlisted source, non-literal source), E5 (command
-      the parser never scans) and E6 (a stray format_status_marker call), each asserting its own error.
+      missing the call, missing a declared result, an undeclared result, bad reason), E4 (unlisted source, non-literal
+      source, non-literal result, a listed source called from a module the roster does not assign it), E5 (command the
+      parser never scans) and E6 (a stray format_status_marker call, a stray raw needle in a non-home file, with the
+      needle built at run time from the markers constants), each asserting its own error.
     fix_if: A rule that does not fire, or fires without naming source and file, is a check bug.
     hermetic: true
     expected_literals: []
@@ -386,7 +400,7 @@ verification_plan:
     graduation: not-applicable
   - step: 10
     phase: pre-deploy
-    action: rec-3875's acceptance passes.
+    action: rec-3875's acceptance passes; the second command is its stored acceptance verbatim (read 2026-10-24).
     command: >-
       bin/venv-python -m pytest tests/ops_data_portal/test_cli_main_guard.py::test_cli_module_runs_under_python_m -q &&
       bin/venv-python -m scripts.ops_portal.cli --help | grep -qi usage && echo REC_3875_OK
@@ -419,7 +433,8 @@ verification_plan:
       print('CLOSED_OK')"
     expected: CLOSED_OK.
     fix_if: >-
-      rec-3875 open -- follow git-ops.yaml resolves_trailer's conditional fallback (Decision 201): after an
+      rec-3875 open -- first WAIT for ci.yml's trailer-closure job to conclude (the implement skill's rule; anything
+      else waits), then follow git-ops.yaml resolves_trailer's conditional fallback (Decision 201): after an
       acceptance-verdict refusal run only the trailer-closure job's printed close_proposed command; a manual
       --update-rec naming the merge SHA is allowed only after a transport failure or a merge-leg refusal.
     hermetic: false
@@ -438,9 +453,9 @@ verification_plan:
       n=sum(1 for x in rows if json.loads(x['row_json']).get('name')=='status:ops_portal.update_rec.failed');
       print('STATUS_ROWS', n); assert n==1; print('LIVE_STATUS_OK')"
     expected: >-
-      STATUS_ROWS 1 then LIVE_STATUS_OK. session_tree_rows is the reader's verification-only verb; it reads the smoke
-      catalog until rec-4292 lands, so confirm at build time that it reads production rows, else use the production
-      read verb that then exists for a session's process events (same assertion).
+      STATUS_ROWS 1 then LIVE_STATUS_OK. Depends on rec-4292 (open): session_tree_rows, like every telemetry event
+      verb, reads the smoke catalog until slice 2c lands. While rec-4292 is open this step is reported "not run:
+      unmeasurable, owner rec-4292" and is never treated as a 0-row failure; it runs once rec-4292 is closed.
     fix_if: >-
       0 rows -- read the probe session's capture diag (status_source_too_long, writer refusal, a command the parser did
       not scan) before anything else; more than 1 -- a duplicated emission or a missing dedupe. STOP and RCA (Decision 55).
@@ -500,7 +515,7 @@ test_obligations:
     verification_step: 8
     test_selector: tests/test_workflow_skill_antidrift.py::test_closure_obligation_requires_caller_disposition
     red_green_expectation: red before (step (5) absent), green after
-  - source: scripts/ops_portal/_common.py
+  - source: scripts/ops_portal/outcomes.py
     behavior: FileRecOutcome carries rec_id, inserted and reason for the CLI.
     verification_step: 3
     test_selector: tests/ops_data_portal/test_cli_status_lines.py
@@ -594,6 +609,7 @@ context:
     patch-epicentre (Decision 124); the outcome is needed only by the CLI.
   - rec-3875 bundled -- same file, same defect class (a CLI path that exits 0 doing nothing); its acceptance is VP 10.
   - rec-4589 motivates this plan but is not bundled -- PLAN-retire-session-cli closes it with a Resolves trailer.
+  - Related tier item, none of whose criteria this plan flips -- T3.20, whose capture records the status rows (c9 brings the ci-rca agent's skips into capture).
 pre_implementation_checklist:
   - Branch confirmed not on main and rebased on origin/main; VP step 1 passes
   - docs/PROJECT_CONTEXT.md read
@@ -605,8 +621,9 @@ execution_steps:
   - >-
     scripts/status_line.py with tests/test_status_line.py first (red, then green).
   - >-
-    Portal: FileRecOutcome in _common.py, file_rec_with_outcome in the facade (file_rec delegates), the cli.py emitters
-    and the __main__ guard; tests/ops_data_portal/test_cli_status_lines.py, the test_cli.py node and the facade list.
+    Portal: FileRecOutcome in scripts/ops_portal/outcomes.py, file_rec_with_outcome in the facade (file_rec delegates),
+    the cli.py emitters and the __main__ guard; tests/ops_data_portal/test_cli_status_lines.py,
+    tests/ops_data_portal/test_cli_main_guard.py and the facade list.
     Measure ops_data_portal.py SLOC.
   - >-
     Postflight: run_metrics and --evidence emitters with tests/session/postflight/test_status_lines.py.
