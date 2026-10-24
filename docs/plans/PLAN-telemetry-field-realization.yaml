@@ -28,7 +28,8 @@ scope:
   purpose: >-
     Add a closed Realization model (extra="forbid"): produced: dict[str, list[str]] (keys are a producer id or the literal
     write_boundary) and unproduced: dict[str, list[str]] (keys are owners), default empty. ContractDocument gains
-    realization: Realization | None = None. Shape only; every cross-file rule lives in the check below (Decision 210 cl.3:
+    realization: Realization | None = None. Its docstring notes it is unrelated to a read-derived field's
+    derivation.realized (which says the write-time derivation is implemented). Shape only; every cross-file rule lives in the check below (Decision 210 cl.3:
     the contract is the declared source, the check derives from it).
 - file: tests/test_contracts_schema.py
   action: Modify
@@ -60,7 +61,10 @@ scope:
     "rec-4030 (re-grounding planning_session_ref on this contract's derivation model; the UUID4 minter was retired, not
     migrated)", matching PLAN-retire-session-cli's session-id.yaml wording; governance_notes is not category-6 prose, so
     the contract-level amendment line covers it. At build time confirm rec-275 (cited as open in failure_phase and KNOWN
-    GAPS) is still open through recs_by_ids; if closed, drop "(open)" and its KNOWN GAPS entry under the same entries. workflow's stale
+    GAPS) is still open through recs_by_ids; if closed, drop "(open)" from failure_phase's semantics with its own
+    field-level prose_improvement entry (one more effective line) and drop its KNOWN GAPS entry. Ownership of
+    failure_phase: rec-4599 owns produce-or-retire for the column; rec-275's failure-path code change is one way to
+    produce it, so rec-4599 decides with rec-275 in view and its context names rec-275. workflow's stale
     "TelemetrySessions.REQUIRED_FIELDS" sentence is removed by PLAN-retire-session-cli's semantics edit (agreed with that
     thread 2026-10-24); if it survives the rebase, this plan removes it the same way. No other description or semantics
     edit: field_semantics.yaml is generated without prose (schema_to_field_semantics main and --check use
@@ -120,14 +124,15 @@ scope:
   action: Modify
   purpose: >-
     The drop list is read from index.json's normalised_out instead of the literal _SIDE_EFFECT_KEYS tuple, so it has
-    one home. The read is lazy (a functools.cache accessor called inside normalisation), never at module import
+    one home; normalise()'s docstring and index.json's purpose text point at normalised_out instead of listing keys. The read is lazy (a functools.cache accessor called inside normalisation), never at module import
     (AGENTS.md: no exception during import).
 - file: tests/telemetry/test_golden_normalisation_source.py
   action: Create
   purpose: >-
     test_normalisation_drops_exactly_the_index_list: normalising a row carrying every index.json normalised_out key
     plus one other column removes exactly the listed keys; test_no_literal_drop_list_remains: turn_capture_corpus.py
-    holds no _SIDE_EFFECT_KEYS tuple literal (ast scan). Red before (index.json has no normalised_out).
+    holds no tuple, list or set literal containing any normalised_out column name (ast scan, whatever the variable is
+    called). Red before (index.json has no normalised_out).
 - file: config/telemetry/parser_versions.yaml
   action: Modify
   purpose: >-
@@ -158,8 +163,9 @@ scope:
     residual, see context); a criterion-owner error names the fix ("criterion met: move these columns to produced, or
     name a new owner"), because a plan flipping that criterion must also update the block. R8 an inline field's
     populated_by starts with the phrase its entry implies: "the write boundary" for write_boundary; "unproduced:
-    <owner>" with that field's owner; for producer keys, "the " followed by every credited producer as "<p> producer"
-    before the first period (e.g. "the claude_code producer, at the open event"). Only the leading phrase is checked. A missing realization block on any of the four contracts is an error. Unreadable inputs fail
+    <owner>" with that field's owner; for producer keys, "the <p> producer" for one producer, and "the <p1> and <p2> producers" (or "the <p1>,
+    <p2> and <p3> producers") for several, in registry order, before the first period (e.g. "the claude_code producer,
+    at the open event"). Only the leading phrase is checked. A missing realization block on any of the four contracts is an error. Unreadable inputs fail
     loudly. Stays under 500 SLOC (Decision 128); imports PyYAML, json and scripts.checks only.
 - file: scripts/checks/contracts/_manifest.py
   action: Modify
@@ -258,13 +264,16 @@ verification_plan:
     phase: pre-deploy
     action: >-
       Each rule fails closed on a planted defect: R1 a stored field missing, a field listed twice under one key, a
-      field both produced and unproduced, an unknown field name, a read-derived field listed (and a field credited to
-      two registered producers, which passes); R2 an unregistered producer; R3 a write_boundary set missing a derived
+      field both produced and unproduced, a field under write_boundary and a producer key, a field under two unproduced
+      owners, an unknown field name, a read-derived field listed, a contract with no realization block (and a field
+      credited to two registered producers, which passes); R2 an unregistered producer; R3 a write_boundary set missing a derived
       column, one with an extra column; R4 a produced field absent
       from the corpus, a producer with produced fields and no golden_index; R5 an unproduced field present in the corpus;
-      R6 a corpus column not credited; R7 a malformed owner, an owner T9.9:c1 that does not exist, a met-criterion owner
+      R4 also the positive case, a normalised_out column (output_sha256) credited to the producer passes; R6 a corpus
+      column not credited; R7 a malformed owner, an owner T9.9:c1 that does not exist, a met-criterion owner
       T3.20:c1; R8 an unproduced field whose populated_by names a producer, a produced field whose populated_by starts
-      "unproduced", a claude_code field whose populated_by starts "the write boundary".
+      "unproduced", a claude_code field whose populated_by starts "the write boundary", an unproduced field whose
+      populated_by names a different owner, a two-producer field whose populated_by names only one of them.
     command: >-
       bin/venv-python -m pytest
       tests/checks/contracts/test_validate_telemetry_field_realization.py::test_each_rule_fails_closed -q
@@ -300,8 +309,8 @@ verification_plan:
     action: >-
       Discrimination on the real tree: removing one produced field from telemetry_sessions' block, and moving
       harness_session_key (which the corpus emits) to an unproduced owner, each makes the check fail; restoring the file
-      makes it pass. Run on a scratch copy of the repo's contracts directory via the pure function, never by editing the
-      tracked file.
+      makes it pass. The mutations are applied in memory to the loaded real inputs and passed to the pure function; the
+      tracked file is never edited.
     command: >-
       bin/venv-python -m pytest
       tests/checks/contracts/test_validate_telemetry_field_realization.py::test_live_contract_mutations_are_caught -q
@@ -323,8 +332,11 @@ verification_plan:
       config/lambda/ducklake/field_semantics.yaml && bin/venv-python -m pytest tests/telemetry/test_parser_version_registry.py
       tests/telemetry/test_golden_normalisation_source.py -q && bin/venv-python -c "from scripts.checks.structural._classify import effective_lines as e; import glob;
       n=[(f,e(open(f).read())) for f in glob.glob('docs/contracts/telemetry_*.yaml')]; print(n); assert all(c<=500 for
-      _,c in n); print('BUDGET_OK')"
-    expected: The generator reports no drift, git diff is empty, the registry tests pass, and BUDGET_OK prints.
+      _,c in n); assert dict(n)['docs/contracts/telemetry_observations.yaml']<=498; print('BUDGET_OK')"
+    expected: >-
+      The generator reports no drift, git diff is empty, the registry tests pass, and BUDGET_OK prints (every contract
+      at or under 500, telemetry_observations at or under 498: PLAN-retire-session-cli's standing
+      test_observations_declares_the_status_rows pins that tighter bound).
     fix_if: >-
       Generator drift means a description or semantics string was edited: revert it. A size breach means compacting
       that contract's oldest block-form amendment_log entries, never a raise.
@@ -338,12 +350,16 @@ verification_plan:
     command: >-
       bin/venv-python -c "import yaml; d=yaml.safe_load(open('docs/contracts/telemetry_sessions.yaml')); r=d['realization'];
       cc=set(r['produced']['claude_code']); bad=[k for k,v in d['fields'].items() if k in cc and 'populated_by' in v and
-      'write boundary' in v['populated_by']]; t=open('docs/contracts/telemetry_sessions.yaml').read(); stale=[w for w in
+      'write boundary' in v['populated_by']]; t=' '.join([str(d.get('governance_notes',''))]+[str(v.get(k,'')) for v in
+      d['fields'].values() for k in ('description','semantics','populated_by')]); stale=[w for w in
       ('REQUIRED_FIELDS','TELEMETRY_TABLE_DTYPES','null-inference','live legacy UUID4') if w in t]; print(bad, stale);
       assert not bad and not stale; print('C7_OK')"
     expected: Prints two empty lists and C7_OK.
     fix_if: >-
-      A listed field still names the write boundary for a producer-written value: rewrite its populated_by.
+      A field in the first list still names the write boundary for a producer-written value: rewrite its populated_by.
+      A word in the second list survives in live text (field description, semantics or populated_by, or the
+      contract-level governance_notes; amendment_log history is deliberately not scanned): remove that sentence with its
+      category-6 amendment entry.
     hermetic: true
     expected_literals: []
     graduation: waive
