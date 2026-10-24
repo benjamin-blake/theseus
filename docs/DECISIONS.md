@@ -2,6 +2,60 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 235: Verification weakening is human-gated at entry and earns autonomy on a ladder lane behind a shadow step, out-of-loop redundancy evidence and an irreducible floor (amends Decision 181 clause 1 and Decision 187 clauses 3-5) (Decided)
+
+```yaml
+number: 235
+status: Decided
+decided_date: "2026-10-23"
+amends: [181, 187]
+significance:
+  value: numbered_decision
+  justification: >-
+    Durable, reversal-relevant change to who may authorize weakening verification. Not a
+    contract note: implement-scope-boundary.yaml owns the CONTENT surfaces, not Decision 187's
+    authorization form. Not amendment_forms: one annotation cannot amend two entries.
+```
+
+**Status:** Decided
+**Date:** 2026-10-23
+**Warehouse ID:** dec-235 (per Decision 84 backfill)
+
+**Problem:** A change that weakens verification -- removing a check, demoting it to a weaker tier, loosening an assertion -- has only human authorization forms: a human-confirmed plan, or a Decision naming the check (Decision 187 clauses 3-5). The loop can never earn the right to retire a check it proved redundant, and "it never failed" proves nothing: a rare-regression tripwire never fails either.
+
+**Intent:** The system may one day remove a check autonomously, only after meticulous evidence it was not needed, and never a check that judges it.
+
+**Decision:**
+1. **Class and entry rung.** The class is every change that weakens a surface of implement-scope-boundary.yaml's CONTENT map, needs a down-direction or loosening token of marker-grammar.yaml, or leaves a candidate whose only truthful disposition is `weakening`; size-budget raises stay under Decisions 128/165 and plan-field edits stay forbidden. Every in-class change needs a human's approval: a human-confirmed plan naming it, or a Decision its marker cites. A fast-lane repair (Decision 226 cl.2) carrying one routes to that gate. Weakening to obtain green stays forbidden at every rung: a check red on the change is never eligible.
+2. **Ladder lane.** Autonomy for the class is earned on one lane of the review ladder (read_all, sampled, spot_check, anomaly_triggered) on the one controller and transition log (Decision 221 cl.7), binding when CD.46 ratifies; read_all is clause 1's gate. The operator approves every promotion; demotion is automatic; the lane's rung never exceeds its evidence producers' rungs, and the executor's T4.4 gate is necessary, never sufficient. A removal taking measured verification-boundary coverage below the current gate's floor is ineligible (Decision 211 cl.4).
+3. **Shadow step.** Removal runs blocking, then shadow, then removed. A shadowed check never blocks but still runs and records each verdict as its own record kind in the one loop record journal (CD.12's alarm-not-gate posture; not Decision 231's shadow runs); only runs that examined something count (Decision 170) and a run gap voids the window. A shadowed check that fails where every blocking check passed is restored, and the lane returns to read_all.
+4. **Redundancy evidence.** A drop needs positive evidence the check is subsumed -- every mutant it kills on its own target is killed by a retained blocking check (T3.7's mutation-on-target kind) -- computed by deterministic code outside the loop's edit scope: the producer's paths join Decision 117's boundary_patterns and Decision 185 cl.3's base-ref check, as Decision 221 cl.2 does for the judge. A clean history alone is never evidence, nor is an empty kill set; a target mutation does not reach keeps clause 1's gate until a per-hunk or per-key revert operator exists at the base ref (T3.7 c8). Windows and thresholds are pre-registered (Decision 221 cl.4) under T4.4 c2.
+5. **Irreducible floor.** Outside the lane at every rung, derived at the base ref and never enumerated (Decision 187 cl.1): any check guarding a Decision 117 boundary_patterns path, the judge among them (Decisions 221 cl.2, 231); every hook the base ref's pre-commit configuration declares, secret scanning among them; and the ladder's own checks -- every check a marker-grammar.yaml token lists in used_by, every enforcer the CONTENT map names, and the lane's controller, recorder and producer once built. A floor change keeps clause 1's gate forever.
+6. **Amendments.** Decision 181 cl.1: its routing and its "to obtain green" bar stand; at an earned rung the lane's evidence, not a per-change human, approves executing a routed weakening of any kind, each held to clause 4's bar. Decision 187 cl.3-4: a second authorization kind, an evidence record naming the check, resolvable at the base ref, bound through the shared marker guard (cl.7) and meeting Decision 165's authorization bar; it counts toward reversal c1 and c3. Cl.5: at an earned rung mark-then-drop becomes blocking, shadow, drop, and dropping a shadowed check needs that record; below it cl.5 stands. Decision 163 point 1 is unchanged: the lane adds no exception path to an exceptionless floor, and a lane removal meets the skip-citation floor by citing its work item.
+7. **Sequencing.** Design now, build later (Decision 197 cl.8), not frame-lock (Decision 75): the build starts once rec-4413's re-measure (from 2027-01-18) reports and an evidence producer outside the edit scope exists (T3.7, deferred). Until then clause 1's gate is the only rung, which is today's state.
+
+**Coverage (Decision 181 cl.2):** none enforced. Homes: cl.1-2 T3.4 c3 and T4.4 c7-c8; cl.3-4 and cl.6 T3.7 c8 (deferred); cl.5 implement-scope-boundary.yaml invariants.content.earned_autonomy.
+
+```yaml reversal-conditions
+decision: 235
+review_by: 2027-06-30
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: unique-catch
+    kind: manual
+    description: "A shadowed or dropped check uniquely caught a regression: audit the producer before any drop."
+  - id: cd46-reshaped
+    kind: manual
+    description: "CD.46 is rejected or reshaped: re-decide clause 2's ladder."
+  - id: remeasure-slip
+    kind: manual
+    description: "rec-4413's re-measure finds a weakening slipped past review: re-decide clause 1 first."
+```
+
+**Related:** Decisions 55, 92, 93, 189; CD.29; T3.4, T3.7, T4.4.
+
+---
+
 ## Decision 234: User-owned persona execution -- a sandboxed per-run clone host, owner-only subscriptions and a forge-neutral core (amends Decision 206 clause 2 and Decision 212 clause 5) (Decided)
 
 ```yaml
@@ -3335,6 +3389,13 @@ reversal condition it satisfies by shipping none), Decision 169 (the manifest su
 Decision 104 (registration surfaces), Decision 181 (declare-your-coverage), Decision 135 (why the
 gate is ungated in `--pre`), Decision 55 (a missing and a passing oracle must never look alike).
 
+> **Amended by Decision 235 (2026-10-23):** Once built, clauses 3-4 gain a second authorization
+> kind -- an evidence record naming the check, resolvable at the base ref, bound through the shared
+> marker guard (clause 7) and meeting Decision 165's authorization bar -- and reversal conditions c1
+> and c3 count it as they count markers. At an earned rung, clause 5's mark-then-drop becomes
+> blocking, shadow, drop and dropping a shadowed check needs that record; below it clause 5 stands.
+> This body is otherwise unedited.
+
 ---
 
 ## Decision 186: Closure-time artifact obligation for escape-classified recs (Decided)
@@ -3824,6 +3885,12 @@ restating its clause), Decision 128 / Decision 165 (the three budget-raise guard
 mechanical budget row names), Decision 167 (the Significance routing rule this entry applies),
 Decision 150 (the significance bar this entry clears). Roadmap refs (not DECISIONS.md entries):
 rec-3332 (closed by this entry's carrying merge via the Resolves trailer).
+
+> **Amended by Decision 235 (2026-10-23):** Clause 1's routing and its "to obtain green" bar stand
+> at every rung; whether a human or earned lane evidence approves executing a routed weakening is
+> Decision 235's ladder lane, and the check names, paths and derivation mechanics it needs live at
+> docs/contracts/implement-scope-boundary.yaml invariants.content.earned_autonomy. This body is
+> otherwise unedited.
 
 ---
 
