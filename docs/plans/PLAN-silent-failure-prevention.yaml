@@ -28,22 +28,26 @@ phase: >-
   owns the STATUS v1 grammar, formatter, parser and writer deploy.
 closes_criteria: []
 scope:
-- file: scripts/status_line.py
+- file: scripts/telemetry_capture/status_line.py
   action: Create
   purpose: >-
-    emit_status(source, result, reason=None) -> None, the one emitter helper: deferred-imports
-    src.turn_capture.markers (the scripts/checks/validation_result.py precedent), builds the line with
+    emit_status(source, result, reason=None) -> None, the one emitter helper. Home: the telemetry-capture package
+    (file-router.yaml telemetry-capture route); a scripts-root module would be a validate_placement RS-01 stray. It
+    deferred-imports src.turn_capture.markers (stdlib only, so the package stays stdlib only; the
+    scripts/checks/validation_result.py precedent), builds the line with
     format_status_marker and prints it as one whole line to sys.stderr, flushed. stderr, not stdout, so the --file-rec
     rec-id line and the --metrics JSON stay the only stdout content (tests parse them); a Claude Code Bash tool_result's
     content carries stderr after stdout, which is what the v6 parser scans (last 200 lines of a repo-CLI command).
-    Raises nothing the formatter does not (a bad literal is a bug the roster check catches first). Its docstring
+    Never raises: a formatter ValueError is caught and a one-line diagnostic without the marker goes to stderr instead,
+    so a bad argument can never turn a successful insert into a non-zero exit and a re-file (E3 and E4 catch bad
+    literals first). Its docstring
     describes the line without spelling the marker literal (the sibling guard and rule E6 match raw text).
-- file: tests/test_status_line.py
+- file: tests/telemetry_capture/test_status_line.py
   action: Create
   purpose: >-
     emit_status writes exactly one line to stderr and nothing to stdout; the line parses back through
     markers.parse_markers to Marker("status", "<source>.<result>", ..., result=<result>) for done, skipped and failed,
-    with and without reason.
+    with and without reason; a bad argument writes the diagnostic (no marker) and raises nothing.
 - file: scripts/ops_data_portal.py
   action: Modify
   purpose: >-
@@ -64,12 +68,15 @@ scope:
   action: Modify
   purpose: >-
     --file-rec calls file_rec_with_outcome and, after printing the rec id (unchanged), emits ops_portal.file_rec done
-    when inserted, skipped with the outcome's reason when not; missing required fields and the
-    ValidationError/ValueError path emit failed (reason missing_required or invalid_fields) and keep exit 1.
-    --update-rec emits ops_portal.update_rec done after its confirmation line, failed (invalid_update) on the
-    rejected-flag, no-field and ValidationError/ValueError paths, exit codes unchanged. Intentionally silent: the
-    --dry-run refusal (no recording mode ran) and an invalid --context-v2-json (refused before the mode starts); a
-    writer RuntimeError propagates as today (non-zero traceback). rec-3875: add
+    when inserted and skipped when not, one literal emit_status call per reason (ci_rca_open_duplicate,
+    ci_rca_stale_rerun) so E3 checks every reason; missing required fields, an invalid --context-v2-json (refused
+    inside the branch, after the missing-required check) and the ValidationError/ValueError path emit failed
+    (missing_required, invalid_context_v2_json, invalid_fields) and keep exit 1; a writer or reader RuntimeError
+    (transport failure, refused dependency id, OCC exhaustion, reader unreachable) emits failed (writer_error) and
+    re-raises, so the traceback and non-zero exit are unchanged. --update-rec emits ops_portal.update_rec done after its
+    confirmation line, failed (invalid_update) on the rejected-flag, no-field and ValidationError/ValueError paths and
+    failed (writer_error) before re-raising a RuntimeError; exit codes unchanged. The only silent path is the --dry-run
+    refusal, which runs before any recording mode. rec-3875: add
     `if __name__ == "__main__": sys.exit(main())` so python -m scripts.ops_portal.cli is the CLI, not a silent no-op.
 - file: tests/ops_data_portal/test_cli_status_lines.py
   action: Create
@@ -78,9 +85,12 @@ scope:
     find_open_ci_rca_rec_by_fingerprint, bump_ci_rca_occurrence, closed_head_of_chain, current_commit_sha,
     classify_closed_head; precedent tests/ops_data_portal/test_ci_rca_close_then_recur.py): an insert emits done; an open fingerprint match emits skipped reason=ci_rca_open_duplicate
     and the stale-rerun drop skipped reason=ci_rca_stale_rerun; invalid fields and missing required fields emit failed
-    with exit 1; --update-rec done and failed; in every case stdout is byte-identical to today's (the rec id line or the
-    confirmation line). test_emitted_lines_parse_as_status_markers feeds the captured stderr through
-    markers.parse_markers.
+    with exit 1; an invalid --context-v2-json emits failed reason=invalid_context_v2_json; a _ducklake_write
+    RuntimeError emits failed reason=writer_error and still raises, in both modes; --update-rec done and failed; in
+    every case stdout is byte-identical to today's (the rec id line or the confirmation line).
+    test_emitted_lines_parse_as_status_markers feeds the captured stderr through markers.parse_markers. Each test reads
+    stderr once with capsys.readouterr() and asserts through parse results under a fixed message, so a failing test
+    never reprints a built STATUS line (the sibling plan's constraint).
 - file: tests/ops_data_portal/test_cli_main_guard.py
   action: Create
   purpose: >-
@@ -110,8 +120,9 @@ scope:
 - file: config/telemetry/status_sources.yaml
   action: Create
   purpose: >-
-    The emitter roster, one row per source: ops_portal.file_rec, ops_portal.update_rec, postflight.metrics,
-    postflight.evidence, each with module (repo path), command (the documented invocation, e.g. "bin/venv-python -m
+    The emitter roster: a top-level sources mapping keyed by source id (one "<source>:" line each, the form
+    rec-4602's stored acceptance greps), entries ops_portal.file_rec, ops_portal.update_rec, postflight.metrics,
+    postflight.evidence, each value {module (repo path), command (the documented invocation, e.g. "bin/venv-python -m
     scripts.ops_data_portal --file-rec") and results (the subset it emits). Header names the residual owner rec-4602
     (recording CLIs not yet listed, postflight --auto's own evidence, validate and verify-head steps included).
 - file: scripts/checks/hygiene/validate_status_line_emitters.py
@@ -123,12 +134,14 @@ scope:
     markers.STATUS_SOURCE_MAX characters; E2 results are a non-empty subset of markers.STATUS_RESULTS; E3 each row's
     module exists and holds at least one emit_status call with that literal source for each declared result and none
     with an undeclared result (literal result arguments), and every reason literal fullmatches the signature class; E4 every emit_status call anywhere uses literal source
-    and result arguments and names a source the roster assigns to that module; E5 each command contains one of
+    and result arguments and a literal reason or none, and names a source the roster assigns to that module; E5 each command contains one of
     src/turn_capture/gate_events.py STATUS_COMMAND_TOKENS (where the sibling defines it), so the v6 parser scans it; E6
-    only src/turn_capture/markers.py and scripts/status_line.py call format_status_marker (AST) or hold the marker
+    only src/turn_capture/markers.py and scripts/telemetry_capture/status_line.py call format_status_marker (AST) or hold the marker
     needle as raw text, the same matching mode as the sibling guard. The needle is built from markers constants
     (f"{STATUS_MARKER_PREFIX} v{STATUS_MARKER_VERSION}"), so this module's own source never holds it. Each error names
-    the file and, where one exists, the source. Imports PyYAML, ast and the turn_capture constants (deferred); under
+    the file and, where one exists, the source. Fails closed (Decision 170): a missing or unparseable roster, a roster
+    that is not a source-keyed mapping, or a scanned file that does not parse appends a failure naming the file, never
+    an examined(0) PASS. Imports PyYAML, ast and the turn_capture constants (deferred); under
     500 SLOC.
 - file: scripts/checks/hygiene/_manifest.py
   action: Modify
@@ -139,7 +152,7 @@ scope:
 - file: tests/checks/hygiene/test__manifest.py
   action: Modify
   purpose: >-
-    TestStatusLineEmittersRegistered -- dispatched in pre and full; the pre_globs match the roster, scripts/status_line.py,
+    TestStatusLineEmittersRegistered -- dispatched in pre and full; the pre_globs match the roster, scripts/telemetry_capture/status_line.py,
     scripts/ops_data_portal.py and src/turn_capture/markers.py (top-level files included).
 - file: config/ci_rca_taxonomy.yaml
   action: Modify
@@ -149,12 +162,14 @@ scope:
   purpose: >-
     test_each_rule_fails_closed, parametrised over every planted defect VP 5 lists for E1-E6 (each asserting its own
     error; the needle is built at run time, so this file never holds it);
-    test_clean_synthetic_roster_passes; test_live_repository_passes (the real roster and tree yield no errors).
+    test_clean_synthetic_roster_passes; test_live_repository_passes (the real roster and tree yield no errors); the
+    wrapper error branches test_missing_roster_fails, test_unparseable_roster_fails, test_list_shaped_roster_fails and
+    test_unparseable_python_file_fails (each a named failure, for the full tier's 100% per-file coverage floor).
 - file: tests/turn_capture/test_status_events.py
   action: Modify
   purpose: >-
     SANCTIONED ASSERTION CHANGE (planned in PLAN-retire-session-cli, which created the guard for this hand-off):
-    test_no_status_emitter_outside_markers allows exactly src/turn_capture/markers.py and scripts/status_line.py to call
+    test_no_status_emitter_outside_markers allows exactly src/turn_capture/markers.py and scripts/telemetry_capture/status_line.py to call
     format_status_marker or hold "STATUS v1"; every other file still fails it. The property (one formatting home per
     side of the boundary) is unchanged; rule E6 restates it in the registered check.
 - file: config/agent/verification_registry/entries/status-line-emitters.yaml
@@ -184,7 +199,7 @@ scope:
     before the first is done. A context change through update_rec refines the rec's own problem only." Each
     governance_notes string ends, on the same line, with its Decision 181 clause: "Decision 181: served as guidance
     (get_rec_write_guidance) and parity-tested; write-time refusal unenforced, owned by rec-4603." The parity-test
-    constants are the rule sentences only.Each field gets one
+    constants are the rule sentences only. Each field gets one
     flow-form governance_note_add amendment entry. Budget 556 effective lines, 552 at main: compact file's 2026-10-04
     block-form entry to one flow line first, then measure; never a raise.
 - file: config/agent/data_quality/ops.yaml
@@ -238,26 +253,30 @@ scope:
     and "stub"; planning's trigger 2 and plan-critique's 12k section name the caller disposition; code-review names
     replacement_closure_check. Existing 12k pins are untouched.
 bundled_recommendations: [rec-3875]
-followon_recs: [rec-4602, rec-4603, rec-4604, rec-4605]
+followon_recs: [rec-4602, rec-4603, rec-4604, rec-4605, rec-4608]
 infrastructure_dependencies:
   - >-
-    FREEZE: nothing in this plan builds, pushes or merges until Benjamin says the repository transfer freeze is over
-    (memory PAUSE, 2026-10-20). The build then rebases onto the renamed repository's main.
+    FREEZE: nothing is pushed, PR'd or merged until Benjamin says the repository transfer freeze is over (memory
+    PAUSE, 2026-10-20); building and committing locally is allowed (constraints[0]). After the lift: re-fetch, rebase
+    onto the renamed repository's main, re-run VP 1 and VP 11 on the rebased tree, then push.
   - >-
-    Release order: this build merges only after PLAN-retire-session-cli has merged and its deploy verification is green
-    (the writer accepts status:<source>.<result> process events). Before that, a status row would be refused and halt
-    the session's capture (runner.py writes halt.json on writer_refused).
+    Release order: this build STARTS only after PLAN-retire-session-cli has merged and its deploy verification is green
+    (the writer accepts status:<source>.<result> process events). Before that, a status line in the build session's
+    own transcript (a failed --evidence during closure, or a failing test's captured stderr under -m scripts.validate)
+    would be refused and halt that session's capture (runner.py writes halt.json on writer_refused).
   - >-
     No Lambda-packaged file, Terraform or IAM change: compute_affected_artifacts over scope is empty (scripts/, tests/,
     config/telemetry, config/agent, .claude/skills and docs/contracts are not packaged), and field_semantics.yaml is
     untouched (ops_recommendations governance_notes do not project; VP 9).
   - >-
     VP 13 (live status row) depends on rec-4292: the telemetry read verbs read the smoke catalog until slice 2c, so the
-    step is "not run: unmeasurable" while rec-4292 is open.
+    step is "not run: unmeasurable" while rec-4292 is open. rec-4608 (dependencies rec-4292) carries the live check
+    as a standing verification-monitor silent check, so it does not rest on this one-off probe.
 acceptance_criteria:
   - >-
-    Every roster CLI mode reports its outcome: --file-rec prints done for an insert and skipped with
-    ci_rca_open_duplicate or ci_rca_stale_rerun when it returns an existing id; --update-rec, postflight --metrics and
+    Every roster CLI mode reports its outcome on every path except the --dry-run refusal: --file-rec prints done for
+    an insert, skipped with ci_rca_open_duplicate or ci_rca_stale_rerun when it returns an existing id, and failed on
+    every refusal and on a writer or reader error; --update-rec (a writer error included), postflight --metrics and
     --evidence print done or failed; each line parses through the v6 parser's markers.parse_markers as a status marker;
     stdout and exit codes are byte- and value-identical to today's.
   - >-
@@ -276,8 +295,8 @@ verification_plan:
     phase: pre-deploy
     action: >-
       Precondition: PLAN-retire-session-cli is merged with the grammar this plan builds on, this branch is rebased, and
-      the freeze is lifted. Its deploy verification being green is confirmed with the coordinator before the merge
-      (not checkable from the tree).
+      the freeze is lifted. Its deploy verification being green is confirmed with the coordinator before execution
+      step 1, not only before the merge (not checkable from the tree; infrastructure_dependencies[1]).
     command: >-
       git fetch origin main --quiet && git merge-base --is-ancestor origin/main HEAD && grep -q "def
       format_status_marker" src/turn_capture/markers.py && grep -q "STATUS_SOURCE_MAX" src/turn_capture/markers.py &&
@@ -293,8 +312,8 @@ verification_plan:
   - step: 2
     phase: pre-deploy
     action: emit_status writes one parseable whole line to stderr and nothing to stdout.
-    command: bin/venv-python -m pytest tests/test_status_line.py -q
-    expected: Every node passes. Red before (scripts/status_line.py absent).
+    command: bin/venv-python -m pytest tests/telemetry_capture/test_status_line.py -q
+    expected: Every node passes. Red before (scripts/telemetry_capture/status_line.py absent).
     fix_if: A line on stdout, two lines, or a parse mismatch is a helper bug.
     hermetic: true
     expected_literals: []
@@ -305,8 +324,8 @@ verification_plan:
   - step: 3
     phase: pre-deploy
     action: >-
-      The portal emits done, skipped (both reasons) and failed on the right paths, stdout and exit codes unchanged, and
-      the lines parse as status markers.
+      The portal emits done, skipped (both reasons) and failed on the right paths (writer_error and
+      invalid_context_v2_json included), stdout and exit codes unchanged, and the lines parse as status markers.
     command: bin/venv-python -m pytest tests/ops_data_portal/test_cli_status_lines.py -q
     expected: Every node passes. Red before (no STATUS line is emitted; file_rec_with_outcome absent).
     fix_if: A dedup path reporting done means file_rec_with_outcome lost the branch's outcome; a stdout diff means the line went to stdout.
@@ -326,14 +345,18 @@ verification_plan:
     graduation_check_id: status-line-postflight-emitters
   - step: 5
     phase: pre-deploy
-    action: Each roster rule fails closed on a planted defect.
+    action: Each roster rule fails closed on a planted defect, and the wrapper fails closed on unreadable input.
     command: >-
       bin/venv-python -m pytest
-      tests/checks/hygiene/test_validate_status_line_emitters.py::test_each_rule_fails_closed -q
+      tests/checks/hygiene/test_validate_status_line_emitters.py::test_each_rule_fails_closed
+      tests/checks/hygiene/test_validate_status_line_emitters.py::test_missing_roster_fails
+      tests/checks/hygiene/test_validate_status_line_emitters.py::test_unparseable_roster_fails
+      tests/checks/hygiene/test_validate_status_line_emitters.py::test_list_shaped_roster_fails
+      tests/checks/hygiene/test_validate_status_line_emitters.py::test_unparseable_python_file_fails -q
     expected: >-
-      The node passes; it is parametrised over E1 (bad source, overlong source), E2 (unknown result), E3 (module
+      Every node passes. The first is parametrised over E1 (bad source, overlong source), E2 (unknown result), E3 (module
       missing the call, missing a declared result, an undeclared result, bad reason), E4 (unlisted source, non-literal
-      source, non-literal result, a listed source called from a module the roster does not assign it), E5 (command the
+      source, non-literal result, non-literal reason, a listed source called from a module the roster does not assign it), E5 (command the
       parser never scans) and E6 (a stray format_status_marker call, a stray raw needle in a non-home file, with the
       needle built at run time from the markers constants), each asserting its own error.
     fix_if: A rule that does not fire, or fires without naming source and file, is a check bug.
@@ -455,7 +478,8 @@ verification_plan:
     expected: >-
       STATUS_ROWS 1 then LIVE_STATUS_OK. Depends on rec-4292 (open): session_tree_rows, like every telemetry event
       verb, reads the smoke catalog until slice 2c lands. While rec-4292 is open this step is reported "not run:
-      unmeasurable, owner rec-4292" and is never treated as a 0-row failure; it runs once rec-4292 is closed.
+      unmeasurable, owner rec-4292" and is never treated as a 0-row failure. Its carrier is rec-4608 (dependencies
+      rec-4292), whose standing silent check covers the same delivery.
     fix_if: >-
       0 rows -- read the probe session's capture diag (status_source_too_long, writer refusal, a command the parser did
       not scan) before anything else; more than 1 -- a duplicated emission or a missing dedupe. STOP and RCA (Decision 55).
@@ -465,10 +489,10 @@ verification_plan:
       A one-time live confirmation that the stderr line reaches stored telemetry; graduated steps 3-6 pin the emitting
       behaviour and the sibling plan's graduated parser checks pin the parsing.
 test_obligations:
-  - source: scripts/status_line.py
+  - source: scripts/telemetry_capture/status_line.py
     behavior: emit_status prints one parseable STATUS v1 line to stderr only.
     verification_step: 2
-    test_selector: tests/test_status_line.py
+    test_selector: tests/telemetry_capture/test_status_line.py
     red_green_expectation: red before (module absent), green after
   - source: scripts/ops_portal/cli.py
     behavior: --file-rec and --update-rec report done, skipped and failed with unchanged stdout and exit codes.
@@ -572,6 +596,7 @@ weakening_dispositions:
 constraints:
   - Freeze (Benjamin, 2026-10-24) -- nothing is pushed, PR'd or merged until he lifts the repo-transfer freeze; the build merge needs his word (Class A contract change).
   - Exit codes and stdout of every touched CLI mode are unchanged; STATUS lines go to stderr only, built only through emit_status and format_status_marker.
+  - Tests never print a built STATUS line (the sibling plan's constraint); stderr is read with capsys.readouterr() and asserted through parse results.
   - No parser, grammar, contract name-rule, writer or reader change (PLAN-retire-session-cli and rec-4605 own those); no deploy.
   - No prose, SLOC or structural budget raise (Decisions 128/166); relief is trimming, em-dash normalisation or amendment compaction.
   - The rec rules are guidance plus parity in this plan; write-time refusal is rec-4603's, never improvised here.
@@ -591,7 +616,8 @@ context:
     Decision 181 coverage, per surface. STATUS: roster emitters mechanised by validate_status_line_emitters (both
     tiers); unlisted recording CLIs are rec-4602's; friction labelling of status rows is rec-4605's (reader Lambda).
     Rec rules: served and parity-tested here; write-time refusal is rec-4603's; whether a deferring session files a
-    follow-on at all stays rec-3524's. Deletion rule: plan-time (12k) and bookkeeping-time (step (5)) are instruction
+    follow-on at all stays rec-3524's. Live delivery of status rows (a printed line with no stored row): rec-4608.
+    Deletion rule: plan-time (12k) and bookkeeping-time (step (5)) are instruction
     surfaces pinned by anti-drift; mechanised diff detection is rec-4604's.
   - >-
     Boundary with PLAN-retire-session-cli (agreed with its thread 2026-10-24): it owns STATUS_* constants,
@@ -612,6 +638,7 @@ context:
   - Related tier item, none of whose criteria this plan flips -- T3.20, whose capture records the status rows (c9 brings the ci-rca agent's skips into capture).
 pre_implementation_checklist:
   - Branch confirmed not on main and rebased on origin/main; VP step 1 passes
+  - The coordinator confirms PLAN-retire-session-cli's deploy verification is green (infrastructure_dependencies[1])
   - docs/PROJECT_CONTEXT.md read
   - Decisions 65, 66, 124, 169, 170, 181 read, only the cited clauses
   - src/turn_capture/markers.py (merged sibling grammar), scripts/ops_portal/cli.py, scripts/ops_data_portal.py file_rec, scripts/postflight/housekeeping.py run_metrics and scripts/session/postflight.py main read
@@ -619,7 +646,7 @@ pre_implementation_checklist:
   - Acceptance criteria understood and verifiable
 execution_steps:
   - >-
-    scripts/status_line.py with tests/test_status_line.py first (red, then green).
+    scripts/telemetry_capture/status_line.py with tests/telemetry_capture/test_status_line.py first (red, then green).
   - >-
     Portal: FileRecOutcome in scripts/ops_portal/outcomes.py, file_rec_with_outcome in the facade (file_rec delegates),
     the cli.py emitters and the __main__ guard; tests/ops_data_portal/test_cli_status_lines.py,
@@ -639,11 +666,10 @@ execution_steps:
     pointer with em-dash normalisation; the anti-drift node. Measure bytes against config/prose_budgets.yaml.
   - Execute the Verification Plan steps 2-10 -- loop until pass; on unrecoverable failure stop and RCA (Decision 55).
   - >-
-    Closure, in the implement skill's IMPLEMENTATION Commit Flow order, each outcome reported separately: readiness
-    check; set implementation_declared true; the postflight evidence file and scripts.session.postflight --evidence;
-    commit; git fetch and rebase on origin/main; VP 11 (full tier then --verify-head on the committed clean tree).
-    While the freeze holds, report push and PR as "not pushed: freeze" and stop. After Benjamin lifts it and the
-    sibling's deploy is green: push; PR (body: the roster, the rule texts, the Class A contract diff for Benjamin's
+    Closure follows the implement skill's Workflow and IMPLEMENTATION Commit Flow exactly (code review, coverage and
+    --pre checks, readiness, evidence, commit, rebase, VP 11), each outcome reported separately; this plan adds only
+    the freeze handling. While the freeze holds, report push and PR as "not pushed: freeze" and stop. After Benjamin
+    lifts it: re-fetch, rebase onto the renamed main, re-run VP 1 and VP 11 on the rebased tree; push; PR (body: the roster, the rule texts, the Class A contract diff for Benjamin's
     word, the VP compliance table and "Resolves: rec-3875"); CI green; merge only after code review PROCEED, CI green
     and Benjamin's own word (fetch his message). Squash-merge. Then VP 12 and VP 13.
   - 'Report: what was implemented, verification results, measured SLOC, effective lines and bytes.'
