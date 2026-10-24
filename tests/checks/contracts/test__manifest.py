@@ -196,3 +196,26 @@ class TestPortalDriftPromotedUngated:
     def test_declares_no_pre_globs(self) -> None:
         entry = next(e for e in _manifest.ENTRIES if e.name == "validate_portal_drift")
         assert entry.pre_globs is None
+
+
+class TestTelemetryFieldRealizationRegistered:
+    """The realization check runs in both tiers and its globs cover every input it reads."""
+
+    def test_is_dispatched_in_pre_and_full(self) -> None:
+        pre_names = {step.name for step in registry.pre_sequence() if step.kind == "check"}
+        full_names = {step.name for step in registry.full_sequence() if step.kind == "check"}
+        assert "validate_telemetry_field_realization" in pre_names
+        assert "validate_telemetry_field_realization" in full_names
+
+    def test_pre_globs_cover_the_inputs(self) -> None:
+        entry = next(e for e in _manifest.ENTRIES if e.name == "validate_telemetry_field_realization")
+        globs = set(entry.pre_globs or ())
+        for needed in (
+            "docs/contracts/telemetry_*.yaml",
+            "config/telemetry/parser_versions.yaml",
+            "tests/fixtures/turn_capture/golden/**",
+            "config/lambda/ducklake/field_semantics.yaml",
+            "docs/ROADMAP-PLATFORM.yaml",
+            "scripts/contracts_schema.py",
+        ):
+            assert needed in globs
