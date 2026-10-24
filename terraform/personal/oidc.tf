@@ -28,14 +28,14 @@ locals {
   # renders "repo:${repo}:<suffix>"; a "repo:"-prefixed entry here would render "repo:repo:..."
   # and match nothing). GitHub mints this immutable numeric-id subject for any repository renamed
   # or transferred after 2026-07-15 -- benjamin-blake/theseus renamed at 2026-08-15T12:55:57Z, then
-  # moved to otl-labs/ontheloop in one transfer-and-rename at 2026-10-24T14:51:24Z (Decision 218)
-  # and now presents ONLY this shape under the otl-labs segment. The numeric ids -- not the name --
-  # are the durable identity: a
-  # future rename changes only the NAME half, so Decision 172 point 2's pre-stage playbook adds
-  # the future name's immutable entry to this list ADDITIVELY, BEFORE the rename lands, which is
-  # what keeps a future rename from repeating this outage. Never narrow this list to zero entries,
-  # and never remove an entry without live proof of the replacement first -- the exact discipline
-  # this contraction itself followed.
+  # moved to otl-labs/ontheloop in one transfer-and-rename (Decision 218), and now presents ONLY
+  # this shape under the otl-labs segment. The repository id -- not the name -- is the durable
+  # identity: a rename changes only the REPO name half and a transfer the OWNER half (login and
+  # id), so Decision 172 point 2's pre-stage playbook adds the future identity's immutable entry to
+  # this list ADDITIVELY, BEFORE the move lands, which is what keeps a future rename or transfer
+  # from repeating the 2026-08-15 outage. Never narrow this list to zero entries, and never remove
+  # an entry without live proof of the replacement first -- the exact discipline this contraction
+  # itself followed.
   github_repos = [
     "benjamin-blake@217728084/theseus@1252427466",
     "otl-labs@330441623/ontheloop@1252427466",
