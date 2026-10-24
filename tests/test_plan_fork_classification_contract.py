@@ -1,13 +1,13 @@
 """Content contract for PLAN-step-6b-fork-classification (audit remedy B2-R4, finding PDB-03,
 rec-3042).
 
-Four surfaces carry one non-contradictory fork-classification rule and Step 6b relay shape:
+Four surfaces carry one non-contradictory fork-classification rule and alignment sign-off relay shape:
 docs/contracts/overseer-dispatch.yaml (the nine-field autonomy_tiers.plan_fork_classification
-section, the fourth `step-6b-confirmation` gate value declared across
+section, the fourth `project-alignment` gate value declared across
 gate_request_trampoline's request_schema / gate_run_id / pending_gates, its own
 trampoline_sequence stage, and the corrected injected dispatch header + gate_run_id.provenance
-scoping), .claude/commands/plan.md (Step 6b's presentation shape and contract pointer),
-.claude/skills/planning/SKILL.md (the pointer-not-payload Confirmation Gate section), and
+scoping), .claude/commands/plan.md (the alignment sign-off's presentation shape and contract pointer),
+.claude/skills/planning/SKILL.md (the pointer-not-payload Alignment Sign-off section), and
 .claude/skills/overseer/SKILL.md (the dispatched carrier, replacing the retired "no overseer
 mediation needed" claim rec-3042 identified). Each surface gets a positive case (asserts against
 the real artefact) and at least one negative case (asserts the SAME helper fails against a
@@ -41,13 +41,17 @@ def _plan_md_step6_block(text: str) -> str:
     return text[text.index("## Step 6") : text.index("## Step 7")]
 
 
-def _planning_confirmation_gate_block(text: str) -> str:
-    return text[text.index("## Confirmation Gate (Workflow Step 6b)") : text.index("## Create Branch (Workflow Step 7)")]
+def _planning_sign_off_block(text: str) -> str:
+    return text[
+        text.index("## Alignment Sign-off (Workflow Step 6, project alignment)") : text.index(
+            "## Create Branch (Workflow Step 7)"
+        )
+    ]
 
 
 def _hop_flow(doc: dict[str, Any]) -> list[str]:
-    stages = [s for s in doc["trampoline_sequence"]["stages"] if s.get("gate") == "step-6b-confirmation"]
-    assert stages, "trampoline_sequence.stages must carry its own step-6b-confirmation entry"
+    stages = [s for s in doc["trampoline_sequence"]["stages"] if s.get("gate") == "project-alignment"]
+    assert stages, "trampoline_sequence.stages must carry its own project-alignment entry"
     stage = stages[0]
     return [str(stage.get("fires_at") or "")] + [str(x) for x in (stage.get("flow") or [])]
 
@@ -116,14 +120,14 @@ def _assert_contract_section_declares_the_full_classification(doc: dict[str, Any
     )
 
 
-def _assert_trampoline_declares_the_step_6b_relay_hop(doc: dict[str, Any]) -> None:
+def _assert_trampoline_declares_the_sign_off_relay_hop(doc: dict[str, Any]) -> None:
     trampoline = doc["gate_request_trampoline"]
-    assert "step-6b-confirmation" in trampoline["request_schema"], "request_schema must enumerate the fourth gate value"
-    assert "step-6b-confirmation" in str(trampoline["gate_run_id"].get("not_applicable_to") or ""), (
-        "gate_run_id.not_applicable_to must name step-6b-confirmation"
+    assert "project-alignment" in trampoline["request_schema"], "request_schema must enumerate the fourth gate value"
+    assert "project-alignment" in str(trampoline["gate_run_id"].get("not_applicable_to") or ""), (
+        "gate_run_id.not_applicable_to must name project-alignment"
     )
-    assert "step-6b-confirmation" in trampoline["pending_gates"]["write_ahead"], (
-        "pending_gates.write_ahead must require a step-6b-confirmation entry"
+    assert "project-alignment" in trampoline["pending_gates"]["write_ahead"], (
+        "pending_gates.write_ahead must require a project-alignment entry"
     )
     hop = _hop_flow(doc)
     assert any("open_questions" in entry for entry in hop), "the relay hop must carry open_questions"
@@ -134,38 +138,38 @@ def _assert_trampoline_declares_the_step_6b_relay_hop(doc: dict[str, Any]) -> No
 
 def _assert_dispatch_header_and_provenance_name_the_relay(doc: dict[str, Any]) -> None:
     header = _exact_header(doc)
-    assert "step-6b-confirmation" in header, "the injected dispatch header must name the fourth gate value"
+    assert "project-alignment" in header, "the injected dispatch header must name the fourth gate value"
     assert "AskUserQuestion" in header, "the injected dispatch header must name the absent AskUserQuestion tool"
     provenance = str(doc["gate_request_trampoline"]["gate_run_id"]["provenance"])
     assert "skill-dispatched" in provenance, "provenance must scope its non-optional claim with the literal token"
 
 
-def _assert_plan_md_step6b_carries_shape_and_pointer(text: str) -> None:
+def _assert_plan_md_step6_carries_shape_and_pointer(text: str) -> None:
     block = _plan_md_step6_block(text)
     ptr = "docs/contracts/overseer-dispatch.yaml#autonomy_tiers.plan_fork_classification"
     for token in (
         "consistency-only",
         "decided-with-notice",
         "open_questions",
-        "step-6b-confirmation",
+        "gate: project-alignment",
         ptr,
         "Fork notices",
     ):
-        assert token in block, f"Step 6b must carry {token!r}"
+        assert token in block, f"Step 6 must carry {token!r}"
 
 
 def _assert_planning_skill_points_without_restating(text: str) -> None:
-    block = _planning_confirmation_gate_block(text)
+    block = _planning_sign_off_block(text)
     ptr = "docs/contracts/overseer-dispatch.yaml#autonomy_tiers.plan_fork_classification"
-    assert ptr in block, "the Confirmation Gate section must point at the contract section"
-    assert "step-6b-confirmation" in block, "the Confirmation Gate section must name the dispatched carrier"
+    assert ptr in block, "the Alignment Sign-off section must point at the contract section"
+    assert "gate: project-alignment" in block, "the Alignment Sign-off section must name the dispatched carrier"
     for restated in ("no-credible-alternative", "always-ask list of IAM"):
         assert restated not in text, f"the planning skill must not restate {restated!r} (pointer-not-payload)"
 
 
 def _assert_dispatched_carrier_is_declared_on_every_surface(text: str) -> None:
     assert _RETIRED_PHRASE not in text, "the retired no-overseer-mediation claim must not survive"
-    assert "step-6b-confirmation" in text, "the overseer skill must name the fourth gate value as the carrier"
+    assert "gate: project-alignment" in text, "the overseer skill must name the fourth gate value as the carrier"
 
 
 # ---------------------------------------------------------------------------
@@ -177,14 +181,14 @@ class TestForkClassificationContract:
     def test_contract_section_declares_the_full_classification(self) -> None:
         _assert_contract_section_declares_the_full_classification(_load_contract())
 
-    def test_trampoline_declares_the_step_6b_relay_hop(self) -> None:
-        _assert_trampoline_declares_the_step_6b_relay_hop(_load_contract())
+    def test_trampoline_declares_the_sign_off_relay_hop(self) -> None:
+        _assert_trampoline_declares_the_sign_off_relay_hop(_load_contract())
 
     def test_dispatch_header_and_provenance_name_the_relay(self) -> None:
         _assert_dispatch_header_and_provenance_name_the_relay(_load_contract())
 
-    def test_plan_md_step6b_carries_shape_and_pointer(self) -> None:
-        _assert_plan_md_step6b_carries_shape_and_pointer(PLAN_MD_PATH.read_text(encoding="utf-8"))
+    def test_plan_md_step6_carries_shape_and_pointer(self) -> None:
+        _assert_plan_md_step6_carries_shape_and_pointer(PLAN_MD_PATH.read_text(encoding="utf-8"))
 
     def test_planning_skill_points_without_restating(self) -> None:
         _assert_planning_skill_points_without_restating(PLANNING_SKILL_PATH.read_text(encoding="utf-8"))
@@ -228,10 +232,10 @@ class TestNegativeCases:
         doc = _load_contract()
         mutated = copy.deepcopy(doc)
         for stage in mutated["trampoline_sequence"]["stages"]:
-            if stage.get("gate") == "step-6b-confirmation":
+            if stage.get("gate") == "project-alignment":
                 stage["flow"] = [entry for entry in stage["flow"] if "open_questions" not in entry]
         with pytest.raises(AssertionError):
-            _assert_trampoline_declares_the_step_6b_relay_hop(mutated)
+            _assert_trampoline_declares_the_sign_off_relay_hop(mutated)
 
     def test_dispatch_header_negative_appended_sentences_stripped(self) -> None:
         doc = _load_contract()
@@ -251,7 +255,7 @@ class TestNegativeCases:
         mutated = text.replace(ptr, "")
         assert mutated != text
         with pytest.raises(AssertionError):
-            _assert_plan_md_step6b_carries_shape_and_pointer(mutated)
+            _assert_plan_md_step6_carries_shape_and_pointer(mutated)
 
     def test_planning_skill_negative_restates_four_criteria(self) -> None:
         text = PLANNING_SKILL_PATH.read_text(encoding="utf-8")
