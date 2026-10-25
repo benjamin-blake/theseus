@@ -218,9 +218,9 @@ verification_plan:
       bad = []
       for head, _, body in blocks:
           path = head.split()[3]
-          want = [(line[0], pattern(line[1:])) for line in body.splitlines() if line[:1] in "+-"]
+          want = [(line[0], pattern(line[1:])) for line in body.splitlines() if line.startswith(("+", "-"))]
           diff = subprocess.run(["git", "diff", "origin/main", "--", path], capture_output=True, text=True, check=True).stdout
-          got = [line for line in diff.splitlines() if line[:1] in "+-" and not line.startswith(("+++ ", "--- "))]
+          got = [line for line in diff.splitlines() if line.startswith(("+", "-")) and not line.startswith(("+++ ", "--- "))]
           for line in got:
               hit = next((w for w in want if w[0] == line[0] and w[1].fullmatch(line[1:])), None)
               if hit is None:
@@ -410,6 +410,9 @@ verification_plan:
       Any other count, row or attribute: do NOT run paste B; restore per the rollback field and escalate to the
       planning thread. A tree mismatch (main changed terraform/github after the run's head): use a fresh
       PR touching terraform/github instead of the re-run. A re-run that cannot start: escalate through the coordinator.
+      A re-run that ends without a TF_GITHUB_PLAN_REPORT line (a CI failure before the report, such as a checkout
+      error): re-run once more or use a fresh PR touching terraform/github, leaving the state as paste A left it; the
+      rollback is for a real count, row or attribute mismatch only.
   - step: 15
     phase: post-deploy
     action: >-
@@ -426,7 +429,9 @@ verification_plan:
     fix_if: >-
       An apply error: stop; the state may hold some of the five. Run step 16's check (ontheloop) and step 11's
       (theseus) to see which, restore the rollback version on the operator's word if mixed, and RCA (Decision 55);
-      never retry blindly. POST_PLAN_EXIT=2: a live diff appeared after import; do not apply, escalate.
+      never retry blindly. POST_PLAN_EXIT=2: a live diff appeared after import; do not apply, escalate. The Apply
+      complete line but no POST_PLAN_EXIT (the paste stopped after the apply): run step 16, then hand the operator
+      paste B without its apply and shred lines (the re-plan only); never the apply again.
   - step: 16
     phase: post-deploy
     action: ADMIN, read-only -- verify from the live state object, not from the operator's report.
@@ -497,11 +502,13 @@ verification_plan:
       workflow-run URLs; the operator's paste 0, A and B result lines with dates; steps 11, 12, 16, 17 and 18's printed
       lines; the operator's approval message id and the merge sha) and post the same, minus the message id, as one
       comment on the merged build PR headed TERRAFORM GITHUB RE-KEY EVIDENCE. Save the comment body into
-      $EVIDENCE_COMMENT and the PR body into $BUILD_PR_BODY, then check.
+      $EVIDENCE_COMMENT, the TERRAFORM GITHUB PRE-MERGE EVIDENCE comment body into $PREMERGE_COMMENT and the PR body
+      into $BUILD_PR_BODY, then check.
     command: >-
       grep -q 'TERRAFORM GITHUB RE-KEY EVIDENCE' "$EVIDENCE_COMMENT" && grep -q "$MERGE_SHA" "$EVIDENCE_COMMENT"
       && grep -q "$MERGE_SHA" /mnt/project-files/rec-4355/EVIDENCE.md
-      && ! cat "$EVIDENCE_COMMENT" "$BUILD_PR_BODY" /mnt/project-files/rec-4355/EVIDENCE.md
+      && grep -q 'TERRAFORM GITHUB PRE-MERGE EVIDENCE' "$PREMERGE_COMMENT"
+      && ! cat "$EVIDENCE_COMMENT" "$PREMERGE_COMMENT" "$BUILD_PR_BODY" /mnt/project-files/rec-4355/EVIDENCE.md
       | grep -Eq '(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)|arn:aws|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-z]{2,}|ghp_|github_pat_|ghs_|PRIVATE KEY|ExternalId'
       && echo EVIDENCE_POSTED
     expected: EVIDENCE_POSTED. Nothing from CloudShell beyond the marker and result lines; no value Decision 101 forbids.
@@ -527,7 +534,7 @@ verification_plan:
       print('CLOSURE_OK')"
       && bin/venv-python -m pytest tests/checks/contracts/test_validate_github_org_transfer.py::TestValidateGithubOrgTransfer::test_green_on_the_real_tree
       tests/checks/contracts/test_validate_account_credential_inventory.py::TestValidateAccountCredentialInventory::test_green_on_the_real_tree -q
-      && ! grep -Eq '(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)|arn:aws|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-z]{2,}|ghp_|github_pat_|ExternalId' "$CLOSURE_PR_BODY"
+      && ! grep -Eq '(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)|arn:aws|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-z]{2,}|ghp_|github_pat_|ghs_|PRIVATE KEY|ExternalId' "$CLOSURE_PR_BODY"
       && echo CLOSURE_READY
     expected: >-
       APPROVED_DIFF lines for both files, APPROVED_DIFF_OK closure, CLOSURE_OK, both real-tree tests pass, then
@@ -660,7 +667,7 @@ context:
     Decision-scout verdict FLAGS_FOUND. CITE: 218, 172, 126, 77, 119, 83, 101, 201. Decisions triaged: 188 of 188;
     roadmap items intersected 3, CONFLICT 0. NOTE 100 adopted (rollback on the recorded S3 version); NOTE 92 (the
     taxonomy row names the PAT) deferred to rec-4538 by the operator. Report: /mnt/project-files/rec-4355/scout-report.md.
-  - 'gates: decision-scout=FLAGS_FOUND (two NOTEs, resolved); red_overlap={"verdict": "clear", "reds": []}; plan-critique=PENDING'
+  - 'gates: decision-scout=FLAGS_FOUND (two NOTEs, resolved); red_overlap={"verdict": "clear", "reds": []}; plan-critique=PROCEED after 2 rounds; round 2 autonomous (its non-blocking findings folded in)'
   - >-
     Approval: "yes to all and write the plan" (cmsg_017f94mmYqSe3q2p9o6tPW3UA8nvZJGPJ3jHgH8DR31f9D, 2026-10-25) for
     /mnt/project-files/rec-4355/step6b-presentation.md: F1 A (env-lane app_auth), F2 A (record the code-owner rule as
@@ -1009,11 +1016,10 @@ execution_steps:
     export GITHUB_APP_INSTALLATION_ID="$(printf '%s' "$APP_JSON" | jq -er .installation_id)"
     export GITHUB_APP_PEM_FILE="$(printf '%s' "$APP_JSON" | jq -er .private_key)"
     unset APP_JSON
+    RID="$(curl -fsS https://api.github.com/users/benjamin-blake | jq -er .id)"
     $TF -chdir="$D" apply -input=false rekey.tfplan
     shred -u "$D/rekey.tfplan"
-    export TF_VAR_github_app_auth=true
-    RID="$(curl -fsS https://api.github.com/users/benjamin-blake | jq -er .id)"
-    export TF_VAR_gated_apply_reviewer_user_ids="[$RID]"
+    export TF_VAR_github_app_auth=true TF_VAR_gated_apply_reviewer_user_ids="[$RID]"
     rc=0
     $TF -chdir="$D" plan -input=false -lock=false -detailed-exitcode >/dev/null || rc=$?
     echo "POST_PLAN_EXIT=$rc"
@@ -1021,7 +1027,9 @@ execution_steps:
     PASTEB
 
     The saved plan holds only github_app_auth and the reviewer ids as variable values; the App credentials are
-    re-read from the environment at apply time, which is why paste B exports them again.
+    re-read from the environment at apply time, which is why paste B exports them again. Paste B resolves the reviewer
+    id before the apply (an anonymous lookup that could be rate-limited must fail before any write) and exports the
+    TF_VAR_ values only after it, for the re-plan.
   - |-
     Paste R (rollback, only when VP step 13, 14 or 15 says so, before or instead of any retry):
 
