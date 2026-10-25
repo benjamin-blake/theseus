@@ -1,0 +1,95 @@
+---
+# Class B Lambda verb contract for the agent-platform-ducklake-telemetry-reader function (slice 2c, Decision 236).
+# Production telemetry is read only through this function (the Decision 213 cl.2 pattern): the event-journal verbs minus
+# transcript_content, no caller SQL, no ops verb, a SELECT-only catalog login attached READ_ONLY, S3 read on the production
+# telemetry data prefix only. attach_check is gate instrumentation, NOT an agent surface, and is out of contract scope.
+contract:
+  id: ducklake_telemetry_reader
+  class: B
+  contract_version: 1
+  status: provisional_v0
+  description: >-
+    Telemetry-scoped, read-only DuckLake runtime Lambda invoked over an AWS_IAM (SigV4) Function URL, URL-only (direct invoke
+    is denied in the permissions boundary, Decision 213). Env-pinned to the production telemetry catalog (ducklake_telemetry)
+    on its own SELECT-only scoped login, attached READ_ONLY; it takes no catalog selector and never reaches the ops verbs, the
+    smoke catalog, the blob root or transcript content. It serves exactly the EVENT_READS registry
+    (src/common/ducklake_event_read_verbs.py) minus transcript_content. Read-side tenancy is the function and principal
+    boundary in a single-tenant data plane (Decision 236 cl.4). Until the production flip it reads the empty production catalog.
+  governance:
+    auth_type: >-
+      AWS_IAM SigV4-signed Function URL, invoked URL-only; read-only IAM role (S3 GetObject and List on the production
+      telemetry data prefix, the reader scoped catalog login). No verb accepts a principal, tenant or catalog parameter.
+    principal_classes:
+      - github_ci_branch
+      - PlatformDev
+    admin_only_features: []
+    registry_path: >-
+      src/common/ducklake_event_read_verbs.py (EVENT_READS minus transcript_content, the handler's SERVED_VERBS). The response
+      stamps registry_version and the served verb's read_version for cache-coherence.
+  provisional_v0:
+    authored_at: "2026-10-25"
+    authored_via: PLAN-telemetry-reader-and-smoke-twin (T2.36 slice 2c)
+    rationale: >-
+      Class B contracts start provisional_v0: the verb set, error taxonomy and payload shapes are validated against real
+      traffic before ratification. The function has served no production traffic yet.
+    surfacing_note: >-
+      Only the production_invocations condition applies: there is no first production invocation date until the production
+      flip. check_re_ratification_trigger schema-validates this block in CI.
+    re_ratification_trigger:
+      first_of:
+        - "production_invocations >= 500"
+    re_ratification_owner: "human + Step 10 multi-perspective critique"
+verbs:
+  describe:
+    payload_schema_ref: >-
+      event envelope {action: "describe"}. Connectionless: returns the function name, the pinned catalog's meta_schema and
+      whether its data path is the smoke path, and the per-verb parameter schema of the served verbs only. No connection is
+      opened. Until the production flip rewrites them, the served verbs' descriptions still say they read the smoke catalog.
+    response_codes:
+      200: "body {ok, function, catalog: {meta_schema, data_path_is_smoke}, verbs}"
+      500: "unmapped: any exception answers 500 {ok, error_type, error_class, request_id, action, elapsed_ms}, never its message"
+    typed_errors:
+      unmapped: "an exception no row maps: 500 {error_class, request_id, action}, never the message; one ducklake_unmapped_error log line carries the redacted detail (500)"
+  named_read:
+    payload_schema_ref: >-
+      event envelope {action: "named_read", verb, params?, limit?, deadline_ms?}. `verb` names a served event-journal verb;
+      `params` binds named values (no caller SQL crosses the boundary, Decision 84 I-3). `limit` is an optional server-side
+      integer LIMIT accepted only for a paginable served verb (sessions_window, sessions_window_all_purposes,
+      model_call_cost_estimate); on any other verb it is a 500 runtime answer, ducklake_reader.yaml's named_read wording.
+      `deadline_ms` is an optional positive integer of milliseconds, applied per query attempt in addition to the function's own
+      deadline. A verb outside the served set, an ops verb and transcript_content answer 400 unknown_verb before any connection.
+    response_codes:
+      200: "rows returned; body {ok, verb, registry_version, read_version, rows, row_count}"
+      400: "unknown_verb: the verb is not served; body {ok, error_type, served} and never the caller's verb; named_read_input: a bound value or a registry error() guard refused caller input; body {ok, error_type, verb, error_class, error} with the redacted message; never retried"
+      413: "response_too_large: the Function-URL envelope exceeds 6,000,000 bytes; body {ok, error_type, action, bytes, cap, hint}; never retried"
+      500: "runtime (limit on a non-paginable verb, a pin that is not the production telemetry catalog, DuckLakeRuntimeError); version_mismatch; unmapped: any other exception answers 500 {ok, error_type, error_class, request_id, action, elapsed_ms}, never its message"
+      503: "catalog_unavailable: a dead catalog connection that survived the reopen-once (retryable)"
+      504: "read_deadline_exceeded: an event read still running at its deadline was interrupted; body {ok, error_type, reason: reader_deadline, request_id, action}; never retried"
+    typed_errors:
+      unknown_verb: "the verb is not in the served set (400); the body lists the served verbs and never echoes the caller's value"
+      named_read_input: "a bound value or a registry error() guard refused caller input (400); never retried"
+      runtime: "limit supplied for a non-paginable verb, or the production pin refused (500)"
+      version_mismatch: "DuckDB/extension version mismatch (500)"
+      response_too_large: "serialised response envelope above the 6,000,000-byte guard (413, typed, never retried); narrow the window"
+      read_deadline_exceeded: "an event read still running at the deadline, the Lambda's remaining time at the attempt's start minus 10 s or the caller's deadline_ms if earlier, is interrupted: 504 {error_type, reason: reader_deadline, request_id, action}; never retried; narrow the window"
+      unmapped: "an exception no row maps: 500 {error_class, request_id, action}, never the message; one ducklake_unmapped_error log line carries the redacted detail (500)"
+      catalog_unavailable: "a dead catalog connection (also after the reopen-once): retryable, 503 {error_class, request_id, action, reopened}"
+audit_invariants:
+  - "No caller SQL and no ops verb cross this boundary (Decision 84 I-3): the served set is the EVENT_READS registry minus transcript_content, and any other verb or action answers 400 without being echoed."
+  - "No content is served and no content module is bundled (Decision 236 cl.3, rec-4481): ducklake_event_content, the blob store, src/telemetry/blobs.py and src/telemetry/request.py are absent from the manifest; the role holds no statement on the blob root."
+  - "The catalog login is SELECT-only on ducklake_telemetry and the ATTACH is READ_ONLY; attach_check reports read_only from the live connection (duckdb_databases), never from the flag (Decision 230, Decision 236 cl.2)."
+  - "S3 access is GetObject and prefix-conditioned List on the production telemetry data prefix only; no Put, Delete, blob-root, shared-DSN or metrics statement."
+  - "The function is invoked URL-only (Decision 213); a direct invoke is denied by the permissions boundary and asserted by the deploy gate."
+  - "Read-side tenancy is the function boundary: in a single-tenant data plane no tenant predicate is built into the read verbs (Decision 236 cl.4). A data plane holding a second tenant reopens this."
+  - "No request that reaches the handler answers the Function URL's 502: an exception no row maps answers 500 unmapped, a dead catalog connection that survives the reopen-once answers 503 catalog_unavailable and an event read past its deadline answers 504 read_deadline_exceeded (residual owner rec-4303). Process-level failures (an interrupt that overruns the margin, out of memory, Runtime.ExitError, an init failure) remain the runtime's 502 (rec-4296 owns the exits)."
+  - "Declared residual: the ducklake_unmapped_error and ducklake_named_read_input log lines carry the exception message redacted and truncated to 300 characters, so a request value inside an exception's message can reach the log."
+amendment_log:
+  - date: "2026-10-25"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-telemetry-reader-and-smoke-twin (Decision 236): first authoring of the telemetry reader contract, with the describe
+      and named_read verbs, the typed terminal answers and the audit invariants.
+    migration_story: >-
+      A new function, so no existing verb or response changes. It reads the empty production catalog until the flip.
+previous_versions: []

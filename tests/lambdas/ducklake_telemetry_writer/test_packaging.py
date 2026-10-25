@@ -50,7 +50,10 @@ def test_telemetry_writer_manifest_bundles_the_kernel_and_modules() -> None:
     for rel in ("src/common/ducklake_partition_layout.py", "src/common/ducklake_maintenance_scope.py"):
         assert rel in includes, rel
     assert "src/common/ducklake_maintenance.py" not in includes
-    assert manifest["functions"] == ["agent-platform-ducklake-telemetry-writer"]
+    assert manifest["functions"] == [
+        "agent-platform-ducklake-telemetry-writer",
+        "agent-platform-ducklake-telemetry-writer-smoke",
+    ]
 
 
 def test_new_common_modules_affect_only_the_telemetry_writer() -> None:

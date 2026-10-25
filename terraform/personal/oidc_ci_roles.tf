@@ -161,14 +161,45 @@ data "aws_iam_policy_document" "github_ci_branch" {
     resources = [
       aws_lambda_function.ducklake_telemetry_writer.arn,
       "${aws_lambda_function.ducklake_telemetry_writer.arn}:*",
+      aws_lambda_function.ducklake_telemetry_writer_smoke.arn,
+      "${aws_lambda_function.ducklake_telemetry_writer_smoke.arn}:*",
     ]
   }
 
   statement {
-    sid       = "TelemetryWriterInvokeCIViaUrlOnly"
+    sid     = "TelemetryWriterInvokeCIViaUrlOnly"
+    effect  = "Allow"
+    actions = ["lambda:InvokeFunction"]
+    resources = [
+      aws_lambda_function.ducklake_telemetry_writer.arn,
+      "${aws_lambda_function.ducklake_telemetry_writer.arn}:*",
+      aws_lambda_function.ducklake_telemetry_writer_smoke.arn,
+      "${aws_lambda_function.ducklake_telemetry_writer_smoke.arn}:*",
+    ]
+    condition {
+      test     = "Bool"
+      variable = "lambda:InvokedViaFunctionUrl"
+      values   = ["true"]
+    }
+  }
+
+  statement {
+    # Decision 236 cl.2: the telemetry reader is invoked by github_ci_branch alone, URL-only, like the writer. The
+    # branch role's agent/* trust is rec-4480's review, not changed here.
+    sid     = "TelemetryReaderInvokeCI"
+    effect  = "Allow"
+    actions = ["lambda:InvokeFunctionUrl", "lambda:GetFunctionUrlConfig"]
+    resources = [
+      aws_lambda_function.ducklake_telemetry_reader.arn,
+      "${aws_lambda_function.ducklake_telemetry_reader.arn}:*",
+    ]
+  }
+
+  statement {
+    sid       = "TelemetryReaderInvokeCIViaUrlOnly"
     effect    = "Allow"
     actions   = ["lambda:InvokeFunction"]
-    resources = [aws_lambda_function.ducklake_telemetry_writer.arn, "${aws_lambda_function.ducklake_telemetry_writer.arn}:*"]
+    resources = [aws_lambda_function.ducklake_telemetry_reader.arn, "${aws_lambda_function.ducklake_telemetry_reader.arn}:*"]
     condition {
       test     = "Bool"
       variable = "lambda:InvokedViaFunctionUrl"

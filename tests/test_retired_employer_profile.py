@@ -129,7 +129,7 @@ class TestDucklakePassthrough:
     def test_builders_receive_explicit_profile_unchanged(self, monkeypatch):
         captured = {}
         args = bl.build_parser().parse_args(["--ducklake-only", "--skip-upload", "--profile", "agent_platform_admin"])
-        zips = [_FakePath(name=f"{n}.zip") for n in range(6)]
+        zips = [_FakePath(name=f"{n}.zip") for n in range(7)]
         with (
             patch("scripts.build_lambda.resolve_bucket", return_value="bk"),
             patch("scripts.build_lambda.build_ducklake_function_package", side_effect=zips),

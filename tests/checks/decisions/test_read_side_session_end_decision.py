@@ -54,5 +54,5 @@ def test_decision_entry_and_annotation() -> None:
 
     body = _entry(text, 199)
     assert body.rstrip().endswith("---")
-    annotation = body.rstrip().removesuffix("---").rstrip().splitlines()[-1]
-    assert annotation.startswith("[Amendment ") and f"Decision {n}:" in annotation
+    annotations = [ln for ln in body.splitlines() if ln.startswith("[Amendment ")]
+    assert any(f"Decision {n}:" in ln for ln in annotations)

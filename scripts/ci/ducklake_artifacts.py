@@ -8,8 +8,9 @@ action is the caller for its 'assert' and 'skip-assert' modes: it runs `python -
 scripts.build_lambda --ducklake-only --skip-upload` to produce the seven zips under
 lambda-packages/, then calls assert_and_upload() below to byte-check (push path only) and
 dual-write them to S3. The action's third mode, 'upload-only' (the PR speculative-plan job's
-first-upload path, which also builds two more artifacts -- ducklake-maintenance-smoke.zip and
-ducklake-telemetry-writer.zip -- not in DUCKLAKE_ARTIFACT_NAMES below), does not call this module at all: it runs `build_lambda
+first-upload path, which also builds three more artifacts -- ducklake-maintenance-smoke.zip,
+ducklake-telemetry-writer.zip and ducklake-telemetry-reader.zip -- not in DUCKLAKE_ARTIFACT_NAMES below), does not
+call this module at all: it runs `build_lambda
 --ducklake-only` WITHOUT --skip-upload and lets build_lambda's own internal upload_to_s3 (already
 a fixed+per-sha dual-write, scripts/build_lambda_deploy.py) handle the upload directly.
 
@@ -38,7 +39,7 @@ rec-4372 (Decision 154 Update, 2026-10-17): the push-path assert's PR-time refer
 -- its window runs from the PR's last speculative plan to its own merge, with no upper bound, and
 main can edit a packaged file in between. The 'upload-only' mode (the PR speculative-plan job's
 first-upload path above) now also records scripts/ci/ducklake_inputs.record_inputs() as
-lambda-packages/<artifact_sha>/inputs.json alongside the nine built zips. On a push-path mismatch,
+lambda-packages/<artifact_sha>/inputs.json alongside the ten built zips. On a push-path mismatch,
 assert_and_upload reads that record, computes the current tree's own record, and calls
 scripts.ci.ducklake_inputs.attribute() to check whether every differing artifact's difference
 traces to a tracked input that moved on main between the PR's last plan and its merge. When it
@@ -258,7 +259,7 @@ def upload_only(
     s3_client: Any = None,
 ) -> None:
     """PR speculative-plan first-upload path: run build_lambda's own build+dual-write unchanged
-    (all nine zips, including the two outside DUCKLAKE_ARTIFACT_NAMES), then record and upload
+    (all ten zips, including the three outside DUCKLAKE_ARTIFACT_NAMES), then record and upload
     scripts.ci.ducklake_inputs.record_inputs() as lambda-packages/<artifact_sha>/inputs.json.
     Never calls assert_and_upload. Raises DucklakeArtifactError (fail loud, before merge) if the
     record cannot be computed or uploaded -- rec-4372's push-path attribution has nothing to

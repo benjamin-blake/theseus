@@ -58,6 +58,7 @@ class TestDucklakeBuildProfile:
                     _FakePath(name="ms.zip"),
                     _FakePath(name="dr.zip"),
                     _FakePath(name="tw.zip"),
+                    _FakePath(name="trd.zip"),
                 ],
             ),
             patch("scripts.build_lambda.build_ducklake_deps_layer", return_value=_FakePath(name="deps.zip")),

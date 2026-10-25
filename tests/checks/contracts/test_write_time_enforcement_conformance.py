@@ -390,6 +390,9 @@ _NON_ROW_WRITING: dict[str, dict[str, str]] = {
         "telemetry_probe": "probe",
         "begin_blobs": "issues claim-check upload grants; writes no row (the row arrives through append_telemetry)",
     },
+    "src/lambdas/ducklake_telemetry_reader/handler.py": dict.fromkeys(
+        ("attach_check", "describe", "named_read"), "read or probe: the telemetry reader holds no write grant"
+    ),
     "src/lambdas/ducklake_reader/handler.py": dict.fromkeys(
         (
             "attach_check read_current partition_prune_check write_probe read_ops_current "

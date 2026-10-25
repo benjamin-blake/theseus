@@ -209,6 +209,7 @@ class TestDucklakeDeployOnlyCli:
                     _FakePath(name="ms.zip"),
                     _FakePath(name="dr.zip"),
                     _FakePath(name="tw.zip"),
+                    _FakePath(name="trd.zip"),
                 ],
             ),
             patch("scripts.build_lambda.build_ducklake_deps_layer", return_value=_FakePath(name="deps.zip")),
@@ -227,7 +228,7 @@ class TestDucklakeDeployOnlyCli:
                 )
             )
 
-        assert mock_upload.call_count == 9  # all 9 artifacts still built+uploaded
+        assert mock_upload.call_count == 10  # all 10 artifacts still built+uploaded
         mock_update.assert_called_once()
         assert mock_update.call_args.kwargs.get("only_functions") == {
             _DUCKLAKE_MAINTENANCE_FUNCTION,
