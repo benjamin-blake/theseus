@@ -178,6 +178,30 @@ class TestRoadmap:
         assert "only on the operator's alignment sign-off" in bracket
 
 
+class TestRegistryShardRepair:
+    def test_plan_md_glosses_split_outside_the_verbatim_menu(self) -> None:
+        flat = " ".join(PLAN_MD.read_text(encoding="utf-8").split())
+        menu = "offers accept-with-deferral / re-scope / split / abandon / one more round"
+        assert menu in flat
+        assert "; split means split the plan per Step 8's Planning-time split" in flat
+        assert "split the plan" in flat.replace(menu, "")
+
+    def test_shard_message_names_step_6_and_keeps_both_assertions(self) -> None:
+        shard = _load(ENTRIES / "plan-obligations-command-wired.yaml")
+        script = shard["check_spec"]["command"][2]
+        assert "Step 6 (alignment sign-off) does not invoke the obligation query" in script
+        assert "Steps 4/" not in script
+        assert 'assert "scripts.roadmap.plan_obligations" in t' in script
+        assert 'assert "split the plan" in t.lower()' in script
+
+    def test_verification_registry_records_the_in_place_edit(self) -> None:
+        doc = _load(REPO_ROOT / "docs" / "contracts" / "verification-registry.yaml")
+        assert "plan-obligations-command-wired" in doc["governance_notes"]
+        assert "PLAN-project-alignment" in doc["governance_notes"]
+        newest = doc["amendment_log"][0]
+        assert "PLAN-project-alignment" in newest["summary"] and newest["semantic_break"] is False
+
+
 class TestStaleReferenceSweep:
     def test_no_live_surface_carries_a_retired_label(self) -> None:
         offenders = {
