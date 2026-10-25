@@ -32,6 +32,17 @@ from src.turn_capture.witness import interrupted
 
 AGENT_TYPE = "claude-code-subagent"
 WORKFLOWS = ("orient", "plan", "implement", "develop-executor", "audit", "overseer")
+WORKFLOW_SKILLS = {
+    "orient": "orient",
+    "planning": "plan",
+    "implement": "implement",
+    "overseer": "overseer",
+    "audit-prompt": "audit",
+    "plan-critique": "plan-critique",
+    "decision-scout": "decision-scout",
+    "code-review": "code-review",
+    "executor-rca": "executor-rca",
+}
 SESSION_COLUMNS = (
     "event_kind",
     "event_timestamp",
@@ -104,11 +115,31 @@ def _first_model(stream: Stream, bound: int | None = None) -> str | None:
     return None
 
 
-def _workflow(stream: Stream) -> str:
-    first = next((r for r in stream.recs if r.kind == "prompt"), None)
+def _skill_workflow(stream: Stream, bound: int) -> str | None:
+    for use in stream.tool_uses.values():
+        if use.rec.line > bound:
+            continue
+        spec = use.block_body.get("input")
+        skill = spec.get("skill") if isinstance(spec, dict) else None
+        if use.block_body.get("name") == "Skill" and isinstance(skill, str):
+            name = WORKFLOW_SKILLS.get(skill.lower().removeprefix("/"))
+            if name is not None:
+                return name
+    return None
+
+
+def _workflow(stream: Stream, bound: int, root: bool, diag: Counter[str]) -> str:
+    """Rules WA-1..WA-3: the root's first-prompt command tag, else the first workflow Skill call within the open bound."""
+    first = next((r for r in stream.recs if r.kind == "prompt"), None) if root else None
     match = _COMMAND_NAME.search(text_of(first.data["message"]["content"])) if first is not None else None
     name = match.group(1).lower() if match else ""
-    return name if name in WORKFLOWS else "claude_code"
+    if name in WORKFLOWS:
+        return name
+    skilled = _skill_workflow(stream, bound)
+    if skilled is not None:
+        diag["workflow_from_skill"] += 1
+        return skilled
+    return "claude_code" if root else "subagent"
 
 
 def _open_bound(stream: Stream) -> int | None:
@@ -213,7 +244,7 @@ def build_sessions(parsed: ParsedTree, ctx: Ctx, diag: Counter[str] | None = Non
                 ctx.started,
                 0 if child or pin is None else pin.line,
                 parents.get(stream.key),
-                workflow="subagent" if child else _workflow(stream),
+                workflow=_workflow(stream, bound, root, diag),
                 execution_attempt=1,
                 branch=_branch(stream, bound),
                 model_primary=_first_model(stream, bound),

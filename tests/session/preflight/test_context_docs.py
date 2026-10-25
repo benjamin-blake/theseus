@@ -6,7 +6,6 @@ decisions, sessions, recs count), telemetry-health stub and endstate-drift detec
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import subprocess
 from pathlib import Path
@@ -146,23 +145,6 @@ class TestReadContextFiles:
         assert result["open_decisions_count"] == 0
         assert result["recent_sessions"] == []
         assert result["recommendations_count"] is None
-
-
-class TestOpenTelemetrySession:
-    """open_telemetry_session() writes the active-session state file."""
-
-    def test_open_session_creates_state_file(self, tmp_path: Path) -> None:
-        """open_telemetry_session writes state file with correct schema."""
-        state_file = tmp_path / ".telemetry-active-session.json"
-        with patch("session_preflight.TELEMETRY_ACTIVE_SESSION_FILE", state_file):
-            _preflight.open_telemetry_session(workflow="plan", branch="agent/test")
-
-        assert state_file.exists()
-        data = json.loads(state_file.read_text(encoding="utf-8"))
-        assert "session_id" in data
-        assert data["workflow"] == "plan"
-        assert data["branch"] == "agent/test"
-        assert "started_at" in data
 
 
 class TestReadContextFilesRecsCount:

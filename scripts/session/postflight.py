@@ -12,7 +12,6 @@ Modes:
     --metrics            Run session/metrics.py + roadmap/plan_audit.py; return combined output
     --close              Intent verification + SESSION_LOG entry + pre-commit sanity; output JSON
     --log-housekeeping   Commit and push uncommitted JSONL log files
-    --close-session      Finalise the active telemetry session opened by --open-session
     --auto "message"     Full session close in one command: close -> evidence -> metrics ->
                           commit -> rebase -> validate -> verify-head -> push -> portal sync
                           (PLAN-handoff-validates-committed-tree: the full tier now runs on the
@@ -26,7 +25,6 @@ Usage:
     python scripts/session/postflight.py --metrics
     python scripts/session/postflight.py --close
     python scripts/session/postflight.py --log-housekeeping
-    python scripts/session/postflight.py --close-session --outcome success
     python scripts/session/postflight.py --auto "feat: implement something" --steps-total 10 --steps-friction 2
 """
 
@@ -68,7 +66,6 @@ from scripts.postflight._common import (  # noqa: E402, F401
     MAX_COMMIT_RETRIES,
     PYTHON,
     ROOT,
-    TELEMETRY_ACTIVE_SESSION_FILE,
     _current_branch,
     _run,
     clear_checkpoint,
@@ -78,7 +75,6 @@ from scripts.postflight._common import (  # noqa: E402, F401
 from scripts.postflight.housekeeping import (  # noqa: E402, F401
     _load_max_age_days,
     _stage_document_derived_tables,
-    close_telemetry_session,
     prune_telemetry_logs,
     run_log_housekeeping,
     run_metrics,
@@ -483,12 +479,6 @@ def main() -> int:
         help="Commit uncommitted JSONL logs",
     )
     group.add_argument(
-        "--close-session",
-        action="store_true",
-        dest="close_session",
-        help="Finalise the active telemetry session opened by --open-session",
-    )
-    group.add_argument(
         "--auto",
         metavar="MESSAGE",
         help="Full session close: close->evidence->metrics->commit->rebase->validate->verify-head->push->portal sync",
@@ -506,18 +496,6 @@ def main() -> int:
         default=0,
         metavar="M",
         help="Steps with retro-lite friction (forwarded to session_metrics.py).",
-    )
-    parser.add_argument(
-        "--outcome",
-        default="success",
-        help="Session outcome for --close-session (success|failure|cancelled)",
-    )
-    parser.add_argument(
-        "--files-changed",
-        type=int,
-        default=0,
-        dest="files_changed",
-        help="Files changed (used with --close-session)",
     )
 
     args = parser.parse_args()
@@ -541,10 +519,6 @@ def main() -> int:
         return run_close()
     if args.log_housekeeping:
         return housekeeping.run_log_housekeeping()
-    if args.close_session:
-        housekeeping.close_telemetry_session(outcome=args.outcome, files_changed=args.files_changed)
-        print(f"[close-session] outcome={args.outcome}")
-        return 0
     if args.auto:
         return run_auto(args.auto, args.steps_total, args.steps_friction)
 

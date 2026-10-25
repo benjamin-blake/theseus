@@ -27,12 +27,6 @@ Apply the exact condition-based responses (for `venv_ok`, `creds_status`, uncomm
 
 The report includes `data_quality` (declarative check coverage and last run verdict). It answers: do we have quality assertions defined, and are those assertions passing? See the planning skill for interpretation rules.
 
-After preflight completes successfully, open a telemetry session:
-```bash
-bin/venv-python -m scripts.session.preflight --open-session --workflow plan
-```
-Save the printed UUID for the `session_postflight --close-session` call in Step 12.
-
 
 ## Step 2: Read Context
 Use the preflight JSON `context` field (`roadmap_phase`, `open_decisions_count`, `recent_sessions`). Read `docs/PROJECT_CONTEXT.md` fully.
@@ -130,11 +124,5 @@ Then push and merge the plan to `main` via GitHub MCP so the next `/implement` s
 
 ## Step 12: Confirm
 Emit the Plan-Type-specific confirmation message from the planning skill's Confirmation Messages section, naming the explicit plan path so the human can paste it directly.
-
-Finally, close the telemetry session:
-```bash
-bin/venv-python -m scripts.session.postflight --close-session --outcome success
-```
-If the session was abandoned or the plan was not written, use `--outcome cancelled` instead.
 
 STOP! The planning agent's mission is now complete. Perform no further actions.

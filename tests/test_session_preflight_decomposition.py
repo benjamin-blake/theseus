@@ -54,6 +54,7 @@ from scripts.preflight import (
 from scripts.preflight.recs_signals_source import RecsSignalInputs
 from scripts.roadmap import platform_roadmap
 from tests.fixtures.platform_roadmap_state import live_state_dict
+from tests.fixtures.retired_session_cli import RETIRED_PREFLIGHT_FLAGS
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -236,9 +237,7 @@ FROZEN_EXPORTS = frozenset(
         "main",
         "_slim_roadmap_state",
         "_format_preflight_summary",
-        "open_telemetry_session",
         "PREFLIGHT_REPORT",
-        "TELEMETRY_ACTIVE_SESSION_FILE",
         # back-compat dead re-import (rec-2210) -- must keep resolving even though nothing calls it
         "_sync_ops_pull",
     }
@@ -249,9 +248,7 @@ FROZEN_EXPORTS = frozenset(
 _MOVED_SYMBOLS = FROZEN_EXPORTS - {
     "main",
     "_slim_roadmap_state",
-    "open_telemetry_session",
     "PREFLIGHT_REPORT",
-    "TELEMETRY_ACTIVE_SESSION_FILE",
     "_sync_ops_pull",
 }
 
@@ -518,9 +515,9 @@ class TestStdoutSummaryPrefixFrozen:
 
 
 class TestArgparseFlagSurfaceFrozen:
-    """CLI flag surface is exactly {--health, --open-session, --workflow, --branch, --roadmap-detail}."""
+    """CLI flag surface is exactly {--health, --roadmap-detail}; every retired flag is absent."""
 
-    def test_help_lists_all_five_flags(self) -> None:
+    def test_help_lists_exactly_the_frozen_flags(self) -> None:
         result = subprocess.run(
             [sys.executable, "-m", "scripts.session.preflight", "--help"],
             capture_output=True,
@@ -531,8 +528,10 @@ class TestArgparseFlagSurfaceFrozen:
             timeout=30,
         )
         assert result.returncode == 0
-        for flag in ("--health", "--open-session", "--workflow", "--branch", "--roadmap-detail"):
+        for flag in ("--health", "--roadmap-detail"):
             assert flag in result.stdout, f"{flag} missing from --help output"
+        for flag in RETIRED_PREFLIGHT_FLAGS:
+            assert flag not in result.stdout, f"retired {flag} is back in --help output"
 
 
 class TestDecision88ReaderTopologyGuard:

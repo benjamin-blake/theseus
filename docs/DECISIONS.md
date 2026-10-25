@@ -2337,6 +2337,8 @@ conditions:
 
 > **Update (2026-10-16):** clause 1 bounds derivations, not verbs: a window verb (sessions_window; operator ruling reader-k2 (a), 2026-10-04) is a bounded window of per-session derivations, each reading only its own session's calendar-day partition, capped per verb in the reader registry. Detail: telemetry_sessions.yaml WINDOW VERBS. Last clause-1 note; later ones need a numbered Decision.
 
+> **Update (2026-10-24):** clause 3's legacy producer, scripts/session/preflight.py open_telemetry_session, was retired rather than migrated (rec-4589, PLAN-retire-session-cli): it recorded nothing after PR #969. No producer mints a session id; rec-4030 keeps only the planning_session_ref re-grounding.
+
 
 [Amendment 2026-10-18, Decision 228: clause 1's root session state and duration read from turn evidence; a producer close is optional evidence.]
 

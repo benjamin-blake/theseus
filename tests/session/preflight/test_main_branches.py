@@ -223,20 +223,6 @@ class TestProvisionalContractsEmpty:
         assert "  (none)" in printed
 
 
-class TestOpenTelemetrySessionId:
-    def test_open_session_generates_local_uuid(self, tmp_path: Path) -> None:
-        """open_telemetry_session() must never raise -- it mints a local UUID so the calling
-        workflow (e.g. /implement Step 1) can always proceed."""
-        active_session_file = tmp_path / ".telemetry-active-session.json"
-        with patch("session_preflight.TELEMETRY_ACTIVE_SESSION_FILE", active_session_file):
-            session_id = _preflight.open_telemetry_session(workflow="implement", branch="claude/test")
-        assert session_id
-        # A valid UUID4 string (36 chars, hyphenated).
-        assert len(session_id) == 36
-        assert session_id.count("-") == 4
-        assert json.loads(active_session_file.read_text(encoding="utf-8"))["session_id"] == session_id
-
-
 class TestCiRcaLivenessRenderer:
     """rec-3638: main() renders the ci_rca_liveness_alert payload to stderr at session open."""
 
