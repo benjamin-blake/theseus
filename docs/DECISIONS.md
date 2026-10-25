@@ -2,6 +2,89 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 236: Production telemetry is proved by a smoke canary and read through its own reader -- disposable proofs stay on smoke, production serves no transcript content, read-side tenancy is the function boundary, and maintenance covers the catalog from its first write (amends Decisions 81, 91, 199 and 200) (Decided)
+
+```yaml
+number: 236
+status: Decided
+decided_date: "2026-10-25"
+amends: [81, 91, 199, 200]
+significance:
+  value: numbered_decision
+  justification: >-
+    Adds two runtime functions to Decision 81's closed boundary, changes the content tier Decision 199 cl.5
+    reserves to a numbered Decision, and rules on read-side tenancy; ducklake_reader.yaml and
+    ducklake_telemetry_writer.yaml notes (considered) cannot amend those clauses or re-ground T2.36 c5.
+```
+
+**Status:** Decided
+**Date:** 2026-10-25
+**Warehouse ID:** dec-236 (per Decision 84 backfill)
+
+**Problem:** Slice 2c moves telemetry to its own production catalog (Decision 230). One writer runs both the
+heavy deploy proofs (fault, near-cap and 2,000-row vectors, first-sight auto-registration) and real capture on
+the disposable smoke catalog, the shared reader serves telemetry from smoke only because its verbs carry no
+tenant predicate (rec-4292), and T2.36 c5 names a maintenance breaker Decision 188 retired.
+
+**Decision:**
+1. Proof shape. A smoke-pinned twin of the telemetry writer (agent-platform-ducklake-telemetry-writer-smoke:
+   same code, its own role on the smoke prefixes and blob root, the smoke scoped login) is deployed first and
+   carries every disposable proof (Decision 143 cl.1, cl.3); the production telemetry deploy waits on its
+   gates. Once the writer binds production, its deploy gate writes no test rows and keeps Decision 213's direct-invoke
+   denial and Decision 216's can_create check on every deploy. Golden replay writes tagged synthetic projects
+   into production, registered explicitly and excluded from real reads.
+2. Production reads. Production telemetry is read only through its own function
+   (agent-platform-ducklake-telemetry-reader, the Decision 213 cl.2 pattern): the event verbs except
+   transcript_content, no caller SQL and no ops verb, a SELECT-only login on ducklake_telemetry (Decision 230),
+   S3 read on the production telemetry data prefix only and none on the blob root. The shared reader never
+   binds the production telemetry catalog.
+3. Content tier (amends Decision 199 cl.5). Production serves no transcript content until a named consumer
+   needs it; content then gets a dedicated reader with an access log (rec-4481), by a later Decision.
+4. Tenancy (amends Decision 200 cl.2). In a single-tenant data plane (Decision 209 cl.2(c)) read-side
+   tenancy is the function and principal boundary: no tenant predicate is built into the read verbs.
+5. Maintenance (re-grounds T2.36 c5). merge_ops every 6 hours and guarded weekly gc_ops (G1-G4, Decision 188)
+   run on ducklake_telemetry before its first event row; telemetry-catalog maintenance metrics carry a
+   MetaSchema dimension and the ops series stays undimensioned (T2.18). The retired breaker's growth role is
+   taken by alarms on files after merge and catalog stats rows for the telemetry catalog, sized from the
+   pre-create measurement (Decision 88 cl.2), beside breach, liveness and merge-failure alarms. Not weaker:
+   the guards still refuse an unsafe delete, and growth is now detected where the breaker never looked.
+6. Amends Decision 81 cl.1 (runtime artifacts add the twin and the telemetry reader) and cl.7 (the closed read
+   boundary is two readers: ops through the shared reader, production telemetry through its own), and
+   Decision 91 cl.1 (the telemetry reader has its own verb set).
+
+**Rationale:** Disposable proofs on a production catalog leave permanent rows and mint a real project per
+deploy. A tenant predicate isolates nothing in one tenant. Scoping by function and login holds outside the
+handler (Decision 143). Rejected: heavy vectors on production; a dated exception for the shared reader; a
+smoke read path on the telemetry reader (one role would reach both catalogs).
+
+**Coverage (Decision 181 cl.2):** cl.1 -- test_ducklake_deploy_map_wiring and the twin's deploy gate; cl.2 --
+test_telemetry_reader_and_twin_pins and the telemetry reader handler and gate; cl.3 -- the reader bundle test
+and served-verb test; cl.4 -- a non-feature, held by its reversal condition; cl.5 --
+test_telemetry_production_maintenance_tf, the metric-dimension tests and the post-deploy merge reading.
+
+```yaml reversal-conditions
+decision: 236
+review_by: 2027-04-30
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: second-tenant
+    kind: manual
+    description: "A data plane holds a second tenant, or a principal outside the house tenant gets telemetry reader invoke: re-decide clause 4."
+  - id: content-consumer
+    kind: manual
+    description: "A named consumer needs transcript content from production: re-decide clause 3 (rec-4481)."
+  - id: canary-blind-spot
+    kind: manual
+    description: "A production writer fault the twin's gates passed: review clause 1."
+  - id: growth-alarm-recurs
+    kind: manual
+    description: "A telemetry growth alarm fires twice in 30 days with merge green: re-decide clause 5 and the ingestion shape."
+```
+
+**Related:** Decisions 230, 81, 91, 199, 200 (amended), 143, 188, 192, 209, 213, 216, 88, 181, 177.
+
+---
+
 ## Decision 235: Verification weakening is human-gated at entry and earns autonomy on a ladder lane behind a shadow step, out-of-loop redundancy evidence and an irreducible floor (amends Decision 181 clause 1 and Decision 187 clauses 3-5) (Decided)
 
 ```yaml
@@ -2342,6 +2425,8 @@ conditions:
 
 [Amendment 2026-10-18, Decision 228: clause 1's root session state and duration read from turn evidence; a producer close is optional evidence.]
 
+[Amendment 2026-10-25, PLAN-telemetry-reader-and-smoke-twin (Decision 236 cl.3): production serves no transcript content until a named consumer needs it (rec-4481).]
+
 ---
 
 ## Decision 200: Tenant and project identity for telemetry -- tenant_id and project_id are opaque writer-minted ids, always present, tenancy enforcement stays a cloud-adapter property (amends Decision 197 clause 2) (Decided)
@@ -2385,6 +2470,8 @@ conditions:
 **Related:** Decision 197 clause 2 (amended), Decision 199 (the identity hash tenant_id/project_id feed), Decision 198 (retired the 'theseus' default this decision removes from project-id.yaml), Decision 84 I-2 (writer-minted ids precedent), rec-4024 (registration verb + dimension contracts).
 
 [Amendment 2026-10-05, PLAN-telemetry-table-registration (feedback-loop review item C2): an exception to clause 1's "auto-registering an unregistered row on first sight rather than rejecting the write" for the reserved `drill:` / `synthetic:` project_ref namespace -- such a ref is registered explicitly with register_project and an append naming it while unregistered is rejected, so a mistyped or hostile ref cannot mint a real-looking project. The writer-minted, never-caller-supplied, immutable id is unchanged. Detail: docs/contracts/project-id.yaml.]
+
+[Amendment 2026-10-25, PLAN-telemetry-reader-and-smoke-twin (Decision 236 cl.4): in a single-tenant data plane read-side tenancy is the function and principal boundary; reopens when a data plane holds a second tenant.]
 
 ---
 
@@ -9334,6 +9421,8 @@ OQ.15 (resolved to option (a) here), T0.6 (closed via supersession), T0.7a/b/c/T
 (the telemetry writer); OQ.15's thin-verb Lambdas are not reopened. The realized DuckLakeInvokeRuntime grant
 is now split into DuckLakeInvokeUrl and DuckLakeInvokeViaUrlOnly, so a direct invoke is no longer authorized.]
 
+[Amendment 2026-10-25, PLAN-telemetry-reader-and-smoke-twin (Decision 236 cl.6): the telemetry reader serves its own verb set, the event verbs minus transcript_content.]
+
 ---
 
 ## Decision 90: Four-Tier Workflow Architecture (Decided)
@@ -9835,6 +9924,8 @@ the telemetry writer; clause 6's "no LLM / agent invocation" carve-out gains a t
 provision_telemetry_login, invocable by an ADMIN-container agent only under explicit human direction.]
 
 [Amendment 2026-10-20, Decision 230: cl.6's agent carve-outs gain provision_catalog_owner and provision_telemetry_catalog under explicit human direction.]
+
+[Amendment 2026-10-25, PLAN-telemetry-reader-and-smoke-twin (Decision 236 cl.6): runtime artifacts add the smoke telemetry writer twin and the telemetry reader; the closed read boundary is two readers.]
 
 ---
 

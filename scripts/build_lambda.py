@@ -13,7 +13,8 @@ for every public and test-patched symbol now defined in the three extracted modu
 Creates these zip artifacts (built by the extracted modules; see them for detail):
   1. data-pipeline.zip                      -- scheduled-agent dispatcher + findings-processor
                                                application code (manifest-driven)
-  2. ducklake-{writer,reader,maintenance,maintenance-smoke,catalog-dr,telemetry-writer}.zip -- T2.17/T2.18 DuckLake
+  2. ducklake-{writer,reader,maintenance,maintenance-smoke,catalog-dr,telemetry-writer,
+                                               telemetry-reader}.zip -- T2.17/T2.18 DuckLake
                                                runtime functions (--ducklake-only)
   3. ducklake-{deps,extensions}-layer.zip   -- duckdb (pinned via config/lambda/ducklake/version.yaml)
                                                + baked extensions (--ducklake-only)
@@ -148,7 +149,7 @@ def _run_ducklake_build(args: argparse.Namespace) -> None:
 
         print(
             "[1/4] Building ducklake function zips (writer + reader + maintenance + maintenance-smoke + "
-            "catalog-dr + telemetry-writer, manifest-driven)..."
+            "catalog-dr + telemetry-writer + telemetry-reader, manifest-driven)..."
         )
         writer_zip = build_ducklake_function_package(temp_dir, "ducklake_writer", "ducklake-writer.zip")
         reader_zip = build_ducklake_function_package(temp_dir, "ducklake_reader", "ducklake-reader.zip")
@@ -160,12 +161,16 @@ def _run_ducklake_build(args: argparse.Namespace) -> None:
         telemetry_writer_zip = build_ducklake_function_package(
             temp_dir, "ducklake_telemetry_writer", "ducklake-telemetry-writer.zip"
         )
+        telemetry_reader_zip = build_ducklake_function_package(
+            temp_dir, "ducklake_telemetry_reader", "ducklake-telemetry-reader.zip"
+        )
         print(f"  OK ducklake-writer.zip ({round(writer_zip.stat().st_size / 1024 / 1024, 2)} MB)")
         print(f"  OK ducklake-reader.zip ({round(reader_zip.stat().st_size / 1024 / 1024, 2)} MB)")
         print(f"  OK ducklake-maintenance.zip ({round(maintenance_zip.stat().st_size / 1024 / 1024, 2)} MB)")
         print(f"  OK ducklake-maintenance-smoke.zip ({round(maintenance_smoke_zip.stat().st_size / 1024 / 1024, 2)} MB)")
         print(f"  OK ducklake-catalog-dr.zip ({round(catalog_dr_zip.stat().st_size / 1024 / 1024, 2)} MB)")
         print(f"  OK ducklake-telemetry-writer.zip ({round(telemetry_writer_zip.stat().st_size / 1024 / 1024, 2)} MB)")
+        print(f"  OK ducklake-telemetry-reader.zip ({round(telemetry_reader_zip.stat().st_size / 1024 / 1024, 2)} MB)")
 
         print("[2/4] Building ducklake-deps + ducklake-extensions + ducklake-pgclient layers...")
         deps_layer = build_ducklake_deps_layer(temp_dir)
@@ -182,6 +187,7 @@ def _run_ducklake_build(args: argparse.Namespace) -> None:
             maintenance_smoke_zip,
             catalog_dr_zip,
             telemetry_writer_zip,
+            telemetry_reader_zip,
             deps_layer,
             ext_layer,
             pgclient_layer,
@@ -238,7 +244,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ducklake-only",
         action="store_true",
-        help="Build/upload/deploy ONLY the DuckLake artifacts (6 zips + 3 layers; the "
+        help="Build/upload/deploy ONLY the DuckLake artifacts (7 zips + 3 layers; the "
         "deployed functions are writer, reader, maintenance, maintenance-smoke, "
         "catalog-dr, telemetry-writer); leave data-pipeline untouched (Decision 79).",
     )

@@ -56,6 +56,12 @@ locals {
   ducklake_telemetry_data_path        = "s3://${aws_s3_bucket.data_lake.bucket}/ducklake-telemetry/"
   ducklake_telemetry_prod_meta_schema = "ducklake_telemetry"
   ducklake_telemetry_reader_function  = "agent-platform-ducklake-telemetry-reader"
+
+  # Smoke twin of the telemetry writer (Decision 236 cl.1): pinned to the fixed smoke locals below, never to the
+  # flipping ducklake_telemetry_meta_schema, so the flip cannot move it.
+  ducklake_telemetry_writer_smoke_function = "agent-platform-ducklake-telemetry-writer-smoke"
+  ducklake_smoke_meta_schema               = "ducklake_smoke"
+  ducklake_telemetry_smoke_blob_root       = "s3://${aws_s3_bucket.data_lake.bucket}/${local.telemetry_blob_data_prefix}/${local.ducklake_smoke_meta_schema}/"
 }
 
 # ---------------------------------------------------------------------------
