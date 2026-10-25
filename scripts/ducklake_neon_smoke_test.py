@@ -100,6 +100,7 @@ from scripts.ducklake_smoke.lambda_ec_gates import (  # noqa: F401 -- re-exporte
 from scripts.ducklake_smoke.lambda_maintenance_gates import (  # noqa: F401 -- re-exported package surface
     lambda_catalog_dr,
     lambda_maintenance_breaker,
+    lambda_maintenance_create_telemetry,
     lambda_maintenance_gc,
     lambda_maintenance_hot_merge,
     lambda_maintenance_merge,
@@ -108,9 +109,17 @@ from scripts.ducklake_smoke.lambda_ops_gates import (  # noqa: F401 -- re-export
     catalog_restore_drill,
     connect_probe,
     lambda_append_only,
+    lambda_row_rules,
     migrate_ops_recs_columns,
     ops_churn_regate,
     ops_read_your_write,
+)
+from scripts.ducklake_smoke.lambda_telemetry_gates import (  # noqa: F401 -- re-exported package surface
+    lambda_telemetry,
+    lambda_telemetry_smoke,
+)
+from scripts.ducklake_smoke.lambda_telemetry_reader_gates import (  # noqa: F401 -- re-exported package surface
+    lambda_telemetry_reader,
 )
 from src.common import catalog_dr as _catalog_dr  # noqa: F401 -- re-exported: smoke._catalog_dr
 from src.common import ducklake_runtime, ducklake_spike, neon_api  # noqa: F401 -- re-exported module aliases
@@ -131,6 +140,7 @@ _LAMBDA_GATES: dict[str, Callable[..., None]] = {
     "lambda_churn": lambda_churn,
     "lambda_churn_incontainer": lambda_churn_incontainer,
     "lambda_reader": lambda_reader,
+    "lambda_row_rules": lambda_row_rules,
     "lambda_warm_reuse": lambda_warm_reuse,
     "lambda_warm_reuse_writer": lambda_warm_reuse_writer,
     "lambda_maintenance_merge": lambda_maintenance_merge,
@@ -138,8 +148,12 @@ _LAMBDA_GATES: dict[str, Callable[..., None]] = {
     "lambda_maintenance_breaker": lambda_maintenance_breaker,
     "lambda_catalog_dr": lambda_catalog_dr,
     "lambda_maintenance_hot_merge": lambda_maintenance_hot_merge,
+    "lambda_maintenance_create_telemetry": lambda_maintenance_create_telemetry,
     "connect_probe": connect_probe,
     "lambda_append_only": lambda_append_only,
+    "lambda_telemetry": lambda_telemetry,
+    "lambda_telemetry_smoke": lambda_telemetry_smoke,
+    "lambda_telemetry_reader": lambda_telemetry_reader,
 }
 
 
@@ -186,6 +200,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     group.add_argument("--lambda-reader", action="store_true", help="[post-deploy] closed reader path (EC1/boundary)")
     group.add_argument(
+        "--lambda-row-rules",
+        action="store_true",
+        help="[post-deploy] rec-4158 plan B: the writer rejects each contract row-rule class (422 row_rule), nothing stored",
+    )
+    group.add_argument(
         "--lambda-warm-reuse",
         action="store_true",
         dest="lambda_warm_reuse",
@@ -223,6 +242,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="[post-deploy] T2.18 FP-B hot_merge gate: invoke hot_merge, assert files merged, nothing deleted (VP12)",
     )
     group.add_argument(
+        "--lambda-maintenance-create-telemetry",
+        action="store_true",
+        help="[post-deploy] Decision 216: owner-login create_telemetry_tables on maintenance-smoke, single-owner report",
+    )
+    group.add_argument(
         "--connect-probe",
         action="store_true",
         dest="connect_probe",
@@ -240,6 +264,21 @@ def main(argv: Optional[list[str]] = None) -> int:
         action="store_true",
         help="[post-deploy] T1.14 VP gate: write_ops on ops_smoke_events (append_only), "
         "assert 1 history row + no current projection",
+    )
+    group.add_argument(
+        "--lambda-telemetry",
+        action="store_true",
+        help="[post-deploy] telemetry writer URL-only proof",
+    )
+    group.add_argument(
+        "--lambda-telemetry-smoke",
+        action="store_true",
+        help="[post-deploy] smoke telemetry writer twin URL-only proof and disposable vectors",
+    )
+    group.add_argument(
+        "--lambda-telemetry-reader",
+        action="store_true",
+        help="[post-deploy] telemetry reader proof: production-pinned, READ_ONLY, no content, no ops verbs",
     )
     group.add_argument(
         "--canary-rehearsal",

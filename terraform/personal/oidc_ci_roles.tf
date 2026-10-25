@@ -98,21 +98,40 @@ data "aws_iam_policy_document" "github_ci_branch" {
 
   statement {
     # T2.19 recs cutover (rec-2111): CI/DQ reads recs over the DuckLake reader Function URL and
-    # may write recs via the writer. lambda:InvokeFunction is the action the Function-URL IAM
-    # authorizer actually checks (InvokeFunctionUrl alone is INSUFFICIENT -- live-verified).
-    # InvokeFunctionUrl retained alongside for AWS-doc alignment; not sufficient on its own.
+    # may write recs via the writer. The Function URL needs BOTH lambda:InvokeFunctionUrl and
+    # lambda:InvokeFunction (live-verified 2026-10-06); InvokeFunction sits in its own statement below
+    # because it carries the via-URL condition (Decision 213), InvokeFunctionUrl stays unconditioned.
     # lambda:GetFunctionUrlConfig lets the runner RESOLVE the reader/writer URL via the AWS API
     # when neither DUCKLAKE_*_URL env nor a terraform-init'd checkout is present (the CI case) --
     # ducklake_reader_client / ops_data_portal fall back to get_function_url_config (post-cutover DQ).
     sid     = "DuckLakeInvokeCI"
     effect  = "Allow"
-    actions = ["lambda:InvokeFunction", "lambda:InvokeFunctionUrl", "lambda:GetFunctionUrlConfig"]
+    actions = ["lambda:InvokeFunctionUrl", "lambda:GetFunctionUrlConfig"]
     resources = [
       aws_lambda_function.ducklake_writer.arn,
       "${aws_lambda_function.ducklake_writer.arn}:*",
       aws_lambda_function.ducklake_reader.arn,
       "${aws_lambda_function.ducklake_reader.arn}:*",
     ]
+  }
+
+  statement {
+    # Decision 213 cl.1: a direct invoke is denied by the permissions boundary, and this grant only
+    # authorizes the Function-URL path (lambda:InvokedViaFunctionUrl is true on a URL call).
+    sid     = "DuckLakeInvokeCIViaUrlOnly"
+    effect  = "Allow"
+    actions = ["lambda:InvokeFunction"]
+    resources = [
+      aws_lambda_function.ducklake_writer.arn,
+      "${aws_lambda_function.ducklake_writer.arn}:*",
+      aws_lambda_function.ducklake_reader.arn,
+      "${aws_lambda_function.ducklake_reader.arn}:*",
+    ]
+    condition {
+      test     = "Bool"
+      variable = "lambda:InvokedViaFunctionUrl"
+      values   = ["true"]
+    }
   }
 
   statement {
@@ -129,6 +148,63 @@ data "aws_iam_policy_document" "github_ci_branch" {
       aws_lambda_function.ducklake_maintenance_smoke.arn,
       "${aws_lambda_function.ducklake_maintenance_smoke.arn}:*",
     ]
+  }
+
+  statement {
+    # Telemetry writer (PLAN-telemetry-writer-function): the deploy smoke job (companion plan) runs as this role.
+    # InvokeFunctionUrl and GetFunctionUrlConfig are required for the AWS_IAM URL; InvokeFunction is URL-only
+    # (see the next statement). The boundary also denies direct invoke, and the companion plan's gate asserts
+    # a direct invoke is AccessDenied. github_ci_pr, github_ci_planner and github_ci_deploy get no grant.
+    sid     = "TelemetryWriterInvokeCI"
+    effect  = "Allow"
+    actions = ["lambda:InvokeFunctionUrl", "lambda:GetFunctionUrlConfig"]
+    resources = [
+      aws_lambda_function.ducklake_telemetry_writer.arn,
+      "${aws_lambda_function.ducklake_telemetry_writer.arn}:*",
+      aws_lambda_function.ducklake_telemetry_writer_smoke.arn,
+      "${aws_lambda_function.ducklake_telemetry_writer_smoke.arn}:*",
+    ]
+  }
+
+  statement {
+    sid     = "TelemetryWriterInvokeCIViaUrlOnly"
+    effect  = "Allow"
+    actions = ["lambda:InvokeFunction"]
+    resources = [
+      aws_lambda_function.ducklake_telemetry_writer.arn,
+      "${aws_lambda_function.ducklake_telemetry_writer.arn}:*",
+      aws_lambda_function.ducklake_telemetry_writer_smoke.arn,
+      "${aws_lambda_function.ducklake_telemetry_writer_smoke.arn}:*",
+    ]
+    condition {
+      test     = "Bool"
+      variable = "lambda:InvokedViaFunctionUrl"
+      values   = ["true"]
+    }
+  }
+
+  statement {
+    # Decision 236 cl.2: the telemetry reader is invoked by github_ci_branch alone, URL-only, like the writer. The
+    # branch role's agent/* trust is rec-4480's review, not changed here.
+    sid     = "TelemetryReaderInvokeCI"
+    effect  = "Allow"
+    actions = ["lambda:InvokeFunctionUrl", "lambda:GetFunctionUrlConfig"]
+    resources = [
+      aws_lambda_function.ducklake_telemetry_reader.arn,
+      "${aws_lambda_function.ducklake_telemetry_reader.arn}:*",
+    ]
+  }
+
+  statement {
+    sid       = "TelemetryReaderInvokeCIViaUrlOnly"
+    effect    = "Allow"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.ducklake_telemetry_reader.arn, "${aws_lambda_function.ducklake_telemetry_reader.arn}:*"]
+    condition {
+      test     = "Bool"
+      variable = "lambda:InvokedViaFunctionUrl"
+      values   = ["true"]
+    }
   }
 
   statement {
@@ -265,20 +341,38 @@ data "aws_iam_policy_document" "github_ci_pr" {
 
   statement {
     # T2.19 recs cutover (rec-2111): PR CI reads recs over the DuckLake reader Function URL.
-    # lambda:InvokeFunction is the action the Function-URL IAM authorizer actually checks.
-    # InvokeFunctionUrl retained for AWS-doc alignment; not sufficient alone. PR CI is
-    # read-only (no rec writes) but scoped to writer ARNs for consistency / future-compat.
-    # lambda:GetFunctionUrlConfig lets the runner resolve the URL via the AWS API (no env / no
-    # terraform-init'd checkout) -- mirrors the branch role's DuckLakeInvokeCI grant.
+    # The Function URL needs BOTH lambda:InvokeFunctionUrl and lambda:InvokeFunction (live-verified
+    # 2026-10-06); InvokeFunction sits in its own statement below with the via-URL condition
+    # (Decision 213). PR CI is read-only (no rec writes) but scoped to writer ARNs for consistency /
+    # future-compat. lambda:GetFunctionUrlConfig lets the runner resolve the URL via the AWS API (no
+    # env / no terraform-init'd checkout) -- mirrors the branch role's DuckLakeInvokeCI grant.
     sid     = "DuckLakeInvokeCI"
     effect  = "Allow"
-    actions = ["lambda:InvokeFunction", "lambda:InvokeFunctionUrl", "lambda:GetFunctionUrlConfig"]
+    actions = ["lambda:InvokeFunctionUrl", "lambda:GetFunctionUrlConfig"]
     resources = [
       aws_lambda_function.ducklake_writer.arn,
       "${aws_lambda_function.ducklake_writer.arn}:*",
       aws_lambda_function.ducklake_reader.arn,
       "${aws_lambda_function.ducklake_reader.arn}:*",
     ]
+  }
+
+  statement {
+    # Decision 213 cl.1: URL-only InvokeFunction, as on the branch role.
+    sid     = "DuckLakeInvokeCIViaUrlOnly"
+    effect  = "Allow"
+    actions = ["lambda:InvokeFunction"]
+    resources = [
+      aws_lambda_function.ducklake_writer.arn,
+      "${aws_lambda_function.ducklake_writer.arn}:*",
+      aws_lambda_function.ducklake_reader.arn,
+      "${aws_lambda_function.ducklake_reader.arn}:*",
+    ]
+    condition {
+      test     = "Bool"
+      variable = "lambda:InvokedViaFunctionUrl"
+      values   = ["true"]
+    }
   }
 }
 

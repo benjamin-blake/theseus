@@ -53,7 +53,7 @@ artifacts the plan's `infrastructure_dependencies`/VP steps name; a set mismatch
 `active` per `src/lambdas/<slug>/manifest.yaml` missing a build, deploy, smoke-test or model-ID
 step => REVISE naming it. Stubs need no deploy (Decision 79).
 
-12c. **Verification Plan executable command check (IMPLEMENTATION plans only):** Every `verification_plan` entry MUST have a `command` field containing a literal executable shell command or Python one-liner (the `PlanDocument` schema rejects empty commands; your job is to judge whether the command actually exercises the feature rather than being a structural-only check). FAIL if any VP step is prose-only with no executable command. For V3 plans, every VP step's `phase` must be `pre-deploy` or `post-deploy`. If either check fails, recommend REVISE with the specific VP steps that need commands or tags added.
+12c. **Verification Plan executable command check (IMPLEMENTATION plans only):** Every `verification_plan` entry MUST have a `command` field containing a literal executable shell command or Python one-liner (the `PlanDocument` schema rejects empty commands; your job is to judge whether the command actually exercises the feature rather than being a structural-only check). FAIL if any VP step is prose-only with no executable command. For V3 plans, every VP step's `phase` must be `pre-deploy` or `post-deploy`. If either check fails, recommend REVISE with the specific VP steps that need commands or tags added. Admin-only root in scope: REVISE unless deploy-paths.yaml admin_out_of_band.pre_merge_live_plan is met.
 
 12c-1. **Test-obligation adequacy:** For schema-version-4 IMPLEMENTATION plans, recommend REVISE
 when a behavior-changing scope file lacks a linked obligation, its test is structural-only or
@@ -66,11 +66,11 @@ Presence/link validators are deterministic; adequacy is this fresh-context judge
 
 Trigger condition 1 -- **Rec-resolving plan**: `bundled_recommendations` is non-empty, OR the plan's `intent`, `context`, `scope`, or `acceptance_criteria` names an open rec id as the motivation.
 - Required: every named rec id also appears in `bundled_recommendations` (a named rec with an empty list is the exact miss this catches).
-- Required: at least one VP step verifies each listed rec closed (e.g. `ops_data_portal --sync && grep rec-NNNN logs/.recommendations-log.jsonl`).
+- Required: at least one VP step verifies each listed rec closed (e.g. ducklake-reads `recs_by_ids` returns the rec with status closed).
 - If either is missing, recommend REVISE: "Rec-resolving plan omits closure obligation: add bundled_recommendations list and a VP step to verify each rec closed."
 
 Trigger condition 2 -- **Surface-retiring plan**: `scope` carries an `action: Delete` row OR the plan states an X->Y migration/cutover (old path deleted, Lambda retired, write path swapped, config flag removed, backend superseded).
-- Required: at least one VP step that confirms the old surface is unreachable or deleted (grep for call sites, `test -f` for deleted files, import smoke-test, etc.).
+- Required: a VP step proving the old surface dead; for a deleted writer, each caller disposed per `tier-item-lifecycle.yaml#replacement_closure_check` (5).
 - If missing, recommend REVISE: "Surface-retiring plan omits stale-reference sweep VP step: add a VP step that verifies the old surface is dead."
 
 12l. **closes_criteria check (follow-on plans, IMPLEMENTATION only):** If the plan's phase/context names an `in_progress` tier_item, `closes_criteria` MUST be non-empty; each ref must name a criterion carrying `status: open` in `docs/ROADMAP-PLATFORM.yaml`; and `acceptance_criteria` must map 1:1 onto the chosen open criteria. If any of these fail, recommend REVISE: "Follow-on plan omits or misdeclares closes_criteria: [specifics]." A plan targeting no in_progress tier_item is exempt from this check.

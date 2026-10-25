@@ -16,6 +16,7 @@ import pytest
 boto3 = pytest.importorskip("boto3")
 
 from scripts.preflight import ci_rca_gauges  # noqa: E402
+from scripts.preflight.recs_signals_source import RecsSignalInputs  # noqa: E402
 from tests.fixtures.session_preflight_module import preflight as _preflight  # noqa: E402
 
 # TestAbstentionLabelAccuracy lives in test_ci_rca_gauges_abstention_label.py -- this file's
@@ -126,12 +127,7 @@ class TestAbstentionGauge:
                 "context_v2_json": "",
             }
         ]
-        warm_sync_stub = {
-            "drained": {},
-            "pulled": {},
-            "rows": {"ops_recommendations": cache_rows, "ops_decisions": [], "ops_priority_queue": []},
-            "reader_ok": {"ops_recommendations": True, "ops_decisions": True, "ops_priority_queue": True},
-        }
+        recs_inputs = RecsSignalInputs("ok", {"open_count": 0, "aging_count": 0, "non_automatable_count": 0}, cache_rows)
         with (
             patch("scripts.preflight.env_git.check_venv", return_value=True),
             patch("scripts.preflight.env_git.get_git_status", return_value=("main", False, [])),
@@ -140,7 +136,7 @@ class TestAbstentionGauge:
             patch("scripts.preflight.context_docs.parse_last_session", return_value=""),
             patch("scripts.preflight.priority_queue.read_priority_queue", return_value=[]),
             patch("session_preflight._sync_ops_pull", return_value={}),
-            patch("scripts.sync.ops.warm_sync", return_value=warm_sync_stub),
+            patch("session_preflight.fetch_recs_signal_inputs", return_value=recs_inputs),
             patch(
                 "scripts.preflight.context_docs.read_context_files",
                 return_value={
@@ -212,12 +208,7 @@ class TestEscapeModeGauge:
                 "context_v2_json": json.dumps({"rca_confidence": "high", "detection_gap": {"escape_mode": "undetermined"}}),
             }
         ]
-        warm_sync_stub = {
-            "drained": {},
-            "pulled": {},
-            "rows": {"ops_recommendations": cache_rows, "ops_decisions": [], "ops_priority_queue": []},
-            "reader_ok": {"ops_recommendations": True, "ops_decisions": True, "ops_priority_queue": True},
-        }
+        recs_inputs = RecsSignalInputs("ok", {"open_count": 0, "aging_count": 0, "non_automatable_count": 0}, cache_rows)
         with (
             patch("scripts.preflight.env_git.check_venv", return_value=True),
             patch("scripts.preflight.env_git.get_git_status", return_value=("main", False, [])),
@@ -226,7 +217,7 @@ class TestEscapeModeGauge:
             patch("scripts.preflight.context_docs.parse_last_session", return_value=""),
             patch("scripts.preflight.priority_queue.read_priority_queue", return_value=[]),
             patch("session_preflight._sync_ops_pull", return_value={}),
-            patch("scripts.sync.ops.warm_sync", return_value=warm_sync_stub),
+            patch("session_preflight.fetch_recs_signal_inputs", return_value=recs_inputs),
             patch(
                 "scripts.preflight.context_docs.read_context_files",
                 return_value={

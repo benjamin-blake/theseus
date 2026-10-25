@@ -129,3 +129,49 @@ def test_main_lambda_warm_reuse_writer_dispatch(monkeypatch, capsys):
     )
     assert smoke.main(["--lambda-warm-reuse-writer"]) == 0
     assert "WARM_REUSE_WRITER OK" in capsys.readouterr().out
+
+
+def test_main_lambda_row_rules_dispatch(monkeypatch, capsys):
+    monkeypatch.setattr(smoke, "lambda_row_rules", lambda profile=None, region="eu-west-2": print("LAMBDA_ROW_RULES OK stub"))
+    assert smoke.main(["--lambda-row-rules"]) == 0
+    assert "LAMBDA_ROW_RULES OK" in capsys.readouterr().out
+
+
+def test_main_lambda_telemetry_dispatch(monkeypatch, capsys):
+    seen = {}
+
+    def fake(profile=None, region="eu-west-2"):
+        seen.update(profile=profile, region=region)
+        print("LAMBDA_TELEMETRY OK stub")
+
+    monkeypatch.setattr(smoke, "lambda_telemetry", fake)
+    assert smoke.main(["--lambda-telemetry", "--profile", "p", "--region", "r"]) == 0
+    assert seen == {"profile": "p", "region": "r"}
+    assert "LAMBDA_TELEMETRY OK" in capsys.readouterr().out
+
+
+def test_create_telemetry_flag_dispatches_the_gate(monkeypatch):
+    from scripts.ducklake_smoke import lambda_maintenance_gates
+
+    assert smoke.lambda_maintenance_create_telemetry is lambda_maintenance_gates.lambda_maintenance_create_telemetry
+    assert "lambda_maintenance_create_telemetry" in smoke._LAMBDA_GATES
+    seen = []
+    monkeypatch.setattr(smoke, "lambda_maintenance_create_telemetry", lambda **kw: seen.append(kw))
+    assert smoke.main(["--lambda-maintenance-create-telemetry"]) == 0
+    assert len(seen) == 1
+
+
+@pytest.mark.parametrize(
+    ("flag", "attr"),
+    [("--lambda-telemetry-smoke", "lambda_telemetry_smoke"), ("--lambda-telemetry-reader", "lambda_telemetry_reader")],
+)
+def test_telemetry_twin_and_reader_flags_dispatch_their_gates(monkeypatch, flag, attr):
+    seen = {}
+
+    def fake(profile=None, region="eu-west-2"):
+        seen.update(profile=profile, region=region)
+
+    assert attr in smoke._LAMBDA_GATES
+    monkeypatch.setattr(smoke, attr, fake)
+    assert smoke.main([flag, "--profile", "p", "--region", "r"]) == 0
+    assert seen == {"profile": "p", "region": "r"}

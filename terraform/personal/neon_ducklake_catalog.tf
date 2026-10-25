@@ -1,7 +1,7 @@
 # DuckLake operational lakehouse -- Neon serverless Postgres catalog (T2.16b / CD.34, pending).
 #
 # Replaces the T2.16 RDS catalog (rds_ducklake_catalog.tf, retired in Phase 2) with Neon serverless
-# Postgres on the free tier ($0). Like RDS, this is a catalog-metadata store, NOT a query engine:
+# Postgres (originally the free tier). Like RDS, this is a catalog-metadata store, NOT a query engine:
 # DuckDB performs all computation against S3 Parquet; the catalog holds only DuckLake metadata
 # (table/version/snapshot pointers).
 #
@@ -26,7 +26,7 @@
 #   1. Create the Neon provider API key secret out-of-band (plaintext; human-run; NOT Terraform-managed
 #      -- Terraform-managing the key the provider reads would create a provider->resource cycle):
 #        aws secretsmanager create-secret --name neon-api-key \
-#          --secret-string '<neon-api-key>' --region eu-west-2 --profile agent_platform_admin
+#          --secret-string '<neon-api-key>' --region "$(tr -d '[:space:]' < config/aws-region)" --profile agent_platform_admin
 #   2. Grant the CI apply role secretsmanager rights on the two secret ARNs (oidc.tf,
 #      aws_iam_role_policy.github_ci_apply) and apply JUST that statement manually (IAM-sensitive ->
 #      the guard fail-closes, so it cannot auto-apply):
@@ -62,9 +62,9 @@ resource "neon_project" "ducklake_catalog" {
   region_id  = var.neon_region_id
   pg_version = 16
 
-  # Free-plan PITR ceiling is 21600s (6h); the provider's 24h (86400) default is rejected on free.
-  # This is the ~6h free-tier history window the DR design accounts for (daily pg_dump covers >6h).
-  history_retention_seconds = 21600
+  # 7 days (604800s), the paid Launch plan maximum: the point-in-time window Decisions 88 cl.3 and 107 rely on
+  # between weekly dumps. The earlier 21600 (6h) was the free-plan ceiling.
+  history_retention_seconds = 604800
 }
 
 # Scoped, non-owner role for catalog access. Distinct from the project's auto-created owner role so the
@@ -128,6 +128,63 @@ resource "aws_secretsmanager_secret_version" "ducklake_neon_catalog_dsn" {
     sslmode     = "require"
     meta_schema = "ducklake_ops"
   })
+}
+
+# ---------------------------------------------------------------------------
+# Scoped catalog login for the telemetry writer (Decision 213 cl.3) -- the CONTAINER only.
+#
+# There is deliberately no aws_secretsmanager_secret_version here: the role is created by SQL
+# (src/lambdas/ducklake_maintenance/ducklake_telemetry_writer_role.sql), not by the Neon provider, and
+# its password is generated and written out of band by the admin under the SECRET-VALUE-OUT-OF-BAND
+# pattern of docs/contracts/secret-material-handling.yaml, so it never enters Terraform state. The
+# value is {host, dbname, username, password, sslmode}; ducklake_maintenance's provision_telemetry_login
+# reads it to set the role's password (deploy-paths.yaml admin_out_of_band.scoped_login_provisioning).
+# ---------------------------------------------------------------------------
+
+resource "aws_secretsmanager_secret" "ducklake_telemetry_writer_dsn" {
+  name        = "agent-platform-ducklake-telemetry-writer-dsn"
+  description = "DuckLake telemetry writer scoped catalog login (role ducklake_telemetry_writer, DML-only on the smoke metadata schema). Value written out of band by the admin. ROTATION: quarterly, manual, via provision_telemetry_login. Migration: src/lambdas/ducklake_maintenance/ducklake_telemetry_writer_role.sql (Decision 213)."
+
+  tags = {
+    Name    = "DuckLake Telemetry Writer DSN"
+    Purpose = "Decision 213 scoped catalog login - runtime-fetch by the telemetry writer"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Production telemetry catalog logins (Decision 230) -- CONTAINERS only, no aws_secretsmanager_secret_version,
+# for the same SECRET-VALUE-OUT-OF-BAND reason as the writer secret above. Each value is written by the admin and
+# applied to its role by provision_telemetry_login.
+# ---------------------------------------------------------------------------
+
+resource "aws_secretsmanager_secret" "ducklake_telemetry_writer_prod_dsn" {
+  name        = "agent-platform-ducklake-telemetry-writer-prod-dsn"
+  description = "DuckLake telemetry writer scoped login for the production telemetry catalog (DML-only on the ducklake_telemetry metadata schema). Value written out of band by the admin. ROTATION: quarterly, manual, via provision_telemetry_login."
+
+  tags = {
+    Name    = "DuckLake Telemetry Writer Prod DSN"
+    Purpose = "Decision 230 scoped catalog login - runtime-fetch by the telemetry writer after the flip"
+  }
+}
+
+resource "aws_secretsmanager_secret" "ducklake_telemetry_reader_dsn" {
+  name        = "agent-platform-ducklake-telemetry-reader-dsn"
+  description = "DuckLake telemetry reader scoped login (SELECT-only on the ducklake_telemetry metadata schema). Value written out of band by the admin. ROTATION: quarterly, manual, via provision_telemetry_login."
+
+  tags = {
+    Name    = "DuckLake Telemetry Reader DSN"
+    Purpose = "Decision 230 scoped catalog login - runtime-fetch by the telemetry reader"
+  }
+}
+
+resource "aws_secretsmanager_secret" "ducklake_smoke_maintainer_dsn" {
+  name        = "agent-platform-ducklake-smoke-maintainer-dsn"
+  description = "DuckLake smoke maintainer scoped login (one owner-role grant for the smoke catalog maintenance function). Value written out of band by the admin. ROTATION: quarterly, manual, via provision_telemetry_login."
+
+  tags = {
+    Name    = "DuckLake Smoke Maintainer DSN"
+    Purpose = "Decision 230 scoped catalog login - runtime-fetch by the smoke maintenance function"
+  }
 }
 
 # ---------------------------------------------------------------------------

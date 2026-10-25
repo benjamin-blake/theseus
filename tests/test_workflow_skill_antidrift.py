@@ -106,8 +106,23 @@ def test_planning_enforcement_names_the_critique_check_id() -> None:
     assert "fails plan-critique 12k" in planning
 
 
-def test_plan_workflow_invokes_obligations_once_at_step_6b() -> None:
-    """`plan_obligations` runs once author-side, at Step 6b, against a draft written OUTSIDE the repo.
+def test_closure_obligation_requires_caller_disposition() -> None:
+    """A deleted writer's callers are disposed at the contract and at all three skill surfaces."""
+    lifecycle = yaml.safe_load(Path("docs/contracts/tier-item-lifecycle.yaml").read_text(encoding="utf-8"))
+    closure = " ".join(lifecycle["replacement_closure_check"].split())
+    assert "(5) Dispose of every caller" in closure
+    assert "fails loudly" in closure
+    assert "stub" in closure
+    planning = _PLANNING_SKILL.read_text(encoding="utf-8")
+    assert "every caller of a deleted writer" in planning or "lists every caller" in planning
+    critique = _CRITIQUE_SKILL.read_text(encoding="utf-8")
+    assert "replacement_closure_check` (5)" in critique[critique.index("12k.") : critique.index("12l.")]
+    review = Path(".claude/skills/code-review/SKILL.md").read_text(encoding="utf-8")
+    assert "replacement_closure_check" in review
+
+
+def test_plan_workflow_invokes_obligations_once_at_alignment_sign_off() -> None:
+    """`plan_obligations` runs once author-side, at the alignment sign-off, against a draft written OUTSIDE the repo.
 
     The draft path must stay outside `docs/plans/`: `{slug}` is not derived until Step 7, and a
     Write to the tracked plan path while on `main` is denied by `.claude/hooks/never_on_main.py`

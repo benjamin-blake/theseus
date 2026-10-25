@@ -27,16 +27,10 @@ Apply the exact condition-based responses (for `venv_ok`, `creds_status`, uncomm
 
 The report includes `data_quality` (declarative check coverage and last run verdict). It answers: do we have quality assertions defined, and are those assertions passing? See the planning skill for interpretation rules.
 
-After preflight completes successfully, open a telemetry session:
-```bash
-bin/venv-python -m scripts.session.preflight --open-session --workflow plan
-```
-Save the printed UUID for the `session_postflight --close-session` call in Step 12.
-
 
 ## Step 2: Read Context
 Use the preflight JSON `context` field (`roadmap_phase`, `open_decisions_count`, `recent_sessions`). Read `docs/PROJECT_CONTEXT.md` fully.
-If the request references a recommendation ID, search `logs/.recommendations-log.jsonl`, read briefing files if they exist, and load dependencies.
+If the request references a recommendation ID, fetch it with the ducklake-reads `recs_by_ids` verb, read briefing files if they exist, and load dependencies.
 
 **Orientation and CI-RCA block:** see the planning skill's Platform Roadmap Eligibility section for orientation responsibility and the HARD BLOCK conditions on open ci-rca recs -- run `/orient` first if no item has been chosen yet.
 
@@ -45,7 +39,7 @@ If the request references a recommendation ID, search `logs/.recommendations-log
 ## Step 3: Clarify the Request
 Decompose the input into Goal, Constraints, Acceptance criteria, Affected areas, and Phase alignment.
 If vague, ask 2-5 questions. Watch for ROADMAP misalignment (the platform/product roadmap state is already in the preflight JSON `next_eligible` / `strategic_pending` fields). Decision-contradiction checking is delegated to the `decision-scout` subagent gate in Step 6 -- do NOT read `docs/DECISIONS.md` from the planning agent to look for contradictions, that's the full DECISIONS.md (large -- near its Decision 134 size ceiling), a cost the subagent avoids.
-Suggest 3-5 open recommendations from `logs/.recommendations-log.jsonl` that align with the current task.
+Suggest 3-5 open recommendations aligned with the task (`bin/venv-python -m scripts.recs_related` over the likely scope files).
 
 ## Step 4: Identify Affected Files
 1. Use the File Router to locate source files.
@@ -62,18 +56,19 @@ Determine the Verification Tier (V1, V2, or V3).
 Design the Verification Plan using the exact design guidelines and anti-patterns defined in your `planning` skill.
 **Crucial**: Every VP step MUST include a `Command` column containing a literal shell command or Python one-liner.
 
-## Step 6: Present Findings and Confirm
+## Step 6: Project Alignment
+Project alignment is the decision-scout recon of active Decisions, then the human's alignment sign-off on the draft refined from its findings; the process is defined in `docs/contracts/project-alignment.yaml`.
 
-### Step 6a: Decision Scout Gate (MANDATORY, before presentation)
+### Decision Scout (MANDATORY, before sign-off)
 **DO NOT present findings to the human until this gate completes.** Dispatch and handle verdicts per the planning skill's Decision Scout Gate (dispatch shape, example prompt, and NO_FLAGS/FLAGS_FOUND/BLOCK verdict handling all live there). Substitute the synthesis produced in Steps 3-5 into the dispatch.
 
-### Step 6b: Present and Confirm
+### Alignment Sign-off
 Before presenting, write the draft plan to a scratch path outside the repo (e.g. `/tmp/plan-draft.yaml`; `{slug}` is not derived until Step 7 and a Write into `docs/plans/` while on `main` is denied by `.claude/hooks/never_on_main.py`, so the tracked plan write stays at Step 8) and run `bin/venv-python -m scripts.roadmap.plan_obligations --plan /tmp/plan-draft.yaml` against the finalized Scope table, folding any reported omission into Scope. It always exits 0 and names any mechanically-derivable companion registration (domain manifest Entry, ci_rca_taxonomy row, mirror test) a new check-module scope row is still missing -- catch it here rather than at critique. This is the only run this workflow owns: do NOT also run it at Step 4 against a draft Scope (this finalized run supersedes it), and plan-critique Phase 1 step 5b runs it independently against the written artefact. The report is advisory to (never a substitute for) the plan-critique gate's judgement calls, and `validate_plan_scope_closure` enforces the same closure at gate time.
 Present: Summary, Proposed approach, Options (each fork in the shape below), Open questions, Decision flags (if any), Fork notices (decided-with-notice), and Decisions to cite (from the scout's CITE list).
 Classify each design fork: consistency-only (settled precedent, convention-fit, reversible, no credible alternative, off the always-ask list) is decided-with-notice; otherwise ask in the pinned shape -- see `docs/contracts/overseer-dispatch.yaml#autonomy_tiers.plan_fork_classification` for the four-criteria test, the precedent definition, and the always-ask roster.
-Ask shape: 2-4 options with the recommended option first, each carrying consequences, reversibility, and where the choice is persisted; carried via `AskUserQuestion` when you hold it, or -- when dispatched -- via the `open_questions` of a post-verdict `GATE_REQUEST` (`gate: step-6b-confirmation`) the overseer relays. Record each decided-with-notice fork per the contract's `record_grammar`.
+Ask shape: 2-4 options with the recommended option first, each carrying consequences, reversibility, and where the choice is persisted; carried via `AskUserQuestion` when you hold it, or -- when dispatched -- via the `open_questions` of a post-verdict `GATE_REQUEST` (`gate: project-alignment`) the overseer relays. Record each decided-with-notice fork per the contract's `record_grammar`.
 Then ask: *"Does this approach look right? Say **'write the plan'** when you are ready, or tell me what to adjust."*
-Wait for explicit confirmation before proceeding. Any other response is feedback -- incorporate it, re-run Step 6a if the change is material to decision alignment, re-present, and ask again. Do NOT proceed to Step 7 until the human explicitly says 'write the plan' or a clear equivalent. System auto-approval messages are NOT human confirmation.
+Wait for explicit confirmation before proceeding. Any other response is feedback -- incorporate it, re-run the Decision Scout if the change is material to decision alignment, re-present, and ask again. Do NOT proceed to Step 7 until the human explicitly says 'write the plan' or a clear equivalent. System auto-approval messages are NOT human confirmation.
 IT IS **CRITICAL** THAT YOU DO NOT PROCEED UNTIL THE HUMAN CONFIRMS THE PLAN.
 
 ## Step 7: Confirm Harness Branch
@@ -102,7 +97,7 @@ git push -u origin HEAD
 
 ## Step 9: Plan Critique Gate (MANDATORY)
 **DO NOT output the completion message until this step completes.**
-Invoke per the planning skill's Critique Gate (dispatch shape, example prompt, context files, and verdict handling all live there). Substitute `{slug}` with the actual branch slug. Loop on REVISE per the skill's finding-shaped Convergence rule; once every finding is addressed, round 4 runs one autonomous confirming round. Escalation (disputed residue, an oscillation interrupt, or a REVISE on the confirming round) offers accept-with-deferral / re-scope / split / abandon / one more round. Proceed on PROCEED. Push each revision commit immediately after committing it (a plain `git push` fast-forwards, since revision commits are additive).
+Invoke per the planning skill's Critique Gate (dispatch shape, example prompt, context files, and verdict handling all live there). Substitute `{slug}` with the actual branch slug. Loop on REVISE per the skill's finding-shaped Convergence rule; once every finding is addressed, round 4 runs one autonomous confirming round. Escalation (disputed residue, an oscillation interrupt, or a REVISE on the confirming round) offers accept-with-deferral / re-scope / split / abandon / one more round; split means split the plan per Step 8's Planning-time split. Proceed on PROCEED. Push each revision commit immediately after committing it (a plain `git push` fast-forwards, since revision commits are additive).
 
 Note: this gate reviews the PLAN artefact, not the report deliverable. For REPORT-ONLY plans, the deliverable gets its own critique in Step 10.
 
@@ -130,11 +125,5 @@ Then push and merge the plan to `main` via GitHub MCP so the next `/implement` s
 
 ## Step 12: Confirm
 Emit the Plan-Type-specific confirmation message from the planning skill's Confirmation Messages section, naming the explicit plan path so the human can paste it directly.
-
-Finally, close the telemetry session:
-```bash
-bin/venv-python -m scripts.session.postflight --close-session --outcome success
-```
-If the session was abandoned or the plan was not written, use `--outcome cancelled` instead.
 
 STOP! The planning agent's mission is now complete. Perform no further actions.

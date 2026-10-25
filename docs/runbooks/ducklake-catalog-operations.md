@@ -46,7 +46,7 @@ and every write transits `ducklake_writer`. The ONLY sanctioned out-of-band acce
 (e.g. a stuck snapshot, an orphaned-file question, a schema drift investigation).
 
 Authority for the break-glass read is the explicit, named `DuckLakeBreakGlass` inline policy on the
-`PlatformAdmin` role (`terraform/personal/platform_roles.tf`): `secretsmanager:GetSecretValue` on the Neon
+`PlatformAdmin` role (`terraform/bootstrap/platform_admin_data_policies.tf`): `secretsmanager:GetSecretValue` on the Neon
 DSN ARN + `s3:GetObject`/`s3:ListBucket` on the `ducklake-*` prefixes. It grants READ only -- a break-glass
 session cannot mutate the catalog data.
 
@@ -268,6 +268,17 @@ aws sns list-subscriptions-by-topic \
   --profile agent_platform
 ```
 
+The admin alarm declares no dimensions, so it sees only `agent-platform-ducklake-maintenance`'s
+datum; the smoke function emits `MaintenanceBreakerTrip` with `Catalog=smoke` and trips only
+`ducklake-maintenance-smoke-circuit-breaker` (the per-deploy `--lambda-maintenance-breaker` gate
+trips it on purpose). A scheduled run discards its response, so the cause is in the function's
+CloudWatch log as a `MAINTENANCE_FAILURE status=500 body=...` line (`MAINTENANCE_SMOKE_FAILURE` on
+the smoke function):
+```bash
+aws logs filter-log-events --log-group-name /aws/lambda/agent-platform-ducklake-maintenance \
+  --filter-pattern '"MAINTENANCE_FAILURE"' --start-time <epoch-ms> --profile agent_platform
+```
+
 **Triage the trip by cause, not just by the metric.** Four causes exist, and only three are the
 "RCA the file accumulation" case below:
 - **G1/G2/G3 violation** -- RCA the file accumulation: is the expiry cutoff too recent (< 30
@@ -290,7 +301,7 @@ Never relax a guard to pass, on any of the four causes.
 ### Manual invoke runbook
 
 All recipes below invoke `agent-platform-ducklake-maintenance`, an admin-gated singleton --
-PlatformDev's `DuckLakeInvokeRuntime` grant is scoped to the writer/reader Lambdas only, so every
+PlatformDev's `DuckLakeInvokeUrl` and `DuckLakeInvokeViaUrlOnly` grants are scoped to the writer/reader/telemetry-writer Lambdas only, so every
 recipe here runs under `agent_platform_admin` (Decision 143 blast radius; maintenance stays
 break-glass, never widened to remove the operator step).
 

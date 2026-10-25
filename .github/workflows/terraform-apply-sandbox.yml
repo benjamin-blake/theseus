@@ -91,6 +91,7 @@ env:
   # PR role gets read on this prefix only and must never gain tfstate read.
   CONVERGENCE_BUCKET: agent-platform-data-lake
   CONVERGENCE_KEY: convergence/personal/sandbox.json
+  MASK_AWS_ROLE_ID_ACCOUNT_PART: ${{ secrets.AWS_ROLE_ID_ACCOUNT_PART }}
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -125,7 +126,6 @@ jobs:
       actions: write        # self-dispatch ci-rca on a re-run failure (workflow_run re-run gap)
 
     env:
-      AWS_DEFAULT_REGION: eu-west-2
       # The personal provider defaults profile = var.aws_profile (agent_platform_admin), which does
       # not exist on a GitHub-hosted runner. Blank it so the AWS provider uses the OIDC-exported
       # credential env vars (configure-aws-credentials) instead of a named profile.
@@ -138,11 +138,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: ./.github/actions/aws-region
+
       - name: Configure AWS credentials (OIDC -- apply role, main only)
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-apply
-          aws-region: eu-west-2
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-apply
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Read pinned Terraform version
         id: tfver
@@ -266,9 +268,8 @@ jobs:
 
       - name: Build DuckLake lambda packages (rebuild before plan/apply, rec-2512)
         id: build_ducklake
-        # rec-2512: lambda-packages/ is gitignored, so filemd5() in the terraform config silently
-        # resolves to null on a CI checkout and terraform never detects layer/function content
-        # changes. Rebuild the seven DuckLake artifacts here, before plan/apply, using the
+        # rec-2512: lambda-packages/ is gitignored and Terraform reads no local zip (the configuration
+        # addresses code by s3_key). Rebuild the seven DuckLake artifacts here, before plan/apply, using the
         # profile-less env-credential path (this GitHub-hosted OIDC runner has no named AWS
         # profile). On push (apply-the-saved-plan path, Decision 77 no-TOCTOU): the plan.bin about
         # to be applied was reviewed against the PR job's uploaded S3 objects, so assert the
@@ -276,6 +277,15 @@ jobs:
         # mismatch means the applied layer content would skew from the reviewed plan and must fail
         # closed rather than silently apply divergent bytes. workflow_dispatch (fresh plan) skips
         # the assert since there is no prior speculative-plan artifact to compare against.
+        #
+        # rec-4372 (Decision 154 Update): that reference can go stale -- its window runs from the
+        # PR's last speculative plan to this merge, with no upper bound, and main can edit a
+        # packaged file in between. When every differing artifact's bytes trace to a tracked input
+        # that moved on main (scripts/ci/ducklake_artifacts.py assert_and_upload, keyed on
+        # GITHUB_SHA as the merge sha), this step applies the reviewed plan.bin unchanged on the
+        # merge-tree zips, uploaded to the fixed key and lambda-packages/<merge sha>/, and writes a
+        # superseded-by.json pointer beside the untouched PR-head zips. A pre-existing pointer at
+        # this sha refuses an identical-bytes re-upload (only the moved branch may create one).
         #
         # T2.42 c3 (DEP-03): the byte-assert reads the per-artifact-sha key
         # (lambda-packages/<sha>/<name>, overwrite-immune per PR-head-sha) instead of the fixed
@@ -504,12 +514,13 @@ jobs:
       pull-requests: write  # post the speculative-plan comment
       statuses: write       # DEP-07: post the terraform-plan-digest commit status
     env:
-      AWS_DEFAULT_REGION: eu-west-2
       TF_VAR_aws_profile: ""
       WORKDIR: terraform/personal
 
     steps:
       - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/aws-region
 
       - name: Configure AWS credentials (OIDC -- planner role, PR-sub, non-reserved session)
         # T2.49 / DEP-12 (Decision 144): repointed from the retired github_ci_plan role to the
@@ -527,9 +538,9 @@ jobs:
         continue-on-error: true
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-planner
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-planner
           role-session-name: terraform-plan-pr
-          aws-region: eu-west-2
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Surface a failed assume (no plan.bin will be persisted)
         # Decision 172 PR-2: before this step, a failed assume silently skipped every step below
@@ -568,9 +579,9 @@ jobs:
 
       - name: Build DuckLake lambda packages (build + upload before plan, rec-2512)
         id: build_ducklake
-        # rec-2512: rebuild + upload the DuckLake artifacts BEFORE the speculative plan so the
-        # reviewed plan.bin captures a real filemd5 (lambda-packages/ is gitignored -- without this,
-        # filemd5() resolves to null and terraform never detects layer/function content changes) AND
+        # rec-2512: rebuild + upload the DuckLake artifacts BEFORE the speculative plan so the reviewed
+        # bytes sit at the fixed and per-sha S3 keys the configuration addresses by s3_key and that
+        # gated-apply fetches (Terraform reads no local zip) AND
         # the referenced S3 content actually exists for the apply-sandbox job to re-verify at merge
         # time. Profile-less env-credential path (this GitHub-hosted OIDC runner has no named AWS
         # profile) under the planner role's PR-sub statement (T2.49 / DEP-12: grants
@@ -580,6 +591,12 @@ jobs:
         # T2.42 c3 (DEP-03): LAMBDA_ARTIFACT_SHA pins upload_to_s3's per-sha dual-write to the SAME
         # PR-head-sha "Persist saved plan to S3" (below) keys tfplan/personal/<pr>/<sha>.bin by, so
         # the apply-sandbox push-path byte-assert reads back exactly this job's uploaded bytes.
+        #
+        # rec-4372: upload-only also records scripts.ci.ducklake_inputs.record_inputs() as
+        # lambda-packages/<PR head sha>/inputs.json -- each artifact's tracked git-blob inputs, so
+        # the merge-time push run can attribute a reference gone stale (main moved a packaged file
+        # after this plan) back to the input that moved, instead of failing closed on every byte
+        # mismatch.
         if: success() && steps.oidc_plan.outcome == 'success'
         uses: ./.github/actions/build-ducklake-artifacts
         with:
@@ -735,13 +752,13 @@ jobs:
       id-token: write     # OIDC for the read-only PR role
       contents: read
       statuses: write     # post the advisory terraform-converged commit status
-    env:
-      AWS_DEFAULT_REGION: eu-west-2
     steps:
       # Required for `python3 -m scripts.ci.convergence_advisory` below to resolve: this job
       # previously had no checkout (it was two steps -- assume + inline body). scripts/ci/ has no
       # __init__.py; the -m form works via PEP 420 from the repo root, but ONLY after checkout.
       - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/aws-region
 
       - name: Configure AWS credentials (OIDC -- PR read-only role)
         # Best-effort: this advisory job must NEVER red a PR. Before the oidc.tf trust+read grant is
@@ -753,8 +770,8 @@ jobs:
         continue-on-error: true
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-pr
-          aws-region: eu-west-2
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-pr
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Read convergence record and post advisory terraform-converged status
         # Thin adapter (Decision 162): all six-way classification lives in
@@ -842,18 +859,19 @@ jobs:
       pull-requests: write  # best-effort post-merge wake comment
       actions: write        # self-dispatch ci-rca on a re-run failure (workflow_run re-run gap)
     env:
-      AWS_DEFAULT_REGION: eu-west-2
       TF_VAR_aws_profile: ""
       WORKDIR: terraform/personal
 
     steps:
       - uses: actions/checkout@v7
 
+      - uses: ./.github/actions/aws-region
+
       - name: Configure AWS credentials (OIDC -- apply role, main only)
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-apply
-          aws-region: eu-west-2
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-apply
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Read pinned Terraform version
         id: tfver
@@ -898,6 +916,12 @@ jobs:
         # (scripts/ci/ducklake_artifacts.py fetch_reviewed(), fail-closed on any missing per-sha
         # object -- Decision 77 no-TOCTOU is preserved by the ORIGINAL PR-time assert plus this
         # fetch's own fail-closed missing-object check, not by a repeated rebuild-assert here).
+        #
+        # rec-4372: fetch first reads lambda-packages/<artifact-sha>/superseded-by.json. Absent,
+        # the usual route, fetches from artifact-sha's own prefix as above. Present, it follows the
+        # pointer one hop to the merge sha the push run rebuilt from when the PR-time zips predated
+        # an input that moved on main -- identity there rests on that push run's input attribution,
+        # not on a byte match against the PR-time assert.
         if: success()
         uses: ./.github/actions/build-ducklake-artifacts
         with:

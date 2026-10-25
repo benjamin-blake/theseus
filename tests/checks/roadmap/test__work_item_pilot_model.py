@@ -75,6 +75,12 @@ def _fixture(n_items=1):
     }
 
 
+def _line_ceiling(text):
+    # mirrors evaluator leg L2 (_leg2_cap_and_layout): the ceiling scales with the parsed item count
+    count = len(model.Fixture.model_validate(yaml.safe_load(text)).work_items)
+    return model.HEADER_LINE_CEILING + model.PER_ITEM_LINE_CEILING * count
+
+
 def _reg_of(data):
     return data["work_items"][0]["extension"]["consideration_register"]
 
@@ -251,7 +257,13 @@ class TestBudget:
     def test_ceilings_reconcile_with_the_residual_limit(self):
         shipped = (_common.ROOT / model.FIXTURE_PATH).read_text(encoding="utf-8")
         assert model.HEADER_LINE_CEILING + model.ITEM_COUNT_CAP * model.PER_ITEM_LINE_CEILING <= 500
-        assert effective_lines(shipped) <= model.HEADER_LINE_CEILING
+        assert effective_lines(shipped) <= _line_ceiling(shipped)
+
+    def test_line_ceiling_grows_with_the_item_count(self):
+        text = model.render(model.Fixture.model_validate(_fixture(1)))
+        assert effective_lines(text) > model.HEADER_LINE_CEILING
+        assert effective_lines(text) <= _line_ceiling(text)
+        assert _line_ceiling(text) == model.HEADER_LINE_CEILING + model.PER_ITEM_LINE_CEILING
 
     def test_generator_raises_on_an_unbounded_field(self):
         class Unbounded(BaseModel):

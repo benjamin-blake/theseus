@@ -10,7 +10,8 @@ governance file or a grandfathered retiring-set member. The machine-readable all
 check reads) -- register a genuinely-new governance surface there, never by loosening the check.
 
 Allowed governance root files: `CLAUDE.md` (this file), `PROJECT_CONTEXT.md`,
-`decisions-index.json`, and the roadmaps (`ROADMAP-PLATFORM.yaml`, `ROADMAP-SEMANTO.yaml`).
+`decisions-index.json`, and the roadmaps (`ROADMAP-PLATFORM.yaml` with its retired-item archive
+`ROADMAP-PLATFORM-ARCHIVE.yaml`, `ROADMAP-SEMANTO.yaml`).
 
 Grandfathered retiring sets (allowed now, retire on their own schedule -- do not add to them):
 `DECISIONS.md` / `DECISIONS_ARCHIVE.md` (owner T1.5), `SESSION_LOG.md` /
@@ -30,6 +31,8 @@ Every non-governance doc class has a subtree home; put new files there, not at t
 
 Example: `docs/contracts/package-registry-reservation.yaml`'s `procedure:` block holds the
 PyPI/npm/crates.io namespace-reservation walkthrough (rec-3941).
+`docs/contracts/github-org-transfer.yaml`'s `procedure:` block holds the GitHub organisation
+transfer's pre-stage steps and transfer-window checklist (rec-3905).
 
 Audit OUTPUTS live in `audits/`, not under `docs/`. The discovery index is
 `docs/contracts/file-router.yaml`.

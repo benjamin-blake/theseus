@@ -48,7 +48,7 @@ locals {
       },
       {
         # Consolidated IAM read-quartet for all roles terraform/personal references during plan:
-        # branch, pr, plan, drift, platform, ducklake roles. Separated from write actions
+        # branch, pr, plan, drift, ducklake roles. Separated from write actions
         # (IAMRoleReconcile, IAMRoleCreateBounded, IAMRoleWriteBounded) to keep the write-scope
         # auditable. Literal ARNs per the refresh-read convention (no cross-root dependency edges).
         # rec-2079: IAMCIPlanRoleRead + IAMPlatformRolesRead merged here; no separate Sid for each.
@@ -71,6 +71,8 @@ locals {
         # (ducklake-deploy+prod-deploy) -- so this list shrinks by two entries (net -2, helps the
         # rec-2793 headroom). Same read-only refresh-grant class as the retired roles had; the
         # pipeline does not mint them (admin-provisioned in terraform/personal/oidc.tf).
+        # rec-4049 (Decision 225): the PlatformDev and PlatformAdmin ARNs were pruned under this
+        # rule after terraform/personal's forget converged (2026-10-17, #1540).
         Sid    = "IAMRolesRead"
         Effect = "Allow"
         Action = [
@@ -84,8 +86,6 @@ locals {
           "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-pr",
           "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-planner",
           "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-deploy",
-          "arn:aws:iam::${var.account_id}:role/PlatformDev",
-          "arn:aws:iam::${var.account_id}:role/PlatformAdmin",
           "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-catalog-dr",
           "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-writer",
           "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-reader",
@@ -103,6 +103,14 @@ locals {
           # in the PassRole-completion PR; the matching oidc.tf planner-read entry is added in the
           # DEP-02 create PR and both entries are removed together in the DEP-02 revert PR.
           "arn:aws:iam::${var.account_id}:role/agent-platform-probe-liveproof-role",
+          # Decision 213: pre-staged ahead of the role's own creation, the same precedent as the
+          # probe-liveproof entry above. PLAN-telemetry-writer-function creates
+          # agent-platform-ducklake-telemetry-writer; without this entry the gated apply's own
+          # iam:GetRole after that create, and every later plan's refresh, fail closed.
+          "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-telemetry-writer",
+          # Same pre-stage for PLAN-telemetry-reader-and-smoke-twin's creates.
+          "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-telemetry-writer-smoke",
+          "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-telemetry-reader",
         ]
       },
       {

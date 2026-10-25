@@ -21,8 +21,8 @@ scope:
     a scanned module. Declares examined(files parsed). Spec in execution_steps[0].'
 - file: scripts/checks/ops_governance/_manifest.py
   action: Modify
-  purpose: 'Add the validate_recs_read_topology Entry directly after validate_warehouse_write_sources: pre=True, pre_globs
-    ("scripts/**", "src/**") (the scan scope and the check''s whole closure, the twin''s shape), full_segment "full_after_lint".'
+  purpose: 'Add the validate_recs_read_topology Entry directly after validate_warehouse_write_sources: pre=True, pre_globs=None
+    (ungated: the scan scope is repo-wide; deviation 2026-10-02, context), full_segment "full_after_lint".'
 - file: config/ci_rca_taxonomy.yaml
   action: Modify
   purpose: Map validate_recs_read_topology to code_regression under function_to_category, after validate_warehouse_write_sources.
@@ -32,10 +32,6 @@ scope:
     SyntaxError, non-UTF-8 and missing-client fixtures, the false-positive negatives, the ALLOWLIST globs pinned by equality,
     the empty-allowlist real-tree test proving each of the 10 live rows load-bearing, a no-stale-row test, examined accounting,
     and registration.'
-- file: tests/checks/ops_governance/test__manifest.py
-  action: Modify
-  purpose: 'Add the validate_recs_read_topology row to _CLOSURE_INPUTS (the check module, src/common/ducklake_reader_client.py,
-    scripts/checks/_common.py, scripts/checks/registry.py) so TestClosureMembersAreCovered pins the gate''s coverage.'
 closes_criteria:
 - T2.19:c10
 bundled_recommendations: []
@@ -43,7 +39,7 @@ followon_recs: []
 infrastructure_dependencies: []
 acceptance_criteria:
 - 'T2.19:c10 (realized form, Decision 169): validate_recs_read_topology is registered in the ops_governance manifest (pre=True,
-  pre_globs scripts/** and src/**, full_after_lint), dispatched in both tiers and mapped to code_regression; it passes on
+  pre_globs None, ungated, full_after_lint), dispatched in both tiers and mapped to code_regression; it passes on
   the current tree with examined(files parsed) declared (VP 1, VP 4, VP 5); each leg fails its own regression - an allowlist
   or declared row with an empty reason (R0), a make_reader return constructing an undeclared class including on the real
   reader client (R1), an undeclared class structurally implementing Reader (R2), a retired legacy-engine token (R3), a runtime
@@ -107,7 +103,7 @@ verification_plan:
   action: Confirm registration across the manifest, both tier sequences, the ci_rca taxonomy and the accounting declaration.
   command: bin/venv-python -c "import yaml;from scripts.checks import registry;from scripts.checks.ops_governance import _manifest;e=[x
     for x in _manifest.ENTRIES if x.name=='validate_recs_read_topology'][0];assert e.pre and e.full_segment=='full_after_lint';assert
-    tuple(e.pre_globs)==('scripts/**','src/**'),e.pre_globs;assert 'validate_recs_read_topology' in [s.name for s in registry.pre_sequence()]
+    e.pre_globs is None,e.pre_globs;assert 'validate_recs_read_topology' in [s.name for s in registry.pre_sequence()]
     and 'validate_recs_read_topology' in [s.name for s in registry.full_sequence()];t=yaml.safe_load(open('config/ci_rca_taxonomy.yaml'))['function_to_category'];assert
     t['validate_recs_read_topology']=='code_regression';f=[];registry.resolve('validate_recs_read_topology')(f);d=registry.pop_declaration();assert
     d and d.kind=='examined' and d.unit=='files' and d.count>400,d;print('registration OK')"
@@ -124,19 +120,18 @@ verification_plan:
   - registration OK
 - step: 5
   phase: pre-deploy
-  action: Run the ops_governance manifest test, which carries the new closure row.
+  action: Run the ops_governance manifest test, which resolves the new Entry (ungated, so it carries no closure row).
   command: bin/venv-python -m pytest tests/checks/ops_governance/test__manifest.py -q
-  expected: Exit 0, all tests pass, including the validate_recs_read_topology closure parametrisations.
-  fix_if: A closure member not matched means pre_globs lost coverage of the check's own closure; widen pre_globs, never drop
-    the member.
+  expected: Exit 0, all tests pass, including the validate_recs_read_topology Entry parametrisations.
+  fix_if: An Entry resolution failure means the module/attr literal is wrong; fix the Entry, never the test.
   hermetic: false
   graduation: waive
-  graduation_waiver_reason: Whole-file pytest re-run of a test file this plan modifies (hermetic_authoring clause v); the
-    pytest phase already runs it standing.
+  graduation_waiver_reason: Whole-file pytest re-run of an existing test file that parametrises over the Entry this plan adds
+    (hermetic_authoring clause v); the pytest phase already runs it standing.
 - step: 6
   phase: pre-deploy
   action: Goodhart and branch-scope sweep against the merge-base - no net-new suppression, and the branch touches only the
-    five scope files and this plan.
+    four scope files and this plan.
   command: bash -c 'b=$(git merge-base origin/main HEAD) && [ -n "$b" ] || { echo "no merge-base, fetch origin main"; exit
     1; }; git diff -U0 "$b" -- scripts tests config | grep -E "^\+.*(noqa|type:\s*ignore|pragma:\s*no
     cover|pytest\.mark\.(skip|xfail)|importorskip)" && exit 1; x=$(git diff --name-only "$b" | grep -vxF -e scripts/checks/ops_governance/validate_recs_read_topology.py
@@ -185,7 +180,7 @@ test_obligations:
   test_selector: tests/checks/ops_governance/test_validate_recs_read_topology.py
   red_green_expectation: Red before (the module does not exist, so collection fails with ModuleNotFoundError); green after.
 - source: scripts/checks/ops_governance/_manifest.py
-  behavior: The validate_recs_read_topology Entry exists with pre=True, pre_globs ("scripts/**", "src/**") and full_after_lint.
+  behavior: The validate_recs_read_topology Entry exists with pre=True, pre_globs None (ungated) and full_after_lint.
   verification_step: 3
   test_selector: tests/checks/ops_governance/test_validate_recs_read_topology.py
   red_green_expectation: Red before (TestRegistration resolves the Entry by name with next(), so an absent Entry raises StopIteration
@@ -196,7 +191,7 @@ test_obligations:
   test_selector: tests/checks/ops_governance/test_validate_recs_read_topology.py
   red_green_expectation: Red before (TestRegistration hits a KeyError on the missing row); green after.
 constraints:
-- IMPLEMENTATION only (Decision 67 freeze); five scope files.
+- IMPLEMENTATION only (Decision 67 freeze); four scope files.
 - '/implement does not start until the operator''s ruling is recorded against MEMORY.md#parked row R6; a merge of this plan
   PR is not by itself the ruling. Under ruling (a), /implement withholds the bookkeeping walk''s docs/ROADMAP-PLATFORM.yaml
   edit and places the staged text under a "## Staged roadmap bookkeeping" heading in the PR body; under ruling (b), /implement
@@ -222,6 +217,9 @@ context:
 - 'Decision-scout verdict + CITE list (verbatim decision ids): FLAGS_FOUND (CONTRADICT WARN Decision 184, NOTE Decision 140;
   ROADMAP CONFLICT T4.23; all discharged by fork 1 and the Decision 140 citation below, no residual conflict). CITE: 84, 81,
   169, 170, 136, 79, 125, 73, 72, 55, 131, 163. RELATED: 78, 143, 88, 197, 182, 208, 187, 181, 189. gate_run_id t2-19-c10-decision-scout-r1-c62f8a19.'
+- 'Deviation 2026-10-02 (/implement, stand-in t2-19-c10-impl-step-6b-stand-in-r1, fork A; D187 cl.3, W0 evaluator Entry precedent;
+  B ruled out by D181): the Entry is ungated (pre_globs None) because TestPaydownDirection forbids a newly gained repo-wide
+  glob; the test__manifest.py closure row is dropped (ungated Entries carry none). Cost: about 3 s per --pre run.'
 - 'Decisions triaged: 163 of 163'
 - 'Roadmap items intersected: 3; CONFLICT: 1; RELATED: 2'
 - 'gates: decision-scout=FLAGS_FOUND r1; step-6b=WRITE THE PLAN (t2-19-c10-step-6b-stand-in-r1, fork 3 PARKED); plan-critique=PROCEED
@@ -307,7 +305,7 @@ execution_steps:
   added, never the two seeds (R4 owns those), so no site is reported twice. R4 and R4b never match strings (scripts/ducklake_smoke/lambda_ec_gates.py
   carries reset_warm_connection as a JSON action name). No module-scope I/O (AGENTS.md safety).'
 - 'scripts/checks/ops_governance/_manifest.py: insert Entry(name="validate_recs_read_topology", module="scripts.checks.ops_governance.validate_recs_read_topology",
-  attr="validate_recs_read_topology", pre=True, pre_globs=("scripts/**", "src/**"), full_segment="full_after_lint") directly
+  attr="validate_recs_read_topology", pre=True, pre_globs=None, full_segment="full_after_lint") directly
   after the validate_warehouse_write_sources Entry.'
 - 'config/ci_rca_taxonomy.yaml: add validate_recs_read_topology: code_regression under function_to_category directly after
   validate_warehouse_write_sources.'
@@ -333,11 +331,8 @@ execution_steps:
   src/telemetry/** absorbing none; derive_exports(ROOT) maps scripts.ducklake_smoke.core to a set including fetch_dsn and _libpq_conninfo
   and contains neither seed module.
   examined(files) declared with count > 0, including on an R1 failure. Every monkeypatch uses the monkeypatch fixture so order
-  is irrelevant under pytest-randomly. TestRegistration: the Entry resolved with next() (pre, pre_globs, full_after_lint),
+  is irrelevant under pytest-randomly. TestRegistration: the Entry resolved with next() (pre is True, pre_globs is None, full_after_lint),
   membership in registry.pre_sequence() and full_sequence(), and the taxonomy row.'
-- 'tests/checks/ops_governance/test__manifest.py: add the _CLOSURE_INPUTS row "validate_recs_read_topology": (scripts/checks/ops_governance/validate_recs_read_topology.py,
-  src/common/ducklake_reader_client.py, scripts/checks/_common.py, scripts/checks/registry.py) with a one-line comment that
-  the scan scope is the closure, as the twin''s row says.'
 - Execute Verification Plan - run each step; loop until pass; on an unrecoverable failure stop and RCA (Decision 55).
 - 'Report: what was implemented, verification results, and the staged c10 closeout (context) under the ruling the operator
   recorded; never apply the roadmap edit outside that ruling.'

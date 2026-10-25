@@ -32,8 +32,6 @@
 # produces clean, observable JSON output without depending on the schedule being enabled.
 
 locals {
-  prod_source_hash = try(filemd5("${path.module}/../../lambda-packages/data-pipeline.zip"), null)
-
   scheduled_agent_dispatcher_function = "agent-platform-scheduled-agent-dispatcher"
   findings_processor_function         = "agent-platform-findings-processor"
 }
@@ -200,7 +198,7 @@ resource "aws_iam_role_policy" "findings_processor" {
 }
 
 # ---------------------------------------------------------------------------
-# The two Lambda functions (from S3). source_code_hash try()-guarded; code is updated post-apply
+# The two Lambda functions (from S3). No source_code_hash is set (Terraform reads no build artifact); code is updated post-apply
 # by the governed .github/workflows/deploy-prod-lambdas.yml channel (T2.43).
 # ---------------------------------------------------------------------------
 
@@ -214,9 +212,8 @@ resource "aws_lambda_function" "scheduled_agent_dispatcher" {
   timeout       = 900 # 15 minutes -- enough for sequential agent execution when eventually enabled
   memory_size   = 512
 
-  s3_bucket        = aws_s3_bucket.data_lake.id
-  s3_key           = "lambda-packages/data-pipeline.zip"
-  source_code_hash = local.prod_source_hash
+  s3_bucket = aws_s3_bucket.data_lake.id
+  s3_key    = "lambda-packages/data-pipeline.zip"
 
   environment {
     variables = {
@@ -253,9 +250,8 @@ resource "aws_lambda_function" "findings_processor" {
   timeout       = 300 # 5 minutes -- comparison call + S3 writes
   memory_size   = 256
 
-  s3_bucket        = aws_s3_bucket.data_lake.id
-  s3_key           = "lambda-packages/data-pipeline.zip"
-  source_code_hash = local.prod_source_hash
+  s3_bucket = aws_s3_bucket.data_lake.id
+  s3_key    = "lambda-packages/data-pipeline.zip"
 
   environment {
     variables = {

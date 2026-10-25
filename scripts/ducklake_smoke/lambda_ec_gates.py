@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from typing import Any
 
 from scripts.ducklake_smoke import core
 from src.common import ducklake_runtime
@@ -188,8 +190,154 @@ def lambda_churn_incontainer(*, profile: str | None = None, region: str = "eu-we
     )
 
 
+_ABSENT_SESSION = "01ARZ3NDEKTSV4RRFFQ69G5FAV"  # a canonical ULID no real session derives to (2016 prefix)
+_MALFORMED_MARKER = "not-a-session-id-MARKER"
+_TELEMETRY_TABLES = {"telemetry_sessions", "telemetry_observations", "telemetry_transcripts", "telemetry_agents"}
+
+
+def _verification_verb_checks(call: Any, fail: Any) -> None:
+    """The three verification verbs (rec-4025): an absent tree answers none, bad inputs answer 400 without an echo, and the
+    window verbs answer over today. Failure text names the condition and counts only, never a response body."""
+
+    def named(verb: str, params: dict) -> Any:
+        return call({"action": "named_read", "verb": verb, "params": params})
+
+    tree = {"session_id": _ABSENT_SESSION, "offset": 0, "max_rows": 5}
+    absent = named("session_tree_rows", tree)
+    if absent.status_code != 200 or absent.json().get("row_count") != 0:
+        fail("session_tree_rows on an absent session did not answer zero rows", f"status={absent.status_code}")
+    for label, params, marker in (
+        ("a malformed session_id", {**tree, "session_id": _MALFORMED_MARKER}, _MALFORMED_MARKER),
+        ("a max_rows of 0", {**tree, "max_rows": 0}, None),
+    ):
+        refused = named("session_tree_rows", params)
+        if refused.status_code != 400 or "named_read_input" not in refused.text or (marker and marker in refused.text):
+            fail(f"session_tree_rows with {label} must answer 400 named_read_input without echoing it", refused.status_code)
+    today = datetime.now(timezone.utc)
+    window: dict[str, object] = {"day_from": today.date().isoformat(), "day_to": today.date().isoformat()}
+    calls: tuple[tuple[str, dict[str, object]], ...] = (
+        ("telemetry_orphan_counts", {**window, "as_of": today.isoformat()}),
+        ("telemetry_root_sessions", window),
+    )
+    for verb, params in calls:
+        answered = named(verb, params)
+        if answered.status_code != 200 or not answered.json().get("ok"):
+            fail(f"{verb} did not answer over today's window", f"status={answered.status_code}")
+
+
+def _telemetry_read_checks(*, profile: str | None, region: str) -> None:
+    """The reader's telemetry slot (rec-4291): describe, health, absent and malformed sessions, verification verbs."""
+    from src.common.ducklake_event_read_verbs import EVENT_READS  # noqa: PLC0415
+
+    url = core._function_url("reader")
+
+    def call(payload: dict) -> Any:
+        return core._sigv4_invoke(url, payload, profile=profile, region=region)
+
+    def fail(reason: str, detail: object) -> None:
+        raise core.SmokeTestFailure(f"TELEMETRY_READS FAIL: {reason}: {detail}")
+
+    verbs = core._ok_json(call({"action": "describe"})).get("verbs", {})
+    for name, entry in EVENT_READS.items():
+        described = verbs.get(name) or {}
+        if described.get("kind") != "event_journal" or described.get("agent_facing") is not entry.agent_facing:
+            fail(f"describe does not list {name} as an event_journal verb with agent_facing={entry.agent_facing}", described)
+    health = core._ok_json(call({"action": "named_read", "verb": "telemetry_health_count", "params": {}}))
+    if {row.get("table_name") for row in health.get("rows", [])} != _TELEMETRY_TABLES:
+        fail("telemetry_health_count did not answer for all four tables", health)
+    as_of = datetime.now(timezone.utc).isoformat()
+    absent = core._ok_json(
+        call(
+            {
+                "action": "named_read",
+                "verb": "session_state_and_duration",
+                "params": {"session_id": _ABSENT_SESSION, "as_of": as_of},
+            }
+        )
+    )
+    if absent.get("row_count") != 0:
+        fail("a well-formed absent session_id returned rows", absent)
+    bad = call(
+        {
+            "action": "named_read",
+            "verb": "session_state_and_duration",
+            "params": {"session_id": _MALFORMED_MARKER, "as_of": as_of},
+        }
+    )
+    if bad.status_code != 400 or _MALFORMED_MARKER in bad.text or "named_read_input" not in bad.text:
+        fail("a malformed session_id must answer 400 named_read_input without echoing the value", bad.status_code)
+    _verification_verb_checks(call, fail)
+    print("TELEMETRY_READS_OK")
+
+
+_DQ_GATE_REQUESTS: dict[str, tuple[str, dict[str, Any]]] = {
+    "row_count_min": ("ops_recommendations", {"min": 1}),
+    "recency_hours": ("ops_recommendations", {"column": "last_updated_timestamp", "hours": 168}),
+    "not_null": ("ops_recommendations", {"column": "title", "exclude_before": "2026-05-01"}),
+    "accepted_values": ("ops_recommendations", {"column": "status", "values": ["open", "closed"]}),
+    "min_length": ("ops_recommendations", {"column": "context", "value": 80, "exclude_before": "2026-05-01"}),
+    "pattern": ("ops_decisions", {"column": "id", "value": "^dec-[0-9]+$"}),
+    "array_element_format": ("ops_recommendations", {"column": "tags", "pattern": "^[a-z][a-z0-9-]*$"}),
+    "not_before": ("ops_recommendations", {"column": "last_updated_timestamp", "value": "created_timestamp"}),
+    "min_value": ("ops_priority_queue", {"column": "rank", "value": 1}),
+    "unique": ("ops_execution_plans", {"columns": ["rec_id", "revision"], "projection": "history"}),
+    "history_not_ahead_of_current": ("ops_execution_plans", {"column": "revision"}),
+    "key_absent": ("ops_recommendations", {"column": "id", "value": "rec-0"}),
+}
+_UNKNOWN_COLUMN_MARKER = "no_such_column_marker"
+
+
+def dq_check_gate(*, profile: str | None = None, region: str = "eu-west-2") -> None:
+    """The reader's dq_check action: every kind answers a counts-only 200 stamped with the repository's check_version, a
+    telemetry table and an unknown column each answer a typed 400 that names the parameter and not the value. Failure text
+    names the condition only, never a response body; the success line carries no counts."""
+    from src.common import ducklake_dq_checks as dq  # noqa: PLC0415
+
+    url = core._function_url("reader")
+
+    def call(check: str, table: str, params: dict[str, Any]) -> Any:
+        payload = {"action": "dq_check", "check": check, "table": table, "params": params}
+        return core._sigv4_invoke(url, payload, profile=profile, region=region)
+
+    def fail(reason: str) -> None:
+        raise core.SmokeTestFailure(f"DQ_CHECK FAIL: {reason}")
+
+    if set(_DQ_GATE_REQUESTS) != set(dq.DQ_KINDS):
+        fail("the gate's request table does not cover exactly the repository's kinds")
+    for kind, (table, params) in _DQ_GATE_REQUESTS.items():
+        answered = call(kind, table, params)
+        body = answered.json() if answered.status_code == 200 else {}
+        count = body.get("violation_count")
+        if answered.status_code != 200 or isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            fail(f"{kind} did not answer 200 with an integer violation_count (status {answered.status_code})")
+        if body.get("check_version") != dq.check_version(kind):
+            fail(f"{kind} answered a check_version that differs from the repository's (deployed reader not at this code)")
+        if "rows" in body:
+            fail(f"{kind} answered row data")
+    refused = call("not_null", "telemetry_sessions", {"column": "session_id"})
+    if refused.status_code != 400 or "dq_check_input" not in refused.text or '"table"' not in refused.text:
+        fail("a dq_check on a telemetry table must answer 400 dq_check_input naming the table parameter")
+    unknown = call("not_null", "ops_recommendations", {"column": _UNKNOWN_COLUMN_MARKER})
+    if unknown.status_code != 400 or "dq_check_input" not in unknown.text or _UNKNOWN_COLUMN_MARKER in unknown.text:
+        fail("an unknown column must answer 400 dq_check_input naming the column parameter without echoing it")
+    print(f"DQ_CHECK_OK kinds={len(_DQ_GATE_REQUESTS)}")
+
+
+def retired_actions_gate(*, profile: str | None = None, region: str = "eu-west-2") -> None:
+    """query_ops is retired (Decision 84 I-3 follow-up): the reader answers 400 unknown action and lists no such action.
+    Failure text names the condition only, never a response body."""
+    answered = core._sigv4_invoke(core._function_url("reader"), {"action": "query_ops"}, profile=profile, region=region)
+    actions = answered.json().get("actions") if answered.status_code == 400 else None
+    if not isinstance(actions, list) or "query_ops" in actions or "dq_check" not in actions:
+        raise core.SmokeTestFailure(
+            "QUERY_OPS_RETIRED FAIL: query_ops must answer 400 unknown action with an action list that lacks it "
+            f"(status {answered.status_code})"
+        )
+    print("QUERY_OPS_RETIRED")
+
+
 def lambda_reader(*, profile: str | None = None, region: str = "eu-west-2") -> None:
-    """EC1/boundary: reader returns current rows; the read role cannot write (closed boundary)."""
+    """EC1/boundary: reader returns current rows; the read role cannot write (closed boundary); the telemetry reads answer."""
     read_body = core._ok_json(
         core._sigv4_invoke(
             core._function_url("reader"), {"action": "read_current", "limit": 5}, profile=profile, region=region
@@ -201,6 +349,9 @@ def lambda_reader(*, profile: str | None = None, region: str = "eu-west-2") -> N
     if not (read_body.get("row_count", 0) >= 1 and probe.get("write_denied") is True):
         raise core.SmokeTestFailure(f"READER FAIL: read={read_body} write_probe={probe}")
     print(f"READER OK rows={read_body['row_count']} write_denied=true")
+    _telemetry_read_checks(profile=profile, region=region)
+    retired_actions_gate(profile=profile, region=region)
+    dq_check_gate(profile=profile, region=region)
 
 
 def _warm_reuse_probe(role: str, *, profile: str | None, region: str, attempts: int = 6) -> dict:

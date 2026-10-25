@@ -34,7 +34,7 @@ log "Verifying AWS profile '$PROFILE' (static-key assume-role chain)..."
 if arn="$(aws sts get-caller-identity --profile "$PROFILE" --query Arn --output text 2>&1)"; then
     log "OK: assumed $arn"
     log "  Note: get-caller-identity needs no IAM permissions. If ops calls still fail with"
-    log "  AccessDenied, the role's runtime grant is missing -- see terraform/personal/platform_roles.tf."
+    log "  AccessDenied, the role's runtime grant is missing -- see terraform/bootstrap/platform_dev_policies.tf."
 else
     log "WARNING: could not assume '$PROFILE':"
     log "  $arn"

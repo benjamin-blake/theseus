@@ -188,7 +188,6 @@ class TestCredentialsOrderingInMain:
             patch("scripts.preflight.aws_infra._handle_credentials_startup", side_effect=_track_creds),
             patch("scripts.sync.ops.warm_sync", side_effect=_track_sync),
             patch("scripts.preflight.context_docs.parse_last_session", return_value=""),
-            patch("scripts.preflight.recs_cache.count_recommendations", return_value=(0, 0, 0, [])),
             patch("scripts.preflight.priority_queue.read_priority_queue", return_value=[]),
             patch("scripts.preflight.priority_queue.print_priority_queue"),
             patch(

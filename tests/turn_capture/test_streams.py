@@ -6,7 +6,18 @@ from collections import Counter
 from pathlib import Path
 
 from src.turn_capture import streams
-from src.turn_capture.streams import ROOT, classify, emitting_streams, is_background_completion, parse_tree
+from src.turn_capture.streams import (
+    API_ERROR_FLAG_KEYS,
+    HARNESS_DENIAL_PREFIXES,
+    HARNESS_INTERRUPT_SENTINELS,
+    ROOT,
+    TOOL_DENIAL_OUTCOMES,
+    classify,
+    emitting_streams,
+    is_api_error,
+    is_background_completion,
+    parse_tree,
+)
 from src.turn_capture.transcript import FsTree, MemTree
 from tests.fixtures.turn_capture_corpus import (
     SID,
@@ -16,9 +27,17 @@ from tests.fixtures.turn_capture_corpus import (
     hook,
     make_files,
     prompt,
+    stop_summary,
+    task_notice,
     text_block,
     tool_result,
     tool_use_block,
+    witness,
+)
+from tests.fixtures.turn_capture_v3_cases import (
+    fork_branch_copied_head_files,
+    fork_session_copied_head_files,
+    fork_session_nested_files,
 )
 
 
@@ -266,3 +285,198 @@ def test_limits_truncate_each_file() -> None:
     cut = parse_tree(tree, {ROOT: 2}, False)
     assert len(cut.streams[ROOT].recs) == 2 and cut.spawns == [] and cut.lines_total == {ROOT: 2}
     assert parse_tree(tree, {}, False).streams[ROOT].recs == []
+
+
+def test_spike_pinned_constants() -> None:
+    assert HARNESS_INTERRUPT_SENTINELS == ("[Request interrupted by user]", "[Request interrupted by user for tool use]")
+    assert HARNESS_DENIAL_PREFIXES == () and API_ERROR_FLAG_KEYS == ("isApiErrorMessage",)
+    assert TOOL_DENIAL_OUTCOMES == {"permission-rule": "blocked", "user-rejected": "interrupted"}
+
+
+def _parse_files(files, limits=None):
+    return parse_tree(MemTree(files), limits, True)
+
+
+def test_inherited_records_are_classified_and_left_out_of_the_stream() -> None:
+    diag: Counter[str] = Counter()
+    ok = {"uuid": "u", "timestamp": "2026-01-01T00:00:00.000Z", "type": "user", "promptId": "p", "message": {"content": "x"}}
+    assert classify(ok, diag, inherited=True) == "inherited" and diag["inherited_records"] == 1
+    assert classify(ok, diag) == "prompt"
+    branch = _parse_files(fork_branch_copied_head_files())
+    assert branch.diag["inherited_records"] == 4
+    assert [r.uuid for r in branch.streams[ROOT].recs if r.data.get("uuid")] == ["sys1", "o1", "o2", "o3"]
+    assert [t.prompt_id for t in branch.streams[ROOT].turns] == ["op1", "op2"]
+    session = _parse_files(fork_session_copied_head_files())
+    assert session.diag["inherited_records"] == 4
+    assert [t.prompt_id for t in session.streams[ROOT].turns] == ["op1", "op2"]
+    nested = _parse_files(fork_session_nested_files())
+    assert nested.diag["inherited_records"] == 7 and [t.prompt_id for t in nested.streams[ROOT].turns] == ["op1", "op2"]
+
+
+def test_inheritance_is_a_function_of_the_prefix() -> None:
+    files = fork_session_copied_head_files()
+    before = _parse_files(files, {ROOT: 4})
+    assert before.diag["inherited_records"] == 0 and len(before.streams[ROOT].recs) == 4
+    after = _parse_files(files, {ROOT: 5})
+    assert after.diag["inherited_records"] == 4
+    nested = fork_session_nested_files()
+    assert _parse_files(nested, {ROOT: 7}).diag["inherited_records"] == 4
+    assert _parse_files(nested, {ROOT: 8}).diag["inherited_records"] == 7
+
+
+def test_inheritance_never_applies_to_a_subagent_file() -> None:
+    kid = [
+        child(prompt("c1", 2, "p1", "t"), "ag1"),
+        child({**assistant("c2", 3, "mc", [text_block("w")]), "forkedFrom": {}}, "ag1"),
+    ]
+    root = [
+        prompt("u1", 1, "p1", "go"),
+        assistant("a1", 1.5, "m1", [tool_use_block("tuA", "Agent", {})]),
+        tool_result("r1", 1.6, "tuA", "done", pid="p1", tur={"agentId": "ag1", "isAsync": False}),
+    ]
+    tree = parsed(root, {"ag1": kid}, final=True)
+    assert tree.diag["inherited_records"] == 0 and len(tree.streams["ag1"].recs) == 2
+
+
+def test_synthetic_and_api_error_assistant_records() -> None:
+    diag: Counter[str] = Counter()
+    ok = {
+        "uuid": "u",
+        "timestamp": "2026-01-01T00:00:00.000Z",
+        "type": "assistant",
+        "message": {"id": "m", "content": [], "model": "<synthetic>"},
+    }
+    assert classify(ok, diag) == "other" and diag["synthetic_assistant_records"] == 1
+    flagged = {**ok, "isApiErrorMessage": True}
+    assert (
+        classify(flagged, diag) == "assistant"
+        and is_api_error(flagged)
+        and not is_api_error({**ok, "isApiErrorMessage": False})
+    )
+    assert not is_api_error({**flagged, "type": "user"}) and diag["synthetic_assistant_records"] == 1
+    root = [
+        prompt("u1", 1, "p1", "go"),
+        assistant(
+            "e1",
+            2,
+            "00000000-0000-4000-8000-0000000000e1",
+            [text_block("API Error")],
+            model="<synthetic>",
+            isApiErrorMessage=True,
+        ),
+        prompt("u2", 3, "p2", "again"),
+        assistant(
+            "s1",
+            4,
+            "00000000-0000-4000-8000-0000000000e2",
+            [text_block("No response requested.")],
+            model="<synthetic>",
+            isApiErrorMessage=False,
+        ),
+        assistant("a2", 5, "m2", [text_block("fine")]),
+    ]
+    tree = parsed(root, final=True)
+    first, second = tree.streams[ROOT].turns
+    assert first.last_assistant is not None and first.last_assistant.uuid == "e1" and first.responses == []
+    assert [r.message_id for r in second.responses] == ["m2"] and tree.diag["synthetic_assistant_records"] == 1
+
+
+def _background_root(agent: str, *tail: dict) -> list[dict]:
+    return [*_spawn_root(agent, bg=True, notify=False), *tail]
+
+
+def test_background_spawn_collects_every_notice_in_order() -> None:
+    tail = (
+        task_notice("n1", 4, "b1", "completed"),
+        task_notice("n9", 4.5, "other", "failed"),
+        task_notice("n2", 5, "b1", "failed"),
+        task_notice("n3", 6, "b1", None),
+        task_notice("n4", 7, "b1", raw_status="<status>bad value</status>\n"),
+        task_notice("n5", 8, "b1", raw_status="<status>unclosed\n"),
+    )
+    tree = parsed(_background_root("b1", *tail), {"b1": _kid("b1")})
+    spawn = tree.spawns[0]
+    assert [n.uuid for n in spawn.notices] == ["n1", "n2", "n3", "n4", "n5"] and spawn.close_rec.uuid == "n1"
+    assert [streams.notice_status(n) for n in spawn.notices] == ["completed", "failed", None, "malformed", "malformed"]
+    assert spawn.complete and not spawn.completed_at_boundary
+    nested = _kid("b1") + [
+        child(assistant("c3", 3.6, "mc2", [tool_use_block("tuB", "Agent", {"run_in_background": True})]), "b1"),
+        child(tool_result("c4", 3.7, "tuB", "x", pid="p1", tur={"agentId": "g1", "isAsync": True}), "b1"),
+        child(task_notice("cn1", 3.8, "g1", "killed"), "b1"),
+        child(task_notice("cn2", 3.9, "g1", "completed"), "b1"),
+    ]
+    deep = parsed(_spawn_root("b1", bg=False, notify=False), {"b1": nested, "g1": _kid("g1")})
+    inner = next(sp for sp in deep.spawns if sp.agent_id == "g1")
+    assert [n.uuid for n in inner.notices] == ["cn1", "cn2"]
+
+
+def test_background_spawn_completes_at_a_later_resume_boundary() -> None:
+    resume = hook("rs", 10, "SessionStart:resume")
+    root = _background_root("b1", resume, prompt("u2", 11, "p2", "again"))
+    tree = parsed(root, {"b1": _kid("b1")})
+    spawn = tree.spawns[0]
+    assert spawn.complete and spawn.completed_at_boundary and spawn.close_rec is None and spawn.notices == []
+    assert tree.streams["b1"].turns[0].closed and tree.diag["background_completed_at_resume"] == 1
+    late = parsed(_background_root("b1", resume, task_notice("n1", 12, "b1", "completed")), {"b1": _kid("b1")})
+    assert late.spawns[0].completed_at_boundary and late.spawns[0].close_rec.uuid == "n1"
+    assert late.diag["notice_after_boundary"] == 1
+    before = parsed(_background_root("b1", task_notice("n1", 5, "b1"), resume), {"b1": _kid("b1")})
+    assert not before.spawns[0].completed_at_boundary and before.diag["background_completed_at_resume"] == 0
+    nested = _kid("b1") + [
+        child(assistant("c3", 3.6, "mc2", [tool_use_block("tuB", "Agent", {"run_in_background": True})]), "b1"),
+        child(tool_result("c4", 3.7, "tuB", "x", pid="p1", tur={"agentId": "g1", "isAsync": True}), "b1"),
+        child(hook("crs", 3.8, "SessionStart:resume"), "b1"),
+    ]
+    deep = parsed(_spawn_root("b1", bg=False, notify=False), {"b1": nested, "g1": _kid("g1")})
+    inner = next(sp for sp in deep.spawns if sp.agent_id == "g1")
+    assert not inner.complete and not inner.completed_at_boundary
+    assert tree.streams[ROOT].resume_ends == {tree.streams[ROOT].resumes[0].line: tree.streams[ROOT].recs[-1].line}
+
+
+def framed(root, final=False, frontier=True):
+    return parse_tree(MemTree(make_files(root)), None, final, frontier=frontier)
+
+
+def test_the_frontier_withholds_an_open_turns_tail_only_when_asked() -> None:
+    root = [
+        prompt("u1", 1, "p1", "go"),
+        assistant("a1", 2, "m1", [text_block("k")]),
+        witness("w1", 3),
+        stop_summary("s1", 3.1),
+        hook("late", 3.2, "Notification", command="bash ./x.sh"),
+    ]
+    kept = framed(root)
+    turn = kept.streams[ROOT].turns[0]
+    assert [r.uuid for r in turn.closes] == ["w1"] and turn.closed and not turn.bounded
+    assert [r.uuid for r in kept.streams[ROOT].recs][-1] == "w1" and kept.diag["frontier_withheld"] == 2
+    assert [h.uuid for h in kept.streams[ROOT].hooks] == ["w1"]
+    whole = framed(root, frontier=False)
+    assert len(whole.streams[ROOT].recs) == 5 and "frontier_withheld" not in whole.diag
+    assert framed(root, final=True).streams[ROOT].turns[0].bounded
+
+
+def test_nothing_is_withheld_without_an_open_last_turn_or_a_tail() -> None:
+    assert framed([hook("h0", 0.5, "SessionStart:startup")]).streams[ROOT].turns == []
+    resumed = [
+        prompt("u1", 1, "p1", "go"),
+        assistant("a1", 2, "m1", [text_block("k")]),
+        hook("rs", 3, "SessionStart:resume", command="bash ./r.sh"),
+        hook("rs2", 3.5, "SessionStart:resume", command="bash ./r.sh"),
+    ]
+    bounded = framed(resumed)
+    assert bounded.streams[ROOT].turns[0].bounded and "frontier_withheld" not in bounded.diag
+    tail = framed([prompt("u1", 1, "p1", "go"), assistant("a1", 2, "m1", [text_block("k")]), witness("w1", 3)])
+    assert "frontier_withheld" not in tail.diag and tail.streams[ROOT].turns[0].closes
+
+
+def test_witness_counters_survive_the_frontier_cut() -> None:
+    pending = [
+        prompt("u1", 1, "p1", "go"),
+        assistant("a1", 2, "m1", [tool_use_block("t1", "Bash", {"command": "ls"})]),
+        witness("w1", 3),
+        tool_result("r1", 4, "t1", "out", pid="p1"),
+    ]
+    cut = framed([witness("w0", 0.5), *pending])
+    assert cut.diag["witness_not_at_rest"] == 1 and cut.diag["witness_outside_turn"] == 1
+    assert cut.diag["frontier_withheld"] == 3 and cut.streams[ROOT].turns[0].closes == []
+    assert not cut.streams[ROOT].turns[0].closed

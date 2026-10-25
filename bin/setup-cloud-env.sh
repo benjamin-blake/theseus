@@ -51,26 +51,21 @@
 # the field runs bash from a working directory that is NOT the repo root.
 # Changing the field value is a manual step (out-of-repo).
 #
-# GITHUB MCP (full toolset incl. Actions) -- GITHUB_MCP_PAT
+# GITHUB MCP (full toolset incl. Actions)
 # The repo-root .mcp.json defines a `github-full` GitHub MCP server (stdio; the
-# github-mcp-server binary installed by step 6 below). It reads a GitHub PAT at
-# runtime from ~/.config/gh-mcp/token. Supply that token via the PRIVATE "Setup
-# script" field -- NOT the env-var field: a PAT is a credential and the env-var
-# field is visible to anyone using the environment. Add this next to the ~/.aws
-# block above, filling <PAT> from a fine-grained, read-only, single-repo
-# (theseus), short-expiry GitHub token:
+# github-mcp-server binary installed by step 6 below). It reads its token at
+# runtime from ~/.config/gh-mcp/token. In a Claude Code cloud session the agent
+# proxy substitutes the session's own GitHub credential on every api.github.com
+# request, so that file holds the literal placeholder proxy-injected, never a PAT
+# (retired before the otl-labs transfer; docs/contracts/github-org-transfer.yaml
+# unaffected_bindings). Add this to the PRIVATE "Setup script" field next to the
+# ~/.aws block above:
 #
 #     mkdir -p "$HOME/.config/gh-mcp"
-#     cat > "$HOME/.config/gh-mcp/token" <<'EOF'
-#     <PAT>
-#     EOF
+#     printf 'proxy-injected\n' > "$HOME/.config/gh-mcp/token"
 #     chmod 600 "$HOME/.config/gh-mcp/token"
 #
-# This keeps the token out of the process environment (mirrors the ~/.aws file
-# pattern); the committed .mcp.json carries no secret. Changes apply to NEW
-# sessions. (Alternative, not used: a remote http server in .mcp.json with
-# `Authorization: Bearer ${GITHUB_MCP_PAT}` from the env-var field -- rejected
-# because it puts the credential in the process environment.)
+# The committed .mcp.json carries no secret. Changes apply to NEW sessions.
 #
 # Responsibility split (post T0.2 refactor):
 #   setup-cloud-env.sh -- snapshot-cached installs plus Codex bootstrap parity for Claude's SessionStart checks.

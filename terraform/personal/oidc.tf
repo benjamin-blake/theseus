@@ -11,27 +11,34 @@
 # The account ID in ARNs comes from var.account_id (gitignored tfvars); never a committed literal.
 
 locals {
-  # CONTRACTED STEADY STATE (Decision 172 / PLAN-oidc-trust-contraction-closure): the dual-slug
-  # transition (Decision 171 / PLAN-repo-rename-relicense) is over. Both pre-rename name-only
-  # entries were unmintable post-rename and have been removed with live proof -- all five CI
-  # roles verified assuming under the immutable subject before this contraction landed. Every sub
-  # site below MUST iterate this list -- never re-introduce a scalar `github_repo` local. This
-  # list MUST stay identical to terraform/bootstrap's; the two roots cannot reference each other,
-  # so agreement is enforced by tests/checks/iam_tf/test_oidc_trust_slug_invariants.py.
+  # PRE-STAGED STATE (Decision 218 / PLAN-oidc-owner-segment-prestage): the list carries the current
+  # segment and, additively beside it, the otl-labs/ontheloop target segment, so the GitHub
+  # organisation transfer cannot lock CI out. The current segment is removed only by the contract's
+  # predecessor_removal phase, with live proof of the target first. Every sub site below MUST iterate
+  # this list -- never re-introduce a scalar `github_repo` local. This list MUST stay identical to
+  # terraform/bootstrap's; the two roots cannot reference each other, so agreement is enforced by
+  # tests/checks/iam_tf/test_oidc_trust_slug_invariants.py and validate_github_org_transfer.
+  #
+  # CONTRACTED STEADY STATE (history, Decision 172 / PLAN-oidc-trust-contraction-closure): the
+  # dual-slug transition (Decision 171 / PLAN-repo-rename-relicense) ended when both pre-rename
+  # name-only entries, unmintable post-rename, were removed with live proof.
   #
   # IMMUTABLE-SUBJECT ENTRY (Decision 172): a repo SEGMENT of the form
   # "OWNER@OWNER-ID/REPO@REPO-ID", never a full "repo:" sub prefix (every sub site below already
   # renders "repo:${repo}:<suffix>"; a "repo:"-prefixed entry here would render "repo:repo:..."
   # and match nothing). GitHub mints this immutable numeric-id subject for any repository renamed
-  # or transferred after 2026-07-15 -- benjamin-blake/theseus renamed at 2026-08-15T12:55:57Z and
-  # now presents ONLY this shape. The numeric ids -- not the name -- are the durable identity: a
-  # future rename changes only the NAME half, so Decision 172 point 2's pre-stage playbook adds
-  # the future name's immutable entry to this list ADDITIVELY, BEFORE the rename lands, which is
-  # what keeps a future rename from repeating this outage. Never narrow this list to zero entries,
-  # and never remove an entry without live proof of the replacement first -- the exact discipline
-  # this contraction itself followed.
+  # or transferred after 2026-07-15 -- benjamin-blake/theseus renamed at 2026-08-15T12:55:57Z, then
+  # moved to otl-labs/ontheloop in one transfer-and-rename (Decision 218), and now presents ONLY
+  # this shape under the otl-labs segment. The repository id -- not the name -- is the durable
+  # identity: a rename changes only the REPO name half and a transfer the OWNER half (login and
+  # id), so Decision 172 point 2's pre-stage playbook adds the future identity's immutable entry to
+  # this list ADDITIVELY, BEFORE the move lands, which is what keeps a future rename or transfer
+  # from repeating the 2026-08-15 outage. Never narrow this list to zero entries, and never remove
+  # an entry without live proof of the replacement first -- the exact discipline this contraction
+  # itself followed.
   github_repos = [
     "benjamin-blake@217728084/theseus@1252427466",
+    "otl-labs@330441623/ontheloop@1252427466",
   ]
 
   # T2.49 c2 hardening item 3 (single-source, DEP-12 / Decision 144): the RESERVED session-name
@@ -178,8 +185,9 @@ data "aws_iam_policy_document" "ci_full_refresh_read" {
   }
 
   statement {
-    # IAM read-quartet on the platform roles (codified in platform_roles.tf). Decision 35/98:
-    # enumerated literal ARNs, never a wildcard.
+    # IAM read-quartet on the agent-platform-* execution roles terraform/personal manages. Decision 35/98:
+    # enumerated literal ARNs, never a wildcard. PlatformDev and PlatformAdmin are bootstrap-owned and never
+    # CI-readable (Decision 225).
     sid    = "IAMPlatformRolesRead"
     effect = "Allow"
     actions = [
@@ -189,8 +197,6 @@ data "aws_iam_policy_document" "ci_full_refresh_read" {
       "iam:ListAttachedRolePolicies"
     ]
     resources = [
-      "arn:aws:iam::${var.account_id}:role/PlatformDev",
-      "arn:aws:iam::${var.account_id}:role/PlatformAdmin",
       "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-catalog-dr",
       "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-writer",
       "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-reader",
@@ -199,6 +205,12 @@ data "aws_iam_policy_document" "ci_full_refresh_read" {
       # refresh-readable by github_ci_planner once it enters terraform/personal state, or every
       # subsequent plan against this module fails closed with AccessDenied.
       "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-maintenance-smoke",
+      # Telemetry writer exec role (same refresh-read class as the maintenance-smoke entry above).
+      "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-telemetry-writer",
+      # Pre-staged for PLAN-telemetry-reader-and-smoke-twin's creates (the telemetry-writer precedent), so the
+      # planner's refresh reads never fail closed.
+      "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-telemetry-writer-smoke",
+      "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-telemetry-reader",
       # T2.43 gap (same class as rec-2688 for ducklake-deploy): these prod-class execution
       # roles must be refresh-readable by github_ci_planner once they enter terraform/personal
       # state, or every subsequent plan against this module fails closed with AccessDenied.

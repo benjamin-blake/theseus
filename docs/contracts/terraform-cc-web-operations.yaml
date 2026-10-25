@@ -34,6 +34,31 @@ contract:
     check: validate_terraform_cc_web_operations
 
 amendment_log:
+  - date: "2026-10-18"
+    semantic_break: false
+    change_class: prose_improvement
+    summary: >-
+      PLAN-project-region-single-source (rec-4067): state_location repoints the region from the
+      literal `eu-west-2` to `config/aws-region`, the project's one committed region source, and
+      the init command gains a -backend-config region flag reading it. config/aws-region joins
+      referenced_repo_paths. No rule changed.
+  - date: "2026-10-17"
+    semantic_break: false
+    change_class: prose_improvement
+    summary: >-
+      PLAN-platform-iam-personal-release (rec-3838): PlatformDev and PlatformAdmin moved to
+      terraform/bootstrap, so the two ExternalId state-fallback sources and admin_tier_only name
+      the terraform/bootstrap state and terraform/bootstrap/platform_dev_policies.tf;
+      referenced_repo_paths gains the two bootstrap files. The three variables stay declared in
+      terraform/personal until rec-4048. No rule changed.
+  - date: "2026-10-09"
+    semantic_break: false
+    change_class: prose_improvement
+    summary: >-
+      PLAN-url-only-invoke-guard (Decision 213 cl.5): operator_only_break_glass.scope's ADMIN-container
+      sentence now names human-directed ducklake maintenance actions under Decisions 204 and 213
+      (the telemetry scoped-login provisioning joins the partition-layout verbs). Prose-only -- no
+      rule changed.
   - date: "2026-09-26"
     semantic_break: false
     change_class: prose_improvement
@@ -111,12 +136,15 @@ referenced_repo_paths:
   - .github/workflows/terraform-drift.yml
   - .github/workflows/terraform-provider-mirror-seed.yml
   - bin/setup-cloud-env.sh
+  - config/aws-region
   - config/terraform/cc-web.tfrc
   - docs/contracts/deploy-paths.yaml
   - docs/contracts/environment-taxonomy.yaml
   - scripts/checks/iam_tf/validate_convergence_writer_isolation.py
   - scripts/ci/redaction_check.py
   - terraform/bootstrap/github_ci_apply.tf
+  - terraform/bootstrap/platform_dev_policies.tf
+  - terraform/bootstrap/platform_roles.tf
   - terraform/personal/backend-sandbox.hcl
   - terraform/personal/oidc.tf
   - terraform/personal/platform_roles.tf
@@ -151,6 +179,13 @@ provider_init_and_mirror:
     119 for the original constraint and Decision 120 for the realized reversal mechanism and its
     own reversal conditions (mirror sync ceasing to be maintained falls back to this section's
     original CI-delegated posture with no code change required).
+  backend_region: >-
+    No S3 backend block or backend file names a region (rec-4067): a hand-run init of
+    terraform/bootstrap, terraform/github or terraform/personal takes it from config/aws-region,
+    the project's one region, via `-backend-config="region=$(tr -d '[:space:]' < config/aws-region)"`,
+    and later plan and apply runs reuse it; CI init reads AWS_REGION from the sign-in. A
+    `.terraform` directory initialised before that change needs this init run once before its
+    next plan or apply.
 
 tfvars_and_remote_state_recovery:
   gitignored: >-
@@ -167,8 +202,9 @@ tfvars_and_remote_state_recovery:
     table below, and equally on a table entry for a variable the module no longer declares.
   state_location: >-
     State: `s3://agent-platform-data-lake/tfstate/personal/sandbox/terraform.tfstate` (region
-    `eu-west-2`), wired via `terraform -chdir=terraform/personal init
-    -backend-config=backend-sandbox.hcl`.
+    from `config/aws-region`), wired via `terraform -chdir=terraform/personal init
+    -backend-config=backend-sandbox.hcl -backend-config="region=$(tr -d '[:space:]' <
+    config/aws-region)"`.
   where_values_live:
     description: >-
       Per-variable recovery source. Prefer materialising the whole set at once from the same
@@ -192,13 +228,17 @@ tfvars_and_remote_state_recovery:
       source: >-
         The `agent-platform-terraform-personal-tfvars` Secrets Manager entry; also present as
         the PlatformDev IAM role's `assume_role_policy` trust document `sts:ExternalId`
-        condition in the remote state. Admin-tier only (see `admin_tier_only` below).
+        condition in the terraform/bootstrap remote state (`agent-platform-bootstrap-tfstate`,
+        which among container profiles only PlatformAdmin can read; terraform/personal state no
+        longer holds the role, rec-3838). Admin-tier only (see `admin_tier_only` below).
     platform_admin_external_id:
       declared_in: terraform/personal/variables.tf
       source: >-
         The `agent-platform-terraform-personal-tfvars` Secrets Manager entry; also present as
         the PlatformAdmin IAM role's `assume_role_policy` trust document `sts:ExternalId`
-        condition in the remote state. Admin-tier only (see `admin_tier_only` below).
+        condition in the terraform/bootstrap remote state (`agent-platform-bootstrap-tfstate`,
+        which among container profiles only PlatformAdmin can read; terraform/personal state no
+        longer holds the role, rec-3838). Admin-tier only (see `admin_tier_only` below).
     alerts_email:
       declared_in: terraform/personal/sns_alerts.tf
       source: >-
@@ -244,10 +284,12 @@ tfvars_and_remote_state_recovery:
     which only `PlatformAdmin` holds (AdminOps' wildcard-resource `SecretsManagerAdmin` Sid) --
     `PlatformDev`'s own `GetSecretValue` grant is scoped to the two inference-credential secret
     ARNs only (`InferenceCredentialsRead`), never this one. The state-parsing fallback requires
-    reading `tfstate/personal/*` directly, and only `PlatformAdmin` (the `agent_platform_admin`
-    profile) may do so -- `PlatformDev` is explicitly denied `s3:GetObject` on
-    `tfstate/personal/*` (the `DenyStateRead` statement in
-    `terraform/personal/platform_dev_policies.tf`'s DailyOps policy). Both procedures -- whether
+    reading remote state directly -- `tfstate/personal/*` for the personal variables and the
+    terraform/bootstrap state for the two ExternalIds -- and among container profiles only
+    `PlatformAdmin` (the `agent_platform_admin` profile) may do so: `PlatformDev` is explicitly
+    denied `s3:GetObject` on `tfstate/personal/*` (the `DenyStateRead` statement in
+    `terraform/bootstrap/platform_dev_policies.tf`'s DailyOps policy) and holds no grant on the
+    bootstrap state bucket. Both procedures -- whether
     run as the raw command or via the shared `materialise_tfvars.sh` delegate, which stays
     profile-free and relies on the same ambient admin-tier credentials -- are therefore
     unreachable from the routine runtime identity by design -- either requires deliberately
@@ -279,8 +321,8 @@ operator_only_break_glass:
     `docs/contracts/deploy-paths.yaml#admin_out_of_band.procedure` (Decision 127 / tier_item
     T2.41) -- not surfaced here. Wiring the `materialise_tfvars.sh` delegate call into
     `bin/setup-cloud-env.sh`'s `INSTALL_TERRAFORM=1` branch is not a deviation from that norm:
-    ADMIN containers are used for IAM changes, IAM planning, and (Decision 204) human-directed
-    ducklake partition-layout maintenance actions, so assuming the admin tier to boot one IS the
+    ADMIN containers are used for IAM changes, IAM planning, and human-directed ducklake
+    maintenance actions (Decisions 204 and 213), so assuming the admin tier to boot one IS the
     deliberate operator act Decision 126 asks for -- the container's existence is the
     authorization, not a gap a future agent needs to re-flag.
   apply_posture: >-

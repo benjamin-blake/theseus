@@ -6,8 +6,9 @@
 # out the push-to-main flow the workflow depends on. This module is human-gated LOCAL
 # apply only (see CLAUDE.md). NEVER add terraform/github/** to any apply-workflow path.
 #
-# Apply: see terraform/github/CLAUDE.md. Export GITHUB_TOKEN from Secrets Manager,
-# then: terraform -chdir=terraform/github init && plan && apply.
+# Apply: see terraform/github/CLAUDE.md. Export GITHUB_TOKEN from Secrets Manager, then init with
+# the region from config/aws-region (rec-4067): terraform -chdir=terraform/github init
+# -backend-config="region=$(tr -d '[:space:]' < config/aws-region)" && plan && apply.
 
 terraform {
   required_version = ">= 1.10"
@@ -20,7 +21,6 @@ terraform {
   backend "s3" {
     bucket       = "agent-platform-data-lake"
     key          = "tfstate/github/terraform.tfstate"
-    region       = "eu-west-2"
     encrypt      = true
     use_lockfile = true
   }

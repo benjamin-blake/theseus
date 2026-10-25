@@ -11,11 +11,10 @@ import sys
 from collections.abc import Callable
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from scripts import decisions_md
 from scripts.preflight import _common
-from src.common.ducklake_reader_client import DuckLakeReader
 
 # Session-log block grammar: group 1 is the whole header line, group 2 its date, group 3 the
 # optional Done line. ONE regex serves both call sites so parse_last_session and
@@ -156,11 +155,8 @@ def read_context_files(open_recs_count: int | None = None) -> dict:
     """Read key context documents and return a summary dict for plan.prompt.md.
 
     Args:
-        open_recs_count: Pre-computed open-recs count from the caller. When provided,
-            the open_recs verb query is skipped (dedup: avoids a second named() call
-            when main() has already fetched the count via _count_recommendations_reader).
-            Standalone callers (e.g. tests) may omit it; the function falls back to
-            its own open_recs query in that case.
+        open_recs_count: Open-recs count from the open_recs_tally row preflight already fetched, or None
+            when unavailable. No reader call is made here (Decision 215).
 
     Returns:
         Dict with keys: roadmap_phase, open_decisions_count, recent_sessions,
@@ -197,16 +193,8 @@ def read_context_files(open_recs_count: int | None = None) -> dict:
             entry += f" -- {done_line.strip()}"
         recent_sessions.append(entry)
 
-    # recommendations_count: use pre-computed count when available (avoids a second
-    # open_recs verb call when main() already fetched the count in Phase B).
-    if open_recs_count is not None:
-        recommendations_count = open_recs_count
-    else:
-        recommendations_count = 0
-        try:
-            recommendations_count = len(cast(DuckLakeReader, _common._make_reader()).named("open_recs"))
-        except Exception:  # noqa: BLE001
-            pass
+    # recommendations_count comes from the tally preflight already fetched; None when unavailable.
+    recommendations_count = open_recs_count
 
     return {
         "roadmap_phase": roadmap_phase,
@@ -427,7 +415,7 @@ def _check_endstate_drift() -> dict:
     Never raises, never changes the preflight exit code.
     """
     try:
-        import yaml  # noqa: PLC0415
+        from scripts.contract_rules import parse_yaml  # noqa: PLC0415
 
         context_text = (_common.ROOT / "docs" / "PROJECT_CONTEXT.md").read_text(encoding="utf-8")
         stamp_match = re.search(r"roadmap_tier_id_set sha256:\s*([a-f0-9]{64})", context_text)
@@ -445,7 +433,7 @@ def _check_endstate_drift() -> dict:
             }
         stamped_hash = stamp_match.group(1)
 
-        roadmap = yaml.safe_load((_common.ROOT / "docs" / "ROADMAP-PLATFORM.yaml").read_text(encoding="utf-8"))
+        roadmap = parse_yaml((_common.ROOT / "docs" / "ROADMAP-PLATFORM.yaml").read_text(encoding="utf-8"))
         _items = roadmap.get("tier_items", [])
         current_ids = sorted({str(i["id"]) for i in _items if isinstance(i, dict) and "id" in i})
         current_hash = hashlib.sha256("\n".join(current_ids).encode()).hexdigest()
@@ -476,7 +464,7 @@ def _check_endstate_drift() -> dict:
                     cwd=str(_common.ROOT),
                 )
                 if result.returncode == 0:
-                    old_roadmap = yaml.safe_load(result.stdout) or {}
+                    old_roadmap = parse_yaml(result.stdout) or {}
                     _old_items = old_roadmap.get("tier_items", [])
                     old_ids = sorted({str(i["id"]) for i in _old_items if isinstance(i, dict) and "id" in i})
                     if hashlib.sha256("\n".join(old_ids).encode()).hexdigest() == stamped_hash:

@@ -12,7 +12,6 @@ Modes:
     --metrics            Run session/metrics.py + roadmap/plan_audit.py; return combined output
     --close              Intent verification + SESSION_LOG entry + pre-commit sanity; output JSON
     --log-housekeeping   Commit and push uncommitted JSONL log files
-    --close-session      Finalise the active telemetry session opened by --open-session
     --auto "message"     Full session close in one command: close -> evidence -> metrics ->
                           commit -> rebase -> validate -> verify-head -> push -> portal sync
                           (PLAN-handoff-validates-committed-tree: the full tier now runs on the
@@ -26,7 +25,6 @@ Usage:
     python scripts/session/postflight.py --metrics
     python scripts/session/postflight.py --close
     python scripts/session/postflight.py --log-housekeeping
-    python scripts/session/postflight.py --close-session --outcome success
     python scripts/session/postflight.py --auto "feat: implement something" --steps-total 10 --steps-friction 2
 """
 
@@ -68,7 +66,6 @@ from scripts.postflight._common import (  # noqa: E402, F401
     MAX_COMMIT_RETRIES,
     PYTHON,
     ROOT,
-    TELEMETRY_ACTIVE_SESSION_FILE,
     _current_branch,
     _run,
     clear_checkpoint,
@@ -78,13 +75,13 @@ from scripts.postflight._common import (  # noqa: E402, F401
 from scripts.postflight.housekeeping import (  # noqa: E402, F401
     _load_max_age_days,
     _stage_document_derived_tables,
-    close_telemetry_session,
     prune_telemetry_logs,
     run_log_housekeeping,
     run_metrics,
 )
 from scripts.postflight.remote import run_push  # noqa: E402, F401
 from scripts.session import postflight_evidence  # noqa: E402
+from scripts.telemetry_capture.status_line import emit_status  # noqa: E402
 
 
 def _parse_scope_table(plan_content: str) -> dict[str, str]:
@@ -466,6 +463,24 @@ def run_auto(commit_message: str, steps_total: int = 0, steps_friction: int = 0)
     return 0 if results.get("status") == "merged" else rc
 
 
+def run_evidence(path: str) -> int:
+    """Write and render structured implementation evidence, reporting the outcome as a status line."""
+    try:
+        evidence = json.loads(Path(path).read_text(encoding="utf-8"))
+        postflight_evidence.validate(evidence)
+    except Exception:
+        emit_status("postflight.evidence", "failed", "invalid_evidence")
+        raise
+    try:
+        postflight_evidence.write(evidence)
+        print(postflight_evidence.render(evidence))
+    except Exception:
+        emit_status("postflight.evidence", "failed", "evidence_error")
+        raise
+    emit_status("postflight.evidence", "done")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Post-session automation")
     group = parser.add_mutually_exclusive_group(required=True)
@@ -481,12 +496,6 @@ def main() -> int:
         action="store_true",
         dest="log_housekeeping",
         help="Commit uncommitted JSONL logs",
-    )
-    group.add_argument(
-        "--close-session",
-        action="store_true",
-        dest="close_session",
-        help="Finalise the active telemetry session opened by --open-session",
     )
     group.add_argument(
         "--auto",
@@ -507,18 +516,6 @@ def main() -> int:
         metavar="M",
         help="Steps with retro-lite friction (forwarded to session_metrics.py).",
     )
-    parser.add_argument(
-        "--outcome",
-        default="success",
-        help="Session outcome for --close-session (success|failure|cancelled)",
-    )
-    parser.add_argument(
-        "--files-changed",
-        type=int,
-        default=0,
-        dest="files_changed",
-        help="Files changed (used with --close-session)",
-    )
 
     args = parser.parse_args()
 
@@ -533,18 +530,11 @@ def main() -> int:
     if args.metrics:
         return housekeeping.run_metrics(args.steps_total, args.steps_friction)
     if args.evidence:
-        evidence = json.loads(Path(args.evidence).read_text(encoding="utf-8"))
-        postflight_evidence.write(evidence)
-        print(postflight_evidence.render(evidence))
-        return 0
+        return run_evidence(args.evidence)
     if args.close:
         return run_close()
     if args.log_housekeeping:
         return housekeeping.run_log_housekeeping()
-    if args.close_session:
-        housekeeping.close_telemetry_session(outcome=args.outcome, files_changed=args.files_changed)
-        print(f"[close-session] outcome={args.outcome}")
-        return 0
     if args.auto:
         return run_auto(args.auto, args.steps_total, args.steps_friction)
 

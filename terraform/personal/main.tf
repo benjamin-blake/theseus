@@ -39,9 +39,11 @@ terraform {
   }
   # S3 backend with native state locking (use_lockfile). The data-lake bucket was bootstrapped
   # under the prior local backend, so the chicken-and-egg that motivated "local" no longer holds.
-  # Partial config: bucket/key/region/encrypt come from -backend-config=backend-sandbox.hcl so this
-  # block stays account-agnostic and a future backend-production.hcl is a pure config addition.
-  # One-time migration: terraform init -migrate-state -backend-config=backend-sandbox.hcl.
+  # Partial config: bucket/key/encrypt come from -backend-config=backend-sandbox.hcl, and the
+  # region from AWS_REGION in CI or a -backend-config region from config/aws-region at hand-run
+  # init (rec-4067); this block stays account-agnostic and a future backend-production.hcl is a
+  # pure config addition.
+  # One-time migration: terraform init -migrate-state -backend-config=backend-sandbox.hcl -backend-config="region=$(tr -d '[:space:]' < config/aws-region)".
   backend "s3" {
     use_lockfile = true
   }
@@ -141,6 +143,13 @@ resource "aws_s3_bucket_policy" "data_lake_https_only" {
 # TestDataLakeLifecycleGoverned in the companion test module). NO current-version expiration rule
 # on either: DuckLake addresses live Parquet by key, never by version id, so an age-based rule
 # here would delete data the catalog still references.
+#
+# A third rule (telemetry-blobs-noncurrent-reclaim) extends the Decision 192 noncurrent-reclaim family to a
+# non-DuckLake prefix, the telemetry blob store (T2.36 slice 2a-2). The same justification holds:
+# telemetry_transcripts.content_uri addresses a blob by key, never by version id, so noncurrent versions sit
+# outside the referenced set and the rule touches no referenced blob. Current blobs never expire, because
+# telemetry_transcripts rows reference them by content_uri; orphans are rec-4033's. The window moves with
+# SNAPSHOT_RETAIN_DAYS if rec-3870 changes it.
 # ---------------------------------------------------------------------------
 
 resource "aws_s3_bucket_lifecycle_configuration" "data_lake" {
@@ -183,6 +192,53 @@ resource "aws_s3_bucket_lifecycle_configuration" "data_lake" {
       # Same shape and window as the production rule above -- noncurrent_days stays bound to
       # SNAPSHOT_RETAIN_DAYS for BOTH rules; revisiting the retention window is rec-3870's
       # business, not this one's.
+      noncurrent_days = 30
+    }
+
+    expiration {
+      expired_object_delete_marker = true
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
+    }
+  }
+
+  rule {
+    id     = "telemetry-blobs-noncurrent-reclaim"
+    status = "Enabled"
+
+    filter {
+      prefix = "${local.telemetry_blob_data_prefix}/"
+    }
+
+    noncurrent_version_expiration {
+      # Same window as the DuckLake rules, bound to SNAPSHOT_RETAIN_DAYS and cross-checked by
+      # TestDataLakeLifecycleGoverned. No current-version expiration: telemetry_transcripts rows reference blobs by key.
+      noncurrent_days = 30
+    }
+
+    expiration {
+      expired_object_delete_marker = true
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
+    }
+  }
+
+  # Production telemetry catalog data (Decision 230). A sibling of ducklake/, not inside it: the ops catalog's
+  # catalog-wide orphan cleanup must never see these files, and the trailing slash keeps this prefix apart from
+  # ducklake/ and ducklake-neon-smoke/. Same noncurrent-only shape: DuckLake addresses Parquet by key.
+  rule {
+    id     = "ducklake-telemetry-noncurrent-reclaim"
+    status = "Enabled"
+
+    filter {
+      prefix = "${local.ducklake_telemetry_data_prefix}/"
+    }
+
+    noncurrent_version_expiration {
       noncurrent_days = 30
     }
 

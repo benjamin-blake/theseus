@@ -49,9 +49,12 @@ from scripts.preflight import (
     env_git,
     priority_queue,
     recs_cache,
+    telemetry_health,
 )
+from scripts.preflight.recs_signals_source import RecsSignalInputs
 from scripts.roadmap import platform_roadmap
 from tests.fixtures.platform_roadmap_state import live_state_dict
+from tests.fixtures.retired_session_cli import RETIRED_PREFLIGHT_FLAGS
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -93,6 +96,8 @@ FROZEN_REPORT_KEYS = frozenset(
         "priority_queue",
         "priority_queue_source",
         "recs_read_status",
+        "recs_read",
+        "ci_rca_open_total",
         "ci_rca_recs",
         "ci_rca_unresolved_recs",
         "ci_rca_likely_resolved_recs",
@@ -106,6 +111,7 @@ FROZEN_REPORT_KEYS = frozenset(
         "ci_rca_back_validation",
         "dedup_effectiveness_gauge",
         "dedup_effectiveness_escalation",
+        "telemetry_health",
         "recent_main_commits",
         "friction_patterns",
         "log_sync_result",
@@ -133,7 +139,7 @@ FROZEN_REPORT_KEYS = frozenset(
         "prose_context",
     }
 )
-assert len(FROZEN_REPORT_KEYS) == 51, "frozen report key list itself drifted -- fix the constant, not the assertion"
+assert len(FROZEN_REPORT_KEYS) == 54, "frozen report key list itself drifted -- fix the constant, not the assertion"
 
 # Frozen export list: every public function + every test-referenced private symbol from the
 # pre-refactor module (facade-resident + all 9 domain modules + _common + the back-compat
@@ -144,7 +150,6 @@ FROZEN_EXPORTS = frozenset(
         "ROOT",
         "TERRAFORM_DIR",
         "SESSION_LOG_FILE",
-        "RECOMMENDATIONS_FILE",
         "ROADMAP_FILE",
         "ROADMAP_PLATFORM_PATH",
         "DECISIONS_FILE",
@@ -173,11 +178,9 @@ FROZEN_EXPORTS = frozenset(
         "_prime_reader_url",
         "check_terraform_pending",
         # recs_cache
-        "_derive_open_recs",
         "_derive_decisions_max_updated",
         "_tally_rec_counts",
         "_count_recommendations_reader",
-        "count_recommendations",
         "_check_non_automatable_softcap",
         "_get_latest_decision_ts",
         # ci_rca_signals
@@ -234,9 +237,7 @@ FROZEN_EXPORTS = frozenset(
         "main",
         "_slim_roadmap_state",
         "_format_preflight_summary",
-        "open_telemetry_session",
         "PREFLIGHT_REPORT",
-        "TELEMETRY_ACTIVE_SESSION_FILE",
         # back-compat dead re-import (rec-2210) -- must keep resolving even though nothing calls it
         "_sync_ops_pull",
     }
@@ -247,9 +248,7 @@ FROZEN_EXPORTS = frozenset(
 _MOVED_SYMBOLS = FROZEN_EXPORTS - {
     "main",
     "_slim_roadmap_state",
-    "open_telemetry_session",
     "PREFLIGHT_REPORT",
-    "TELEMETRY_ACTIVE_SESSION_FILE",
     "_sync_ops_pull",
 }
 
@@ -303,6 +302,7 @@ def _base_stub_specs(report_path: Path) -> list[tuple[object, str, object]]:
         (alerts, "_check_forward_fix_recursion", None),
         (alerts, "_check_budget_bypass_alert", None),
         (dependabot, "check_stranded_prs", None),
+        (telemetry_health, "check_telemetry_health", {"status": "pass", "catalog": "ducklake_smoke", "tables": {}}),
         (priority_queue, "read_priority_queue", []),
         (correlation, "correlate_ci_rca_with_main", {"unresolved": [], "likely_resolved": []}),
         (context_docs, "parse_last_session", ""),
@@ -355,6 +355,8 @@ def _stubbed_main_env(report_path: Path, overrides: dict[tuple[object, str], obj
 
     with contextlib.ExitStack() as stack:
         stack.enter_context(patch("scripts.sync.ops.warm_sync", return_value=_warm_sync_stub()))
+        ok_inputs = RecsSignalInputs("ok", {"open_count": 0, "aging_count": 0, "non_automatable_count": 0}, [], None, {})
+        stack.enter_context(patch.object(_preflight, "fetch_recs_signal_inputs", return_value=ok_inputs))
         for target, attr, value in specs + extra:
             if (target, attr) in _DIRECT_VALUE_ATTRS:
                 stack.enter_context(patch.object(target, attr, value))
@@ -376,12 +378,12 @@ def _run_stubbed_main(
 
 
 class TestReportSchemaFreeze:
-    """A stubbed main() run's report top-level key set equals the frozen 51-key list."""
+    """A stubbed main() run's report top-level key set equals the frozen 54-key list."""
 
     def test_report_key_set_matches_frozen_keys(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
         _, report, _ = _run_stubbed_main(tmp_path, capsys)
         assert set(report.keys()) == FROZEN_REPORT_KEYS
-        assert len(report.keys()) == 51
+        assert len(report.keys()) == 54
 
 
 class TestFacadeCompleteness:
@@ -513,9 +515,9 @@ class TestStdoutSummaryPrefixFrozen:
 
 
 class TestArgparseFlagSurfaceFrozen:
-    """CLI flag surface is exactly {--health, --open-session, --workflow, --branch, --roadmap-detail}."""
+    """CLI flag surface is exactly {--health, --roadmap-detail}; every retired flag is absent."""
 
-    def test_help_lists_all_five_flags(self) -> None:
+    def test_help_lists_exactly_the_frozen_flags(self) -> None:
         result = subprocess.run(
             [sys.executable, "-m", "scripts.session.preflight", "--help"],
             capture_output=True,
@@ -526,8 +528,10 @@ class TestArgparseFlagSurfaceFrozen:
             timeout=30,
         )
         assert result.returncode == 0
-        for flag in ("--health", "--open-session", "--workflow", "--branch", "--roadmap-detail"):
+        for flag in ("--health", "--roadmap-detail"):
             assert flag in result.stdout, f"{flag} missing from --help output"
+        for flag in RETIRED_PREFLIGHT_FLAGS:
+            assert flag not in result.stdout, f"retired {flag} is back in --help output"
 
 
 class TestDecision88ReaderTopologyGuard:

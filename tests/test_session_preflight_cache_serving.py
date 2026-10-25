@@ -238,18 +238,15 @@ def _recs_fixture(now: datetime) -> list[dict]:
 class TestVerbEquivalence:
     """Each cache-served derivation EQUALS the canonical verb SQL run over the same rows."""
 
-    def test_open_recs_equivalence(self) -> None:
+    def test_open_recs_tally_equivalence(self) -> None:
         now = datetime.now(timezone.utc)
         rows = _recs_fixture(now)
         con = _con()
         _load_recs(con, rows)
-        verb_rows = _run_verb(con, "open_recs", "recs")
-        derived = _preflight._derive_open_recs(rows)
-        assert [r["id"] for r in derived] == [r["id"] for r in verb_rows]
-        # Same automatable + timestamp content per id (the tally consumes these).
-        for d, v in zip(derived, verb_rows):
-            assert bool(d["automatable"]) == bool(v["automatable"])
-            assert _norm_ts(d["created_timestamp"]) == _norm_ts(v["created_timestamp"])
+        (tally,) = _run_verb(con, "open_recs_tally", "recs")
+        counts = _preflight._count_recommendations_reader(tally)
+        assert counts[0] == sum(1 for r in rows if r["status"] == "open")
+        assert counts[2] == sum(1 for r in rows if r["status"] == "open" and not r["automatable"])
 
     def test_ci_rca_open_equivalence_with_limit(self) -> None:
         now = datetime.now(timezone.utc)
@@ -339,7 +336,7 @@ class TestVerbEquivalence:
 
 
 class TestPhaseBAbsenceOfReaderCalls:
-    """With fresh warm-sync rows, the Phase-B fan-out issues ZERO reader verb calls (acceptance crit 1)."""
+    """main() issues the two bounded recs reads (Decision 215) plus one creds-gated telemetry gauge call; Phase B adds ZERO."""
 
     def test_main_phase_b_makes_no_reader_calls(self, tmp_path: Path) -> None:
         verb_calls: dict[str, int] = {}
@@ -347,7 +344,9 @@ class TestPhaseBAbsenceOfReaderCalls:
 
         def _named(verb: str, **kwargs: object) -> list:
             verb_calls[verb] = verb_calls.get(verb, 0) + 1
-            return []
+            if verb == "open_recs_tally":
+                return [{"open_count": 2, "aging_count": 0, "non_automatable_count": 0}]
+            return _recs_fixture(datetime.now(timezone.utc)) if verb == "preflight_signal_rows" else []
 
         reader.named.side_effect = _named
         reader.current_state.side_effect = lambda *a, **k: (
@@ -356,13 +355,12 @@ class TestPhaseBAbsenceOfReaderCalls:
 
         warm = {
             "drained": {},
-            "pulled": {"ops_recommendations": 2, "ops_decisions": 1, "ops_priority_queue": 0},
+            "pulled": {"ops_decisions": 1, "ops_priority_queue": 0},
             "rows": {
-                "ops_recommendations": _recs_fixture(datetime.now(timezone.utc)),
                 "ops_decisions": [{"id": "dec-001", "last_updated_timestamp": "2026-06-12T00:00:00+00:00"}],
                 "ops_priority_queue": [],
             },
-            "reader_ok": {"ops_recommendations": True, "ops_decisions": True, "ops_priority_queue": True},
+            "reader_ok": {"ops_decisions": True, "ops_priority_queue": True},
         }
 
         freshness = {
@@ -390,7 +388,7 @@ class TestPhaseBAbsenceOfReaderCalls:
         ):
             _preflight.main()
 
-        assert verb_calls == {}, f"Phase B issued reader calls {verb_calls}; expected none (served from warm-sync rows)"
+        assert verb_calls == {"open_recs_tally": 1, "preflight_signal_rows": 1, "telemetry_health_count": 1}, verb_calls
 
 
 class TestLiveDuckLakeCiRcaOpenFile:

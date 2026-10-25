@@ -378,3 +378,34 @@ class TestValidateClassShapeRaisesForD:
         doc = {"contract": _class_d_meta()}
         with pytest.raises(ValidationError, match="load_contract_meta"):
             ContractDocument.model_validate(doc)
+
+
+class TestRealizationBlock:
+    def test_well_formed_block_loads(self) -> None:
+        doc = _class_a_doc()
+        doc["realization"] = {"produced": {"write_boundary": ["source"]}, "unproduced": {"rec-1": ["x"]}}
+        loaded = ContractDocument.model_validate(doc)
+        assert loaded.realization is not None
+        assert loaded.realization.produced == {"write_boundary": ["source"]}
+        assert loaded.realization.unproduced == {"rec-1": ["x"]}
+
+    def test_absent_block_is_none(self) -> None:
+        assert ContractDocument.model_validate(_class_a_doc()).realization is None
+
+    def test_unknown_inner_key_refused(self) -> None:
+        doc = _class_a_doc()
+        doc["realization"] = {"produced": {}, "unprodused": {}}
+        with pytest.raises(ValidationError):
+            ContractDocument.model_validate(doc)
+
+    def test_non_list_value_refused(self) -> None:
+        doc = _class_a_doc()
+        doc["realization"] = {"produced": {"write_boundary": "source"}}
+        with pytest.raises(ValidationError):
+            ContractDocument.model_validate(doc)
+
+    def test_misspelt_top_level_key_refused(self) -> None:
+        doc = _class_a_doc()
+        doc["realisation"] = {"produced": {}}
+        with pytest.raises(ValidationError):
+            ContractDocument.model_validate(doc)

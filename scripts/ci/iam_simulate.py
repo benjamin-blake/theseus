@@ -105,10 +105,11 @@ def build_triples(data: dict[str, Any], account_id: str, region: str) -> list[Tr
         if expected not in VALID_DECISIONS:
             raise ValueError(f"{triple_id}: expected_decision {expected!r} is not one of {VALID_DECISIONS}")
         target = resolve_placeholders(str(row["target_arn_template"]), account_id, region)
-        if "*" in target:
+        if "*" in target and target != "*":
             raise ValueError(
                 f"{triple_id}: target ARN {target!r} contains a wildcard -- the simulator matches the POLICY's "
-                "resource pattern against this literal string, so a wildcard here proves nothing"
+                "resource pattern against this literal string, so a wildcard here proves nothing "
+                "(only the bare '*' is accepted, for actions IAM scopes to no resource type)"
             )
         raw_context = row.get("required_context_keys") or {}
         if not isinstance(raw_context, dict):
@@ -117,6 +118,8 @@ def build_triples(data: dict[str, Any], account_id: str, region: str) -> list[Tr
             str(name): (
                 resolve_placeholders(str(value), account_id, region)
                 if isinstance(value, str)
+                else value
+                if isinstance(value, bool)
                 else [resolve_placeholders(str(v), account_id, region) for v in value]
             )
             for name, value in raw_context.items()
@@ -145,9 +148,17 @@ def principal_arn(data: dict[str, Any], account_id: str, region: str) -> str:
 
 
 def context_entries(triple: Triple) -> list[dict[str, Any]]:
-    """Fixture context mapping -> the ContextEntries shape SimulatePrincipalPolicy expects."""
+    """Fixture context mapping -> the ContextEntries shape SimulatePrincipalPolicy expects.
+
+    A YAML bool is sent as ContextKeyType "boolean" (a Bool condition key such as
+    lambda:InvokedViaFunctionUrl is not satisfied by a string-typed entry); strings and lists keep
+    "string" and "stringList".
+    """
     entries: list[dict[str, Any]] = []
     for name, value in sorted(triple.context.items()):
+        if isinstance(value, bool):
+            entries.append({"ContextKeyName": name, "ContextKeyValues": [str(value).lower()], "ContextKeyType": "boolean"})
+            continue
         values = [value] if isinstance(value, str) else [str(v) for v in value]
         entries.append(
             {

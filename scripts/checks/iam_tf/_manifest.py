@@ -110,4 +110,19 @@ ENTRIES: tuple[Entry, ...] = (
         ),
         full_segment="full_after_lint",
     ),
+    Entry(
+        name="validate_terraform_no_build_artifact_reads",
+        module="scripts.checks.iam_tf.validate_terraform_no_build_artifact_reads",
+        attr="validate_terraform_no_build_artifact_reads",
+        pre=True,
+        pre_globs=(
+            "terraform/**/*.tf",
+            ".gitignore",
+            "scripts/checks/iam_tf/validate_terraform_no_build_artifact_reads.py",
+            "scripts/checks/iam_tf/validate_terraform_try.py",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
+        full_segment="full_after_lint",
+    ),
 )
