@@ -8,7 +8,7 @@ import pytest
 
 from src.common import ducklake_event_reads as ev
 from src.common import ducklake_runtime as rt
-from tests.fixtures.ducklake_event_read_fakes import RecordingCon
+from tests.fixtures.ducklake_event_read_fakes import NO_OPS, RecordingCon
 
 _PAYLOAD = {"verb": "telemetry_health_count", "params": {}}
 
@@ -43,7 +43,7 @@ def _spy(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
 def test_telemetry_acquirer_defaults_are_byte_identical(monkeypatch: pytest.MonkeyPatch, smoke_pin: None) -> None:
     seen = _spy(monkeypatch)
-    acquire = ev.acquirer_for("named_read", _PAYLOAD, None, "/e")
+    acquire = ev.acquirer_for("named_read", _PAYLOAD, NO_OPS, "/e")
     acquire()
     assert seen["fetch"] == [((), {})]
     (opened,) = seen["open"]
@@ -72,7 +72,7 @@ def test_acquirer_takes_a_declared_pin_secret_and_read_only_attach(monkeypatch: 
         order.append("pin")
         return ev.require_production_pin()
 
-    acquire = ev.acquirer_for("named_read", _PAYLOAD, None, "/e", pin=pin, dsn_secret_id="reader-secret", read_only=True)
+    acquire = ev.acquirer_for("named_read", _PAYLOAD, NO_OPS, "/e", pin=pin, dsn_secret_id="reader-secret", read_only=True)
     assert order == ["pin"] and seen["open"] == []
     acquire()
     assert seen["fetch"] == [(("reader-secret",), {})]

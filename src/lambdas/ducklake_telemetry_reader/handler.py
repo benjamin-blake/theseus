@@ -172,7 +172,7 @@ def _handle(payload: dict[str, Any], meta: dict[str, Any], remaining_ms: Callabl
             verb = payload.get("verb")
             if not isinstance(verb, str) or verb not in SERVED_VERBS:
                 return _response(400, {"ok": False, "error_type": "unknown_verb", "served": sorted(SERVED_VERBS)})
-        acquire = _acquirer(action, payload)
+        acquire = _acquirer(str(action), payload)
         under_deadline = ev.deadline_guard(action, payload, remaining_ms)
         con, conn_meta = acquire()
         payload["_connect_ms"], payload["_connect_reused"] = conn_meta["connect_ms"], conn_meta["reused"]

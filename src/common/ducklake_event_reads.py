@@ -341,6 +341,8 @@ def serve_named_read(con: Any, *, verb: str, params: dict[str, Any], limit: Any)
 def _telemetry_opener(
     meta_schema: str, data_path: str, extension_directory: str, dsn_secret_id: str | None = None, read_only: bool = False
 ) -> Callable[[], Any]:
+    options: dict[str, Any] = {"read_only": True} if read_only else {}
+
     def opener() -> Any:
         con = rt.open_connection(
             dsn=rt.fetch_dsn() if dsn_secret_id is None else rt.fetch_dsn(dsn_secret_id),
@@ -348,7 +350,7 @@ def _telemetry_opener(
             meta_schema=meta_schema,
             extension_directory=extension_directory,
             alias=rt.TELEMETRY_CATALOG_ALIAS,
-            **({"read_only": True} if read_only else {}),
+            **options,
         )
         con.execute(f"SET memory_limit='{TELEMETRY_MEMORY_LIMIT}'")
         con.execute(f"SET temp_directory='{TELEMETRY_TEMP_DIRECTORY}'")

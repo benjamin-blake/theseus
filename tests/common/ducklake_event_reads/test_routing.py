@@ -8,7 +8,7 @@ import pytest
 
 from src.common import ducklake_event_reads as ev
 from src.common import ducklake_runtime as rt
-from tests.fixtures.ducklake_event_read_fakes import _AS_OF, _SESSION, FakeCursor, RecordingCon
+from tests.fixtures.ducklake_event_read_fakes import _AS_OF, _SESSION, NO_OPS, FakeCursor, RecordingCon
 
 
 def _telemetry_payload(**extra: Any) -> dict[str, Any]:
@@ -70,24 +70,32 @@ def test_a_non_string_verb_routes_to_ops(smoke_pin: None) -> None:
 
 def test_validation_and_pin_refusal_precede_any_acquire(monkeypatch: pytest.MonkeyPatch, smoke_pin: None) -> None:
     opened: list[str] = []
-    monkeypatch.setattr(rt, "open_connection", lambda **kw: opened.append("open") or RecordingCon())
+
+    def open_connection(**kw: Any) -> RecordingCon:
+        opened.append("open")
+        return RecordingCon()
+
+    monkeypatch.setattr(rt, "open_connection", open_connection)
     monkeypatch.setattr(rt, "fetch_dsn", lambda *a, **k: {})
     with pytest.raises(ev.EventReadInputError):
         ev.acquirer_for(
-            "named_read", {"verb": "session_state_and_duration", "params": {"session_id": "bad", "as_of": _AS_OF}}, None, "/e"
+            "named_read",
+            {"verb": "session_state_and_duration", "params": {"session_id": "bad", "as_of": _AS_OF}},
+            NO_OPS,
+            "/e",
         )
     monkeypatch.setenv("TELEMETRY_META_SCHEMA", "ducklake_ops")
     with pytest.raises(rt.DuckLakeRuntimeError):
         ev.acquirer_for(
             "named_read",
             {"verb": "session_state_and_duration", "params": {"session_id": _SESSION, "as_of": _AS_OF}},
-            None,
+            NO_OPS,
             "/e",
         )
     assert opened == []
     monkeypatch.setenv("TELEMETRY_META_SCHEMA", rt.SMOKE_META_SCHEMA)
     acquire = ev.acquirer_for(
-        "named_read", {"verb": "session_state_and_duration", "params": {"session_id": _SESSION, "as_of": _AS_OF}}, None, "/e"
+        "named_read", {"verb": "session_state_and_duration", "params": {"session_id": _SESSION, "as_of": _AS_OF}}, NO_OPS, "/e"
     )
     assert opened == []  # lazily opened: acquiring the callable pays no ATTACH
     con, meta = acquire()
@@ -111,18 +119,23 @@ def test_telemetry_opener_spills_to_tmp_and_leaves_threads_alone(monkeypatch: py
 
 def test_deadline_ms_is_refused_before_any_attach(monkeypatch: pytest.MonkeyPatch, smoke_pin: None) -> None:
     opened: list[str] = []
-    monkeypatch.setattr(rt, "open_connection", lambda **kw: opened.append("open") or RecordingCon())
+
+    def open_connection(**kw: Any) -> RecordingCon:
+        opened.append("open")
+        return RecordingCon()
+
+    monkeypatch.setattr(rt, "open_connection", open_connection)
     for bad in (0, -1, True, "5", 1.5):
         with pytest.raises(ev.EventReadInputError) as info:
-            ev.acquirer_for("named_read", _telemetry_payload(deadline_ms=bad), None, "/e")
+            ev.acquirer_for("named_read", _telemetry_payload(deadline_ms=bad), NO_OPS, "/e")
         assert info.value.param == "deadline_ms"
     assert opened == []
-    assert callable(ev.acquirer_for("named_read", _telemetry_payload(deadline_ms=5000), None, "/e"))
+    assert callable(ev.acquirer_for("named_read", _telemetry_payload(deadline_ms=5000), NO_OPS, "/e"))
 
 
 def test_deadline_ms_on_an_ops_verb_is_refused(smoke_pin: None) -> None:
     with pytest.raises(rt.DuckLakeRuntimeError, match="deadline_ms"):
-        ev.acquirer_for("named_read", {"verb": "open_recs_tally", "params": {}, "deadline_ms": 5000}, None, "/e")
+        ev.acquirer_for("named_read", {"verb": "open_recs_tally", "params": {}, "deadline_ms": 5000}, NO_OPS, "/e")
 
 
 def test_deadline_guard_is_identity_off_event_verbs(smoke_pin: None) -> None:
@@ -166,7 +179,7 @@ def test_interrupted_slot_probes_the_catalog_once(monkeypatch: pytest.MonkeyPatc
     cons = [ProbeCon(fail=False)]
     monkeypatch.setattr(rt, "open_connection", lambda **kw: cons[-1])
     monkeypatch.setattr(rt, "fetch_dsn", lambda *a, **k: {})
-    acquire = ev.acquirer_for("named_read", _telemetry_payload(), None, "/e")
+    acquire = ev.acquirer_for("named_read", _telemetry_payload(), NO_OPS, "/e")
     acquire()
     assert probes == []
     ev._INTERRUPTED_SLOTS.add(ev.TELEMETRY_SLOT)
@@ -203,7 +216,12 @@ def test_content_verb_hands_resolved_rows_to_the_content_module(monkeypatch: pyt
             return Cursor()
 
     seen: list[Any] = []
-    monkeypatch.setattr(content, "serve_content", lambda rows, values: seen.append((rows, values)) or [{"ok": 1}])
+
+    def serve_content(rows: Any, values: Any) -> list[dict[str, int]]:
+        seen.append((rows, values))
+        return [{"ok": 1}]
+
+    monkeypatch.setattr(content, "serve_content", serve_content)
     con = Con()
     assert ev.execute(con, verb="transcript_content", params=_content_params()) == [{"ok": 1}]
     rows, values = seen[0]

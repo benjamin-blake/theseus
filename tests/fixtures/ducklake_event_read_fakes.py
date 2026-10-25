@@ -32,3 +32,7 @@ class RecordingCon:
     def execute(self, sql: str, params: Any = None) -> FakeCursor:
         self.calls.append((sql, params))
         return FakeCursor()
+
+
+def NO_OPS(force_reopen: bool = False) -> tuple[Any, dict[str, Any]]:
+    return None, {}

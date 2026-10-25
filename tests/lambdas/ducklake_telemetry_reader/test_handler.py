@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -48,7 +49,7 @@ class FakeCon:
 
 
 @pytest.fixture
-def wiring(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+def wiring(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any]]:
     rt.reset_warm_connection()
     ev._INTERRUPTED_SLOTS.clear()
     state: dict[str, Any] = {"opened": 0, "kwargs": [], "secrets": [], "fail_first": False, "readonly": True, "cons": []}

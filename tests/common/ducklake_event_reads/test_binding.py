@@ -11,7 +11,7 @@ import pytest
 from src.common import ducklake_event_read_verbs as verbs
 from src.common import ducklake_event_reads as ev
 from src.common import ducklake_runtime as rt
-from tests.fixtures.ducklake_event_read_fakes import _AS_OF, _SESSION, RecordingCon
+from tests.fixtures.ducklake_event_read_fakes import _AS_OF, _SESSION, NO_OPS, RecordingCon
 
 _STATE = verbs.EVENT_READS["session_state_and_duration"]
 
@@ -122,10 +122,11 @@ def test_values_are_bound_never_interpolated() -> None:
 
 
 def test_falsy_non_object_params_are_refused_before_any_acquire(smoke_pin: None) -> None:
+    params: Any
     for params in ([], "", 0):
         with pytest.raises(ev.EventReadInputError):
-            ev.acquirer_for("named_read", {"verb": "telemetry_health_count", "params": params}, None, "/e")
-    assert callable(ev.acquirer_for("named_read", {"verb": "telemetry_health_count"}, None, "/e"))
+            ev.acquirer_for("named_read", {"verb": "telemetry_health_count", "params": params}, NO_OPS, "/e")
+    assert callable(ev.acquirer_for("named_read", {"verb": "telemetry_health_count"}, NO_OPS, "/e"))
 
 
 def test_content_params_are_validated_without_echo() -> None:
