@@ -114,7 +114,13 @@ from scripts.ducklake_smoke.lambda_ops_gates import (  # noqa: F401 -- re-export
     ops_churn_regate,
     ops_read_your_write,
 )
-from scripts.ducklake_smoke.lambda_telemetry_gates import lambda_telemetry  # noqa: F401 -- re-exported package surface
+from scripts.ducklake_smoke.lambda_telemetry_gates import (  # noqa: F401 -- re-exported package surface
+    lambda_telemetry,
+    lambda_telemetry_smoke,
+)
+from scripts.ducklake_smoke.lambda_telemetry_reader_gates import (  # noqa: F401 -- re-exported package surface
+    lambda_telemetry_reader,
+)
 from src.common import catalog_dr as _catalog_dr  # noqa: F401 -- re-exported: smoke._catalog_dr
 from src.common import ducklake_runtime, ducklake_spike, neon_api  # noqa: F401 -- re-exported module aliases
 from src.common.ducklake_runtime import (  # noqa: F401 -- re-exported runtime budget constants
@@ -146,6 +152,8 @@ _LAMBDA_GATES: dict[str, Callable[..., None]] = {
     "connect_probe": connect_probe,
     "lambda_append_only": lambda_append_only,
     "lambda_telemetry": lambda_telemetry,
+    "lambda_telemetry_smoke": lambda_telemetry_smoke,
+    "lambda_telemetry_reader": lambda_telemetry_reader,
 }
 
 
@@ -261,6 +269,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--lambda-telemetry",
         action="store_true",
         help="[post-deploy] telemetry writer URL-only proof",
+    )
+    group.add_argument(
+        "--lambda-telemetry-smoke",
+        action="store_true",
+        help="[post-deploy] smoke telemetry writer twin URL-only proof and disposable vectors",
+    )
+    group.add_argument(
+        "--lambda-telemetry-reader",
+        action="store_true",
+        help="[post-deploy] telemetry reader proof: production-pinned, READ_ONLY, no content, no ops verbs",
     )
     group.add_argument(
         "--canary-rehearsal",
