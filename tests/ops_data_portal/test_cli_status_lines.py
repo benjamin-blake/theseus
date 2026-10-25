@@ -7,10 +7,9 @@ from unittest.mock import patch
 
 import pytest
 
-
-from scripts.ops_portal.ci_rca_lifecycle import ChainRecord  # noqa: E402
-from src.turn_capture.markers import parse_markers  # noqa: E402
-from tests.fixtures.ops_portal_records import VALID_FIELDS as _VALID_FIELDS  # noqa: E402
+from scripts.ops_portal.ci_rca_lifecycle import ChainRecord
+from src.turn_capture.markers import parse_markers
+from tests.fixtures.ops_portal_records import VALID_FIELDS as _VALID_FIELDS
 
 _FINGERPRINT = "b" * 64
 _CTX_V2 = {"schema_version": 2, "fingerprint": _FINGERPRINT}
