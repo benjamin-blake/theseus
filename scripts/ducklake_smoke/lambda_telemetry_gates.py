@@ -1,7 +1,8 @@
 """Telemetry writer URL-only proof for the DuckLake Neon smoke suite (T2.36, slice 2a-2, option D part 2).
 
-One post-deploy gate, --lambda-telemetry, proves the telemetry writer serves only signed Function URL calls on the
-ducklake_smoke catalog and that its caller cannot direct-invoke it (the live check behind Decision 213). Gates call
+Two post-deploy gates share one body: --lambda-telemetry proves the telemetry writer serves only signed Function URL
+calls on the ducklake_smoke catalog and that its caller cannot direct-invoke it (the live check behind Decision 213),
+and --lambda-telemetry-smoke runs the same sequence against the smoke-pinned twin (Decision 236 cl.1). Gates call
 core._function_url / core._sigv4_invoke through the module object (Decision 104). Plan 3 part 1's verb vectors
 (provision, register_tenant, register_project and telemetry_probe) follow the URL-only cases in the same gate, then part 2's
 append_telemetry vectors (lambda_telemetry_append_gates) under part 1's registered synthetic project, then plan 4's
@@ -21,7 +22,8 @@ from typing import Any
 
 from scripts.ducklake_smoke import core
 
-_FUNCTION_NAME = "agent-platform-ducklake-telemetry-writer"
+_WRITER_FUNCTION = "agent-platform-ducklake-telemetry-writer"
+_TWIN_FUNCTION = "agent-platform-ducklake-telemetry-writer-smoke"
 _DECOY = {"meta_schema": "ducklake_ops", "data_path": "s3://example-invalid/ducklake/"}
 _ULID = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
 _FAN_OUT = 4
@@ -110,7 +112,7 @@ def _check_unknown_action(url: str, profile: str | None, region: str) -> None:
         )
 
 
-def _check_direct_invoke_denied(profile: str | None, region: str) -> None:
+def _check_direct_invoke_denied(function_name: str, profile: str | None, region: str) -> None:
     import boto3  # noqa: PLC0415
     from botocore.exceptions import ClientError  # noqa: PLC0415
 
@@ -118,7 +120,7 @@ def _check_direct_invoke_denied(profile: str | None, region: str) -> None:
 
     client = boto3.Session(profile_name=resolve_aws_profile(profile)).client("lambda", region_name=region)
     try:
-        client.invoke(FunctionName=_FUNCTION_NAME, InvocationType="DryRun", Payload=b"{}")
+        client.invoke(FunctionName=function_name, InvocationType="DryRun", Payload=b"{}")
     except ClientError as exc:
         code = str(exc.response.get("Error", {}).get("Code", "unknown"))
         if code == "AccessDeniedException":
@@ -226,14 +228,13 @@ def _check_self_only(url: str, profile: str | None, region: str) -> None:
     print("TELEMETRY_SELF_ONLY_OK")
 
 
-def lambda_telemetry(*, profile: str | None = None, region: str = "eu-west-2") -> None:
-    """Prove the telemetry writer is URL-only and smoke-pinned, then run its provisioning and registration vectors."""
-    url = core._function_url("telemetry_writer")
+def _run(*, role: str, function_name: str, label: str, profile: str | None, region: str) -> None:
+    url = core._function_url(role)
     _check_unsigned(url, profile, region)
     _check_describe(url, profile, region)
     _check_attach(url, profile, region)
     _check_unknown_action(url, profile, region)
-    _check_direct_invoke_denied(profile, region)
+    _check_direct_invoke_denied(function_name, profile, region)
     _check_provision(url, profile, region)
     _report_measurements(url, profile, region)
     _check_tenant(url, profile, region)
@@ -246,4 +247,15 @@ def lambda_telemetry(*, profile: str | None = None, region: str = "eu-west-2") -
     from scripts.ducklake_smoke import lambda_telemetry_blob_gates  # noqa: PLC0415 -- it imports this module's helpers
 
     lambda_telemetry_blob_gates.lambda_telemetry_blob(url, project_ref, profile=profile, region=region)
-    print("LAMBDA_TELEMETRY OK unsigned=403 describe=200 attach_check=ok unknown_action=400 direct_invoke=denied")
+    suffix = " target=twin" if label == "twin" else ""
+    print(f"LAMBDA_TELEMETRY OK unsigned=403 describe=200 attach_check=ok unknown_action=400 direct_invoke=denied{suffix}")
+
+
+def lambda_telemetry(*, profile: str | None = None, region: str = "eu-west-2") -> None:
+    """Prove the telemetry writer is URL-only and smoke-pinned, then run its provisioning and registration vectors."""
+    _run(role="telemetry_writer", function_name=_WRITER_FUNCTION, label="writer", profile=profile, region=region)
+
+
+def lambda_telemetry_smoke(*, profile: str | None = None, region: str = "eu-west-2") -> None:
+    """The same proof against the smoke-pinned twin, which carries the disposable deploy vectors (Decision 236 cl.1)."""
+    _run(role="telemetry_writer_smoke", function_name=_TWIN_FUNCTION, label="twin", profile=profile, region=region)

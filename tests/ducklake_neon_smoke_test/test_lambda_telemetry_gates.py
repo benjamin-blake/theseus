@@ -464,3 +464,35 @@ def test_blob_vectors_run_after_the_append_vectors(wired, capsys):
     ):
         assert marker in out, marker
     assert registered not in out and out.strip().splitlines()[-1] == SUCCESS_LINE
+
+
+def _record_roles(monkeypatch):
+    roles = []
+
+    def url(role):
+        roles.append(role)
+        return "https://fake-url.invalid"
+
+    monkeypatch.setattr(core, "_function_url", url)
+    return roles
+
+
+def test_twin_gate_targets_the_twin_function(wired, monkeypatch, capsys):
+    roles = _record_roles(monkeypatch)
+    lambda_telemetry_gates.lambda_telemetry_smoke()
+    out = capsys.readouterr().out
+    assert roles[0] == "telemetry_writer_smoke" and "telemetry_writer" not in roles
+    assert out.strip().splitlines()[-1] == SUCCESS_LINE + " target=twin"
+    assert wired["client"].calls == [
+        {"FunctionName": "agent-platform-ducklake-telemetry-writer-smoke", "InvocationType": "DryRun", "Payload": b"{}"}
+    ]
+
+
+def test_writer_gate_is_unchanged(wired, monkeypatch, capsys):
+    roles = _record_roles(monkeypatch)
+    lambda_telemetry_gates.lambda_telemetry()
+    out = capsys.readouterr().out
+    assert roles[0] == "telemetry_writer" and "telemetry_writer_smoke" not in roles
+    assert out.strip().splitlines()[-1] == SUCCESS_LINE
+    assert "target=" not in out
+    assert [c["FunctionName"] for c in wired["client"].calls] == ["agent-platform-ducklake-telemetry-writer"]

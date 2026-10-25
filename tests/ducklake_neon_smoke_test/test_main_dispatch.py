@@ -159,3 +159,19 @@ def test_create_telemetry_flag_dispatches_the_gate(monkeypatch):
     monkeypatch.setattr(smoke, "lambda_maintenance_create_telemetry", lambda **kw: seen.append(kw))
     assert smoke.main(["--lambda-maintenance-create-telemetry"]) == 0
     assert len(seen) == 1
+
+
+@pytest.mark.parametrize(
+    ("flag", "attr"),
+    [("--lambda-telemetry-smoke", "lambda_telemetry_smoke"), ("--lambda-telemetry-reader", "lambda_telemetry_reader")],
+)
+def test_telemetry_twin_and_reader_flags_dispatch_their_gates(monkeypatch, flag, attr):
+    seen = {}
+
+    def fake(profile=None, region="eu-west-2"):
+        seen.update(profile=profile, region=region)
+
+    assert attr in smoke._LAMBDA_GATES
+    monkeypatch.setattr(smoke, attr, fake)
+    assert smoke.main([flag, "--profile", "p", "--region", "r"]) == 0
+    assert seen == {"profile": "p", "region": "r"}
