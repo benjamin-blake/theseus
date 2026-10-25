@@ -28,6 +28,8 @@ ENTRIES: tuple[Entry, ...] = (
         attr="validate_recommendations_schema",
         pre=True,
         pre_globs=(
+            "scripts/telemetry_capture/status_line.py",
+            "src/turn_capture/markers.py",
             "src/row_rules/**",
             "scripts/contract_rules.py",
             "logs/.recommendations-log.jsonl",
@@ -172,7 +174,7 @@ ENTRIES: tuple[Entry, ...] = (
         module="scripts.checks.ops_governance.validate_acceptance_literals",
         attr="validate_acceptance_literals",
         pre=True,
-        pre_globs=("scripts/**", "src/common/**", "src/row_rules/**"),
+        pre_globs=("scripts/**", "src/common/**", "src/row_rules/**", "src/turn_capture/markers.py"),
         full_segment="full_after_lint",
     ),
 )

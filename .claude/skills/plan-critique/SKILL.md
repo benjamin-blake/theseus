@@ -70,7 +70,7 @@ Trigger condition 1 -- **Rec-resolving plan**: `bundled_recommendations` is non-
 - If either is missing, recommend REVISE: "Rec-resolving plan omits closure obligation: add bundled_recommendations list and a VP step to verify each rec closed."
 
 Trigger condition 2 -- **Surface-retiring plan**: `scope` carries an `action: Delete` row OR the plan states an X->Y migration/cutover (old path deleted, Lambda retired, write path swapped, config flag removed, backend superseded).
-- Required: at least one VP step that confirms the old surface is unreachable or deleted (grep for call sites, `test -f` for deleted files, import smoke-test, etc.).
+- Required: a VP step proving the old surface dead; for a deleted writer, each caller disposed per `tier-item-lifecycle.yaml#replacement_closure_check` (5).
 - If missing, recommend REVISE: "Surface-retiring plan omits stale-reference sweep VP step: add a VP step that verifies the old surface is dead."
 
 12l. **closes_criteria check (follow-on plans, IMPLEMENTATION only):** If the plan's phase/context names an `in_progress` tier_item, `closes_criteria` MUST be non-empty; each ref must name a criterion carrying `status: open` in `docs/ROADMAP-PLATFORM.yaml`; and `acceptance_criteria` must map 1:1 onto the chosen open criteria. If any of these fail, recommend REVISE: "Follow-on plan omits or misdeclares closes_criteria: [specifics]." A plan targeting no in_progress tier_item is exempt from this check.

@@ -74,6 +74,7 @@ ENTRIES: tuple[Entry, ...] = (
         # an import, but is still a gate-relevant input (validate_check_manifests precedent: its
         # own Entry globs docs/contracts/check-manifest.yaml the same way).
         pre_globs=(
+            "scripts/telemetry_capture/status_line.py",
             "src/row_rules/**",
             "scripts/contract_rules.py",
             "src/turn_capture/markers.py",

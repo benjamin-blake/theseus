@@ -35,6 +35,7 @@ ENTRIES: tuple[Entry, ...] = (
         attr="validate_hermeticity_flags",
         pre=True,
         pre_globs=(
+            "scripts/telemetry_capture/status_line.py",
             "src/row_rules/**",
             "scripts/contract_rules.py",
             "src/turn_capture/markers.py",
@@ -88,6 +89,7 @@ ENTRIES: tuple[Entry, ...] = (
         attr="validate_verification_registry",
         pre=True,
         pre_globs=(
+            "scripts/telemetry_capture/status_line.py",
             "src/row_rules/**",
             "scripts/contract_rules.py",
             "src/turn_capture/markers.py",
@@ -130,6 +132,7 @@ ENTRIES: tuple[Entry, ...] = (
         attr="validate_differential_gate_baseline",
         pre=True,
         pre_globs=(
+            "scripts/telemetry_capture/status_line.py",
             "src/row_rules/**",
             "scripts/contract_rules.py",
             "src/turn_capture/markers.py",

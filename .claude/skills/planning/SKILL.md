@@ -386,7 +386,7 @@ Apply this check when writing the PLAN file. It is CONDITIONAL -- additive plans
 
 **Trigger conditions (either/both):**
 1. **Rec-resolving plan**: the plan's scope or intent explicitly fixes one or more open recommendations. The plan MUST declare them in `bundled_recommendations` AND include a VP step that verifies each rec closed (e.g. `recs_by_ids` shows status closed).
-2. **Surface-retiring plan**: the plan's scope includes a `Delete` row OR an explicit `X -> Y` migration/cutover (file, Lambda, write path, config flag, or backend). The plan MUST include a stale-reference sweep VP step that confirms the old surface is unreachable or deleted.
+2. **Surface-retiring plan**: the plan's scope includes a `Delete` row OR an explicit `X -> Y` migration/cutover (file, Lambda, write path, config flag, or backend). The plan MUST include a stale-reference sweep VP step that confirms the old surface is unreachable or deleted. For a deleted writer (a function, CLI mode or flag that records state), the plan lists every caller as removed, rewired or fail-loud; a stub keeping the old name and success output fails.
 
 **Enforcement:** a plan that trips a trigger but omits its closure obligation fails plan-critique 12k. Surface it during Step 6 presentation; the missing declaration or VP step must be added before writing.
 
