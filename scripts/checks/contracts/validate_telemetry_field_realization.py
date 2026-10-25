@@ -236,7 +236,7 @@ def validate_telemetry_field_realization(failed: list[str], *, root: Path | None
     root = root if root is not None else _common.ROOT
     try:
         errors, examined = realization_errors(load_inputs(root))
-    except (OSError, ValueError, KeyError, yaml.YAMLError) as exc:
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, yaml.YAMLError) as exc:
         errors, examined = [f"inputs unreadable: {exc!r}"], 0
     registry.examined(examined, unit="fields")
     for err in errors:

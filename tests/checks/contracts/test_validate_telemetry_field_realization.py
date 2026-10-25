@@ -312,3 +312,14 @@ def test_duplicate_unproduced_field_is_refused() -> None:
     _block(world)["unproduced"]["rec-9"].append("u")
     errors, _ = check.realization_errors(world)
     assert any("unproduced.rec-9 lists a field more than once" in e for e in errors)
+
+
+def test_wrapper_reports_a_malformed_block_instead_of_crashing(tmp_path: Path) -> None:
+    _copy_inputs(tmp_path)
+    path = tmp_path / "docs/contracts/telemetry_agents.yaml"
+    spec = yaml.safe_load(path.read_text(encoding="utf-8"))
+    spec["realization"] = ["not", "a", "mapping"]
+    path.write_text(yaml.safe_dump(spec), encoding="utf-8")
+    failed: list[str] = []
+    check.validate_telemetry_field_realization(failed, root=tmp_path)
+    assert len(failed) == 1 and "inputs unreadable" in failed[0]
