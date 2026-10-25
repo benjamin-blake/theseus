@@ -13,7 +13,7 @@ You are using this skill to augment the `/plan` workflow. Apply these deep instr
 # Machine-readable invariants verified by scripts/prompt_compliance.py
 preflight_run: true                # session_preflight.py must run at Step 1
 harness_branch: true               # work on the harness-assigned session branch; do NOT create agent/ branches
-decision_scout_gate: true          # @decision-scout must be invoked at Step 6a before presentation
+decision_scout_gate: true          # @decision-scout must be invoked at Step 6 (Decision Scout) before sign-off
 critique_gate: true                # @plan-critique must be invoked before completion
 report_critique_gate: report-only  # REPORT-ONLY plans must run Step 10 multi-perspective deliverable critique
 never_on_main: true                # no file edits while on main branch
@@ -221,13 +221,13 @@ required companion fields, and which disposition to prefer when unsure.
 Check `docs/contracts/decision-entry.yaml`'s `significance:` section before drafting ANY numbered
 `## Decision NNN:` text (a fresh governance Decision, or a CD ratification below): only a durable
 architectural commitment with reversal-relevant consequences clears the bar. A CD state-flip,
-operational fact, or field-semantics change routes per that section's four rows instead (the
+operational fact, or field-semantics change routes per that section's routing rows instead (the
 batch-wave clause below, a rec/tier_item note, or a contract governance note).
 
 Three property tests gate the draft -- checkable assertions on the drafted text, never an
 open-ended "consider whether" prompt:
 1. **Envelope marker cited.** The drafted entry's fenced ```yaml metadata envelope carries a
-   `significance` field naming one of the four routing keys plus a non-empty justification
+   `significance` field naming one of the routing keys plus a non-empty justification
    (`decision-entry.yaml`'s `metadata_envelope.required_fields`, Decision 167 clause 2) -- a
    Significance claim made only in narrative prose, with no envelope field, fails this test.
 2. **Contract-first justification (rec-3015).** The envelope justification names, in one clause,
@@ -249,9 +249,9 @@ full before drafting -- the single authoritative definition of the draft protoco
 numbering-race note. Do not re-author it here. Ratification is a first-class lane shared across
 `/orient` (surface), `/plan` (this step), and `/implement` (execute).
 
-## Decision Scout Gate (Workflow Step 6a, pre-presentation)
+## Decision Scout Gate (Workflow Step 6, project alignment recon)
 
-This gate fires BEFORE Step 6b's presentation to the human. Its job is to surface any active decisions the proposed approach must cite, contradict, or pivot around -- without paying the cost of loading the full DECISIONS.md (large -- near its Decision 134 size ceiling) into the planning agent.
+This gate fires BEFORE the alignment sign-off presentation to the human. Its job is to surface any active decisions the proposed approach must cite, contradict, or pivot around -- without paying the cost of loading the full DECISIONS.md (large -- near its Decision 134 size ceiling) into the planning agent.
 
 **Example prompt body:**
 > "You are running the decision-scout gate in a fresh context window. Invoke the `decision-scout` skill via the Skill tool. The skill needs the following inputs (use them in your scout analysis):
@@ -275,8 +275,8 @@ subagent-dispatch division of labor; schema: `docs/contracts/overseer-dispatch.y
   scope: Step 4; tier: Step 5; cited decisions: the human.
 
 **Verdict handling:**
-- **NO_FLAGS** -> Proceed to Step 6b. Include the scout's CITE list in the presentation as "Decisions this plan must reference." Record in the plan template's `context:` list: "Decision-scout verdict + CITE list (verbatim decision ids)" and "gates: decision-scout=<verdict>; plan-critique=<verdict> after <N> round(s))".
-- **FLAGS_FOUND** -> Surface each WARN/NOTE flag to the human in Step 6b's presentation under a "Decision Flags" section. Human chooses per-flag: pivot, defer with note, or accept-as-is. If the human pivots on any flag in a way that changes the proposed approach materially, re-dispatch this gate against the revised approach before re-presenting.
+- **NO_FLAGS** -> Proceed to the alignment sign-off. Include the scout's CITE list in the presentation as "Decisions this plan must reference." Record in the plan template's `context:` list: "Decision-scout verdict + CITE list (verbatim decision ids)" and "gates: decision-scout=<verdict>; plan-critique=<verdict> after <N> round(s))".
+- **FLAGS_FOUND** -> Surface each WARN/NOTE flag to the human in the sign-off presentation under a "Decision Flags" section. Human chooses per-flag: pivot, defer with note, or accept-as-is. If the human pivots on any flag in a way that changes the proposed approach materially, re-dispatch this gate against the revised approach before re-presenting.
 - **BLOCK** -> STOP. Do NOT present the original approach for confirmation. Surface the BLOCK contradiction and propose pivots, then re-dispatch the gate against the revised approach. Confirming a known-blocking approach would invite the human to ratify a plan that contradicts an active decision.
 - **Gate-error:** if the gate subagent errors or returns output missing the required `Verdict:` line, the gate has NOT completed -- re-dispatch; never proceed past an incomplete gate. Likewise, if the report's "Decisions triaged: N of M" line is missing, or N != M, treat the gate as incomplete and re-dispatch -- a mismatch means the scout truncated its read of DECISIONS.md.
 
@@ -285,13 +285,13 @@ subagent-dispatch division of labor; schema: `docs/contracts/overseer-dispatch.y
 **Convergence rule:**
 Do not loop more than 3 times. If the gate keeps returning BLOCK after 3 revisions, escalate to the human: "After N revisions the decision-scout still flags BLOCK on [decision N]. Continued pivoting suggests either the underlying intent contradicts the decision (re-scope the request) or the decision needs to be revisited (file a recommendation to revise the decision). How would you like to proceed?"
 
-## Confirmation Gate (Workflow Step 6b)
-Wait for explicit 'write the plan'; anything else is feedback -- incorporate it, re-run Step 6a if material to decision alignment, re-present, ask again.
+## Alignment Sign-off (Workflow Step 6, project alignment)
+Wait for explicit 'write the plan'; anything else is feedback -- incorporate it, re-run the Decision Scout if material to decision alignment, re-present, ask again.
 IT IS **CRITICAL** THAT YOU DO NOT PROCEED UNTIL THE HUMAN CONFIRMS THE PLAN.
 Class each design fork: consistency-only is decided-with-notice, else ask in the pinned shape --
 `docs/contracts/overseer-dispatch.yaml#autonomy_tiers.plan_fork_classification`.
 **If you are a subagent**: use `AskUserQuestion` if you hold it; an overseer-dispatched author does
-not -- forks and confirmation ride a post-verdict `GATE_REQUEST` (`gate: step-6b-confirmation`) the
+not -- forks and confirmation ride a post-verdict `GATE_REQUEST` (`gate: project-alignment`) the
 overseer relays.
 
 ## Create Branch (Workflow Step 7)
