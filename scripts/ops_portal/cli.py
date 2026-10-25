@@ -316,8 +316,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             emit_status("ops_portal.file_rec", "done")
         elif outcome.reason == "ci_rca_open_duplicate":
             emit_status("ops_portal.file_rec", "skipped", "ci_rca_open_duplicate")
-        else:
+        elif outcome.reason == "ci_rca_stale_rerun":
             emit_status("ops_portal.file_rec", "skipped", "ci_rca_stale_rerun")
+        else:
+            emit_status("ops_portal.file_rec", "failed", "unknown_outcome")
         return 0
 
     if args.find_open_ci_rca_rec:

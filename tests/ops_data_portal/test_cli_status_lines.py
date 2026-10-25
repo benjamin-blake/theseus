@@ -182,3 +182,15 @@ def test_emitted_lines_parse_as_status_markers(capsys: pytest.CaptureFixture[str
         _main(_argv())
     markers = parse_markers(capsys.readouterr().err)
     assert [m.source for m in markers] == ["status"], "the emitted line did not parse as a status marker"
+
+
+def test_unknown_non_insert_reason_emits_failed(capsys: pytest.CaptureFixture[str]) -> None:
+    from scripts.ops_portal.outcomes import FileRecOutcome
+
+    with patch("scripts.ops_data_portal.file_rec_with_outcome", return_value=FileRecOutcome("rec-9", False, "new_reason")):
+        rc = _main(_argv())
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.out == "rec-9\n"
+    assert _statuses(captured.err) == [("ops_portal.file_rec.failed", "failed")], "unexpected status lines"
+    assert "reason=unknown_outcome" in captured.err

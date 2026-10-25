@@ -18,4 +18,7 @@ def emit_status(source: str, result: str, reason: str | None = None) -> None:
     except Exception as exc:
         print(f"status line not emitted for {source!r}: {exc}", file=sys.stderr, flush=True)
         return
-    print(line, file=sys.stderr, flush=True)
+    try:
+        print(line, file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        return

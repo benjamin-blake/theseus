@@ -33,3 +33,15 @@ def test_bad_argument_writes_diagnostic_without_marker(
     assert captured.out == ""
     assert captured.err.strip()
     assert parse_markers(captured.err) == []
+
+
+def test_failing_stderr_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Broken:
+        def write(self, _text: str) -> int:
+            raise BrokenPipeError
+
+        def flush(self) -> None:
+            raise BrokenPipeError
+
+    monkeypatch.setattr("sys.stderr", _Broken())
+    emit_status("demo.mode", "done")
