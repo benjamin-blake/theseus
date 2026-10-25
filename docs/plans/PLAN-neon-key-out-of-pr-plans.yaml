@@ -48,7 +48,9 @@ scope:
       DriftSessionSecretValueRead: actions ["secretsmanager:GetSecretValue"], resources the neon-api-key-* and
       ducklake-neon-catalog-dsn-* ARNs (same var-built shape as today), condition StringLike aws:userid
       "*:${local.convergence_writer_session_name}" (reference the local, never the literal). Update the reserved-name
-      coupled-site comment in oidc.tf locals (4 sites -> 5) and the header's capability-union comment. The policy
+      coupled-site comment in oidc.tf locals (4 sites -> 5) and the header's capability-union comment. In oidc.tf, the
+      header comment's "shared 20-statement refresh-read surface" count is set to the statement count after the three
+      Sids leave. The policy
       resource name is unchanged (a rename is a replace and routes to gated apply).
   - file: scripts/ci/neon_api_key.sh
     action: Create
@@ -168,6 +170,8 @@ scope:
       plan; a dispatch plan without the run prefix; a run-wrapped job without terraform-init-retry; the init-retry action
       without its check step; the data source restored; the drift value-read statement missing
       (test_drift_value_read_statement_missing_fails); the drift value-read statement covering only one of the two ARNs.
+      Plus test_registered_in_pre_and_full_sequence: the check name is in registry.pre_sequence() and
+      registry.full_sequence() (mirrors tests/checks/hygiene/test__manifest.py:45).
   - file: scripts/checks/iam_tf/_manifest.py
     action: Modify
     purpose: Register validate_planner_secret_value_reads (pre=True, full_segment full_after_lint), beside validate_convergence_writer_isolation.
@@ -191,9 +195,10 @@ scope:
   - file: docs/contracts/terraform-cc-web-operations.yaml
     action: Modify
     purpose: >-
-      Approved texts T2-T4 (context): new tfvars_and_remote_state_recovery.ephemeral_runtime_vars mapping (neon_api_key);
+      Approved texts T2-T4c (context): new tfvars_and_remote_state_recovery.ephemeral_runtime_vars mapping (neon_api_key);
       the apply_posture sentence "New no-default variables only require updating that secret" amended; one
-      speculative_plan_job step for the stub key and -refresh=false. One amendment_log entry.
+      speculative_plan_job step for the stub key and -refresh=false; the capability_split phrase (T4b) and the
+      planner_main_sub_iam phrase (T4c), which would otherwise go false. One amendment_log entry.
   - file: docs/contracts/secret-material-handling.yaml
     action: Modify
     purpose: >-
@@ -262,7 +267,7 @@ acceptance_criteria:
     validate_planner_secret_value_reads is registered (pre) and fails each fixture listed in its test module.
   - >-
     validate_terraform_cc_web_operations accepts neon_api_key only under ephemeral_runtime_vars.
-  - The approved contract texts T2-T8 are in place verbatim.
+  - The approved contract texts T2-T8 (with T4b and T4c) are in place verbatim.
   - The canary rehearsal runs with an explicit project id and never calls the org-level project listing.
   - >-
     Post-deploy: the N1 PR's speculative plan and the merge apply are green; the next drift run is green; state holds no
@@ -273,6 +278,9 @@ acceptance_criteria:
     key is revoked (or recorded unproven).
   - The full tier exits 0 on the committed, rebased, clean tree before the PR is opened.
   - After the squash-merge with the Resolves trailer, rec-4618 and rec-4616 are closed.
+  - >-
+    terraform-drift.yml's drift-detect job runs init through ./.github/actions/terraform-init-retry with no inline init
+    loop; the transient-init signatures are pinned only in the composite.
 verification_plan:
   - step: 1
     phase: pre-deploy
@@ -327,12 +335,13 @@ verification_plan:
   - step: 5
     phase: pre-deploy
     action: >-
-      Grep proofs: the data source is gone, the variable is ephemeral, the stub and -refresh=false appear exactly once (the
-      speculative plan), and the oidc.tf value Sids are gone.
-    command: >-
+      Grep proofs: the data source is gone, the variable is ephemeral, the stub and -refresh=false each appear exactly once
+      (the speculative plan), and the oidc.tf value Sids are gone.
+    command: >-  # pragma: allowlist secret -- stub literal, no credential
       ! grep -rEq '^data "aws_secretsmanager_secret_version"' terraform/personal/
       && grep -A6 'variable "neon_api_key"' terraform/personal/variables.tf | grep -q 'ephemeral *= *true'
       && test "$(grep -c -- '-refresh=false' .github/workflows/terraform-apply-sandbox.yml .github/workflows/reconcile.yml .github/workflows/terraform-drift.yml | awk -F: '{s+=$2} END {print s}')" -eq 1
+      && test "$(grep -c 'TF_VAR_neon_api_key=pr-speculative-plan-stub-not-a-key terraform plan -refresh=false' .github/workflows/terraform-apply-sandbox.yml)" -eq 1
       && ! grep -Eq 'SecretsManagerNeonAPIKeyRead|SecretsManagerGithubPatRead|SecretsManagerInferenceCredentialsRead' terraform/personal/oidc.tf
       && echo GREP_OK
     expected: Prints GREP_OK.
@@ -599,8 +608,8 @@ test_obligations:
   - source: scripts/checks/iam_tf/_manifest.py
     behavior: The new check is registered in the pre tier.
     verification_step: 1
-    test_selector: tests/checks/iam_tf/test__manifest.py
-    red_green_expectation: red before (the manifest-coverage test fails on an unregistered check module), green after.
+    test_selector: tests/checks/iam_tf/test_validate_planner_secret_value_reads.py::test_registered_in_pre_and_full_sequence
+    red_green_expectation: red before (the check is not in either sequence), green after.
   - source: config/ci_rca_taxonomy.yaml
     behavior: The new check maps to a ci-rca category.
     verification_step: 9
@@ -634,6 +643,10 @@ test_obligations:
     waiver_reason: >-
       Field values only; validate_account_credential_inventory in the full tier already checks row shape and rec-id
       format, which this edit exercises.
+weakening_dispositions:
+  - candidate: "[assertion-changed] tests/test_terraform_drift_acceptance.py::test_drift_workflow_init_retry_signature_parity"
+    disposition: planned-change
+    cite: "acceptance_criteria[11]"
 constraints:
   - >-
     Never bypass CI from the ADMIN container: the personal-root apply is the merge's governed apply only. Admin
@@ -668,7 +681,7 @@ context:
   - >-
     Approvals: Benjamin "write the plan after reading my feedback", 2026-10-25 18:32
     (cmsg_01Cqz6E4mzSv6kkGCSCub3WM2vrnLdineigLoAg3ZE3z1X): forks 1A, 2A, 3B, 4A plus his review (PAT and inference strip
-    rides N1; contract pattern, no new Decision). T2-T8 were drafted after step 6b and need his word before merge, as does the rec-4631 residual below.
+    rides N1; contract pattern, no new Decision). T2-T8 (with T4b and T4c) were drafted after step 6b and need his word before merge, as does the rec-4631 residual below.
   - >-
     Accepted residuals (fork 1A): PR plans no longer show refresh-time drift or refresh-read AccessDenied before merge;
     the hourly drift run and refuse-on-red cover drift, validate_ci_refresh_read_coverage covers grants. A PR importing a
@@ -707,6 +720,14 @@ context:
     step after the plan step): "Passes a stub TF_VAR_neon_api_key and skips refresh: the planner's PR session holds no
     Neon or DSN value read, so the plan shows config-versus-state changes only; the hourly drift run is the drift signal."
   - >-
+    T4b (terraform-cc-web-operations speculative_plan_and_apply_the_saved_plan.capability_split; the phrase "full
+    refresh-read surface (mirrors apply-role plan-time reads)" becomes): "the refresh-read metadata surface with no secret
+    value read except the tfvars secret (the Neon key and catalog DSN value reads belong to the reserved drift session
+    only; PR plans run with a stub key and skip refresh)". T4c (same contract,
+    alarm_only_scheduled_drift_detection.planner_main_sub_iam; the phrase "same refresh-time read surface as the PR-sub
+    statement" becomes): "the same refresh-time read surface as the PR-sub statement, plus GetSecretValue on the Neon key
+    and catalog DSN conditioned on aws:userid naming the reserved drift session (DriftSessionSecretValueRead)".
+  - >-
     T5 (secret-material-handling patterns.provider_credential_ephemeral_input): "Terraform receives a provider credential
     only as an ephemeral = true input variable. Trusted sessions fetch it at run time and pass it as TF_VAR_* to the one
     terraform process; PR plans receive a stub and skip refresh. The value is never in the tfvars secret, state, a saved
@@ -727,7 +748,7 @@ pre_implementation_checklist:
   - only the plan-cited decision sections (77, 92, 129, 144, 154, 157, 183, 119, 126/127)
   - All files in scope located and readable
   - Acceptance criteria understood and verifiable
-  - Benjamin's word on T2-T8 and on the rec-4631 residual confirmed in the handoff
+  - Benjamin's word on T2-T8 (with T4b, T4c) and on the rec-4631 residual confirmed in the handoff
 execution_steps:
   - >-
     Update rec-4618's acceptance through the portal (update_rec, after get_rec_write_guidance) to step 8's first two
