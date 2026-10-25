@@ -50,7 +50,8 @@ scope:
       "*:${local.convergence_writer_session_name}" (reference the local, never the literal). Update the reserved-name
       coupled-site comment in oidc.tf locals (4 sites -> 5) and the header's capability-union comment. In oidc.tf, the
       header comment's "shared 20-statement refresh-read surface" count is set to the statement count after the three
-      Sids leave. The policy
+      Sids leave; the same count at oidc_pipeline_roles.tf:108 ("the shared 20-statement refresh-read surface") is set to
+      the same number (`grep -rn "20-statement" terraform/` returns nothing afterwards). The policy
       resource name is unchanged (a rename is a replace and routes to gated apply).
   - file: scripts/ci/neon_api_key.sh
     action: Create
@@ -104,7 +105,8 @@ scope:
       terraform-drift.yml (0 after this plan), to assert that the drift-detect job has exactly one step with `uses:
       ./.github/actions/terraform-init-retry` and no non-comment `terraform init` line. Equivalent invariant, not a
       weakening: the signatures now live only in the composite, which test_terraform_init_retry_action_signature_parity
-      already pins. Docstring says so.
+      already pins. Keep at least two assert statements (today's count), so the weakening candidate stays keyed
+      assertion-changed and matches the pre-declared disposition. Docstring says so.
   - file: config/agent/verification_registry/entries/terraform-init-retry-signature-parity-both-consumers.yaml
     action: Modify
     purpose: >-
@@ -145,7 +147,8 @@ scope:
       New check (pre=True, full_after_lint). Reuses validate_convergence_writer_isolation's HCL block and condition
       parsing and validate_invoke_implies_resolve._resolve_statements for source_policy_documents. Asserts: (1) every
       Allow statement in the planner's resolved policy whose actions can return a Secrets Manager value
-      (fnmatch of each Action pattern against secretsmanager:GetSecretValue and secretsmanager:BatchGetSecretValue; any
+      (fnmatchcase of each lower-cased Action pattern against secretsmanager:getsecretvalue and
+      secretsmanager:batchgetsecretvalue, since IAM action names are case-insensitive; any
       NotAction statement fails closed) either carries the StringLike aws:userid "*:${local.convergence_writer_session_name}" condition or has every
       resource inside ALLOWED_UNCONDITIONED (the tfvars secret ARN only, with a comment naming plan C); (2) exactly one
       aws_iam_role_policy and zero aws_iam_role_policy_attachment resources target the planner role; (3) across
@@ -163,14 +166,15 @@ scope:
       Read-only, credential-free.
   - file: tests/checks/iam_tf/test_validate_planner_secret_value_reads.py
     action: Create
-    purpose: >-
+    purpose: >-  # pragma: allowlist secret -- fixture names, no credential
       Live-tree green case plus failing-first fixtures: an unconditioned GetSecretValue on a non-allow-listed ARN; Get* on
       the inference keys; a conditioned statement whose condition names a different session; a second planner role policy;
       a policy attachment; a NotAction statement; the reserved name in a second workflow; -refresh=false on the drift
       plan; a dispatch plan without the run prefix; a run-wrapped job without terraform-init-retry; the init-retry action
       without its check step; the data source restored; the drift value-read statement missing
       (test_drift_value_read_statement_missing_fails); the drift value-read statement covering only one of the two ARNs.
-      Plus test_registered_in_pre_and_full_sequence: the check name is in registry.pre_sequence() and
+      A lower-case "secretsmanager:getsecretvalue" action on a non-allow-listed ARN (test_lowercase_action_fails). Plus
+      test_registered_in_pre_and_full_sequence: the check name is in registry.pre_sequence() and
       registry.full_sequence() (mirrors tests/checks/hygiene/test__manifest.py:45).
   - file: scripts/checks/iam_tf/_manifest.py
     action: Modify
@@ -197,8 +201,9 @@ scope:
     purpose: >-
       Approved texts T2-T4c (context): new tfvars_and_remote_state_recovery.ephemeral_runtime_vars mapping (neon_api_key);
       the apply_posture sentence "New no-default variables only require updating that secret" amended; one
-      speculative_plan_job step for the stub key and -refresh=false; the capability_split phrase (T4b) and the
-      planner_main_sub_iam phrase (T4c), which would otherwise go false. One amendment_log entry.
+      speculative_plan_job step for the stub key and -refresh=false; the capability_split phrase (T4b), the
+      planner_main_sub_iam phrase (T4c), the apply_posture "all no-default root-module variables" phrase (T3b) and two
+      recoverable_vars phrases (T3c), all of which would otherwise go false. One amendment_log entry.
   - file: docs/contracts/secret-material-handling.yaml
     action: Modify
     purpose: >-
@@ -267,7 +272,7 @@ acceptance_criteria:
     validate_planner_secret_value_reads is registered (pre) and fails each fixture listed in its test module.
   - >-
     validate_terraform_cc_web_operations accepts neon_api_key only under ephemeral_runtime_vars.
-  - The approved contract texts T2-T8 (with T4b and T4c) are in place verbatim.
+  - The approved contract texts T2-T8 (with T3b, T3c, T4b and T4c) are in place verbatim.
   - The canary rehearsal runs with an explicit project id and never calls the org-level project listing.
   - >-
     Post-deploy: the N1 PR's speculative plan and the merge apply are green; the next drift run is green; state holds no
@@ -681,7 +686,7 @@ context:
   - >-
     Approvals: Benjamin "write the plan after reading my feedback", 2026-10-25 18:32
     (cmsg_01Cqz6E4mzSv6kkGCSCub3WM2vrnLdineigLoAg3ZE3z1X): forks 1A, 2A, 3B, 4A plus his review (PAT and inference strip
-    rides N1; contract pattern, no new Decision). T2-T8 (with T4b and T4c) were drafted after step 6b and need his word before merge, as does the rec-4631 residual below.
+    rides N1; contract pattern, no new Decision). T2-T8 (with T3b, T3c, T4b and T4c) were drafted after step 6b and need his word before merge, as does the rec-4631 residual below.
   - >-
     Accepted residuals (fork 1A): PR plans no longer show refresh-time drift or refresh-read AccessDenied before merge;
     the hourly drift run and refuse-on-red cover drift, validate_ci_refresh_read_coverage covers grants. A PR importing a
@@ -701,6 +706,10 @@ context:
     speculative plan (its old HCL reads the data source under the PR session, which no longer has GetSecretValue). That
     fails closed; the fix is a rebase.
   - >-
+    Accepted residual (Decision 154 pt5(i) under-inclusion): a transient Secrets Manager failure inside an apply-step
+    `neon_api_key.sh run --` fetch, after the tf_init preflight passed, latches red rather than writing infra_error. It
+    fails closed and heals through reconcile.
+  - >-
     Not closed (N3, rec-4619, rec-2768): DSN value and owner password via TfstateRead and old plan.bins. Breakglass MFA is
     rec-4540. Spike and consult: /mnt/project-files/neon-key-pr-exposure/ADVICE.md.
   - >-
@@ -719,6 +728,13 @@ context:
     except ephemeral variables (ephemeral_runtime_vars), which trusted jobs fetch at run time." T4 (speculative_plan_job
     step after the plan step): "Passes a stub TF_VAR_neon_api_key and skips refresh: the planner's PR session holds no
     Neon or DSN value read, so the plan shows config-versus-state changes only; the hourly drift run is the drift signal."
+  - >-
+    T3b (terraform-cc-web-operations operator_only_break_glass.apply_posture; the phrase "It sources all no-default
+    root-module variables from" becomes): "It sources all no-default root-module variables except ephemeral variables
+    (ephemeral_runtime_vars) from". T3c (same contract, tfvars_and_remote_state_recovery.recoverable_vars; "Five no-default
+    vars" becomes "Five no-default, non-ephemeral vars", and "it fails on a declared no-default variable missing from the
+    table below" becomes): "it fails on a declared no-default, non-ephemeral variable missing from the table below
+    (ephemeral no-default variables are checked against ephemeral_runtime_vars instead)".
   - >-
     T4b (terraform-cc-web-operations speculative_plan_and_apply_the_saved_plan.capability_split; the phrase "full
     refresh-read surface (mirrors apply-role plan-time reads)" becomes): "the refresh-read metadata surface with no secret
@@ -748,7 +764,7 @@ pre_implementation_checklist:
   - only the plan-cited decision sections (77, 92, 129, 144, 154, 157, 183, 119, 126/127)
   - All files in scope located and readable
   - Acceptance criteria understood and verifiable
-  - Benjamin's word on T2-T8 (with T4b, T4c) and on the rec-4631 residual confirmed in the handoff
+  - Benjamin's word on T2-T8 (with T3b, T3c, T4b, T4c) and on the rec-4631 residual confirmed in the handoff
 execution_steps:
   - >-
     Update rec-4618's acceptance through the portal (update_rec, after get_rec_write_guidance) to step 8's first two
