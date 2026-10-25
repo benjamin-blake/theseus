@@ -7,7 +7,6 @@ from unittest.mock import patch
 
 import pytest
 
-duckdb = pytest.importorskip("duckdb", reason="env: duckdb is not installed in the fast tier")
 
 from scripts.ops_portal.ci_rca_lifecycle import ChainRecord  # noqa: E402
 from src.turn_capture.markers import parse_markers  # noqa: E402
