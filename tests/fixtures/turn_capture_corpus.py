@@ -6,6 +6,7 @@ ever written here -- secret-shaped strings are assembled at runtime by build_sec
 from __future__ import annotations
 
 import contextlib
+import functools
 import hashlib
 import json
 from datetime import datetime, timedelta, timezone
@@ -22,7 +23,11 @@ PROJECT = "01BX5ZZKBKACTAV9WEVGEMMVRY"
 PROJECT_REF = "example/project"
 GOLDEN_DIR = Path(__file__).parent / "turn_capture" / "golden"
 _EPOCH = datetime(2026, 1, 1, tzinfo=timezone.utc)
-_SIDE_EFFECT_KEYS = ("created_timestamp", "producer_version", "content_sha256", "output_sha256")
+
+
+@functools.cache
+def normalised_out() -> frozenset[str]:
+    return frozenset(json.loads((GOLDEN_DIR / "index.json").read_text(encoding="utf-8"))["normalised_out"])
 
 
 def ts(seconds: float) -> str:
@@ -476,12 +481,13 @@ def assert_output_identities(files: dict[str, str], batches: list[tuple[str, lis
 
 
 def normalise(batches: list[tuple[str, list[dict[str, Any]]]]) -> list[dict[str, Any]]:
-    """Canonical rows: derived ids added with the fixed test tenant/project; None columns and the excluded columns
-    (created_timestamp, producer_version, content_sha256) dropped; datetimes rendered; sorted by table then event_id."""
+    """Canonical rows: derived ids added with the fixed test tenant/project; None columns and the golden index's
+    normalised_out columns dropped; datetimes rendered; sorted by table then event_id."""
+    dropped = normalised_out()
     out: list[dict[str, Any]] = []
     for table, rows in batches:
         for row in rows:
-            norm = {k: _render(v) for k, v in row.items() if v is not None and k not in _SIDE_EFFECT_KEYS}
+            norm = {k: _render(v) for k, v in row.items() if v is not None and k not in dropped}
             for column, plan in KEY_PLANS[table].items():
                 ref = row.get(plan.ref_field)
                 if ref is not None:

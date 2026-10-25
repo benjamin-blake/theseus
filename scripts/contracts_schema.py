@@ -193,6 +193,21 @@ class ContractMeta(BaseModel):
         return self
 
 
+class Realization(BaseModel):
+    """Who writes each stored column of a telemetry table (shape only; cross-file rules live in
+    scripts/checks/contracts/validate_telemetry_field_realization.py).
+
+    `produced` keys are a registered producer id or the literal `write_boundary`; `unproduced` keys are
+    owners. Unrelated to a read-derived field's `derivation.realized`, which says a write-time derivation
+    is implemented.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    produced: dict[str, list[str]] = Field(default_factory=dict)
+    unproduced: dict[str, list[str]] = Field(default_factory=dict)
+
+
 class ContractDocument(BaseModel):
     """A full ritual contract document (INTENT Parts 3C-3E).
 
@@ -205,6 +220,7 @@ class ContractDocument(BaseModel):
 
     contract: ContractMeta
     fields: dict[str, FieldSpec] | None = None
+    realization: Realization | None = None
     verbs: dict[str, VerbSpec] | None = None
     governance: ContractGovernance | None = None
     allowed_values: Any | None = None
