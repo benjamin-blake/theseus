@@ -106,8 +106,8 @@ def test_planning_enforcement_names_the_critique_check_id() -> None:
     assert "fails plan-critique 12k" in planning
 
 
-def test_plan_workflow_invokes_obligations_once_at_step_6b() -> None:
-    """`plan_obligations` runs once author-side, at Step 6b, against a draft written OUTSIDE the repo.
+def test_plan_workflow_invokes_obligations_once_at_alignment_sign_off() -> None:
+    """`plan_obligations` runs once author-side, at the alignment sign-off, against a draft written OUTSIDE the repo.
 
     The draft path must stay outside `docs/plans/`: `{slug}` is not derived until Step 7, and a
     Write to the tracked plan path while on `main` is denied by `.claude/hooks/never_on_main.py`
