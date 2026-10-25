@@ -294,3 +294,11 @@ def test_event_shapes_are_parsed(wiring: dict[str, Any]) -> None:
     assert h.handler({"body": None, "action": "describe"})["statusCode"] == 200
     assert h.handler({"body": 7, "action": "describe"})["statusCode"] == 200
     assert h.handler([1, 2])["statusCode"] == 400  # type: ignore[arg-type]
+
+
+def test_unset_secret_id_fails_closed_before_any_connect(wiring: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TELEMETRY_DSN_SECRET_ID")
+    for payload in (_READ, {"action": "attach_check"}):
+        status, body = _call(payload)
+        assert status == 500 and body["error_type"] == "runtime"
+    assert wiring["opened"] == 0 and wiring["secrets"] == []

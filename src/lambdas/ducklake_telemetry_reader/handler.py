@@ -44,7 +44,10 @@ def _is_caller_input_error(exc: BaseException) -> bool:
 
 
 def _secret_id() -> str:
-    return os.environ.get("TELEMETRY_DSN_SECRET_ID", "")
+    secret_id = os.environ.get("TELEMETRY_DSN_SECRET_ID", "")
+    if not secret_id:
+        raise rt.DuckLakeRuntimeError("TELEMETRY_DSN_SECRET_ID is not set: the telemetry reader needs its own scoped login")
+    return secret_id
 
 
 def _is_smoke(data_path: str) -> bool:
