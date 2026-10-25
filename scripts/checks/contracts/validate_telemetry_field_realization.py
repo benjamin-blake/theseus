@@ -167,6 +167,7 @@ def _populated_errors(table: str, contract: dict[str, Any], placed: dict, owners
         populated = (fields[name] or {}).get("populated_by")
         if not isinstance(populated, str):
             continue
+        want: str | None
         if owners.get(name):
             want = f"unproduced: {owners[name][0]}"
         else:

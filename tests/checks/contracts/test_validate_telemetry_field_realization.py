@@ -266,3 +266,49 @@ def test_live_contract_mutations_are_caught() -> None:
     block["unproduced"]["rec-4599"].append("harness_session_key")
     errors, _ = check.realization_errors(moved)
     assert any("telemetry_sessions.harness_session_key" in e and "(R5)" in e for e in errors)
+
+
+def _copy_inputs(dest: Path) -> None:
+    import shutil
+
+    for rel in (
+        "config/telemetry/parser_versions.yaml",
+        "config/lambda/ducklake/field_semantics.yaml",
+        "docs/ROADMAP-PLATFORM.yaml",
+        *(f"docs/contracts/{t}.yaml" for t in check.TABLES),
+    ):
+        (dest / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(ROOT / rel, dest / rel)
+    shutil.copytree(ROOT / "tests/fixtures/turn_capture/golden", dest / "tests/fixtures/turn_capture/golden")
+
+
+def test_producer_without_golden_index_loads_without_a_corpus(tmp_path: Path) -> None:
+    _copy_inputs(tmp_path)
+    path = tmp_path / "config/telemetry/parser_versions.yaml"
+    versions = yaml.safe_load(path.read_text(encoding="utf-8"))
+    versions["producers"]["bare"] = {"current": 1, "history": []}
+    path.write_text(yaml.safe_dump(versions), encoding="utf-8")
+    loaded = check.load_inputs(tmp_path)
+    assert "bare" in loaded["producers"] and "bare" not in loaded["golden"]
+
+
+def test_wrapper_reports_unreadable_inputs(tmp_path: Path) -> None:
+    failed: list[str] = []
+    check.validate_telemetry_field_realization(failed, root=tmp_path)
+    assert len(failed) == 1 and "inputs unreadable" in failed[0]
+
+
+def test_wrapper_reports_rule_failures(tmp_path: Path) -> None:
+    _copy_inputs(tmp_path)
+    path = tmp_path / "docs/contracts/telemetry_agents.yaml"
+    path.write_text(path.read_text(encoding="utf-8").replace("\nrealization:\n", "\nrealization_off:\n"), encoding="utf-8")
+    failed: list[str] = []
+    check.validate_telemetry_field_realization(failed, root=tmp_path)
+    assert any("telemetry_agents" in f for f in failed)
+
+
+def test_duplicate_unproduced_field_is_refused() -> None:
+    world = _world()
+    _block(world)["unproduced"]["rec-9"].append("u")
+    errors, _ = check.realization_errors(world)
+    assert any("unproduced.rec-9 lists a field more than once" in e for e in errors)
