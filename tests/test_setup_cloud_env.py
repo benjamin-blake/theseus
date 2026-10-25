@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 import subprocess
 import tempfile
@@ -242,5 +243,7 @@ def test_header_template_has_no_static_key_and_current_path() -> None:
     assert "aws_secret_access_key" not in script
     assert "/home/user/agent-platform" not in script
     assert "cd /home/user/ontheloop && bash bin/setup-cloud-env.sh" in script
-    assert "sts.eu-west-2.amazonaws.com" in script
+    allowed = re.search(r"allowed host (\S+) ONLY", script)
+    assert allowed is not None
+    assert allowed.group(1) == "sts.eu-west-2.amazonaws.com"
     assert "network secret" in script
