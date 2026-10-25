@@ -254,7 +254,7 @@ def test_no_stale_enforcement_premise() -> None:
         assert projects_to["artifact"] == "config/lambda/ducklake/field_semantics.yaml", table
         assert projects_to["table"] == table and projects_to["generator"] == "scripts/schema_to_field_semantics.py", table
         assert "runs in-process before then, so no later flip is owed" in _norm(projects_to["note"]), table
-        assert "not provisioned in production" in _norm(raw["governance"]["write_path"]), table
+        assert "provisioned in the production telemetry catalog" in _norm(raw["governance"]["write_path"]), table
         notes = _norm(raw["governance_notes"])
         assert (
             "a column is not null at write when `nullable` is false or dq_intent declares not_null, "

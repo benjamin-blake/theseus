@@ -204,11 +204,11 @@ def test_dimension_write_paths_name_the_telemetry_writer() -> None:
 def test_substrate_rows_name_the_telemetry_writer() -> None:
     tables = _load("storage-substrate")["tables"]
     telemetry = tables["telemetry_tables"]
-    assert telemetry["status"] == "not_provisioned"  # production residency is slice 2c
+    assert telemetry["status"] == "transitional"
     assert _TELEMETRY_WRITER in telemetry["write_boundary"] and "ducklake_writer" not in telemetry["write_boundary"].replace(
         "shared ducklake_writer", ""
     )
-    assert "ducklake_smoke catalog only" in " ".join(telemetry["note"].split())
+    assert "created and owned in the production telemetry catalog ducklake_telemetry" in " ".join(telemetry["note"].split())
     assert "ducklake_smoke" in telemetry["reason"]
     assert "year(session_started_at), month(session_started_at), day(session_started_at)" in telemetry["disposition"]
     assert "telemetry-event-envelope.yaml" in " ".join(telemetry["contract_ref"]) and "blob port" in _text("storage-substrate")

@@ -7,8 +7,8 @@
 # EVENT JOURNAL (Decision 199): one row per session LIFECYCLE EVENT (open | resume | compact |
 # close | annotate), not one mutated row per session. Session STATE (running, abandoned or a
 # terminal outcome) and DURATION are derived at read by a named reader verb over a session's own
-# rows -- never stored, never mutated in place. GREENFIELD: no telemetry table is provisioned in
-# production yet (slice 2c); the write-time rules project from this contract (Decision 210).
+# rows -- never stored, never mutated in place. GREENFIELD: the tables are provisioned in the
+# production telemetry catalog (Decision 230), empty; the write-time rules project from this contract (Decision 210).
 contract:
   id: telemetry_sessions
   class: A
@@ -458,7 +458,7 @@ governance:
   table_class: event
   partition_by: "history=year(session_started_at), month(session_started_at), day(session_started_at)"
   write_path: >-
-    Not provisioned in production (slice 2c); the writer is rec-4024's append verb on the DuckLake telemetry writer boundary. Append-only event journal; no SCD2 merge, no in-place mutation.
+    Provisioned in the production telemetry catalog (Decision 230); production writes begin at PLAN-telemetry-production-flip; the writer is rec-4024's append verb on the DuckLake telemetry writer boundary. Append-only event journal; no SCD2 merge, no in-place mutation.
 governance_notes: >-
   EVENT JOURNAL (Decision 199, amending Decision 95 clause 1, Decision 96 clauses 1 and 3, and Decision 97 clauses 1-4): telemetry_sessions is the trace ROOT, now shaped as an append-only journal of lifecycle events rather than one row mutated in place. SESSION STATE: running, abandoned or a
   terminal outcome is DERIVED AT READ into `state` (never stored) by the named reader verb that also derives DURATION, reading this session's own rows bounded to its single calendar-day partition (answers Decision 81 clause 8 -- never an unprunable full scan). A root session's state is read
@@ -467,6 +467,7 @@ governance_notes: >-
   from the facts classified by the reader's governed rules file, not a stored tier column). classifier_version is a reader response stamp, never a column. WINDOW VERBS (Decision 199 cl.1, CD.52): a verb over many sessions is a bounded window of per-session derivations, each reading only its own
   session's single calendar-day partition. Each window verb declares its own maximum window in the reader's named-read registry and stamps its read_version; there is no contract-wide day count, and each window is an egress line under Decision 88. NULLABILITY AXES: a column is NOT NULL at write when `nullable` is false or dq_intent declares not_null, unless the field carries `required_when`, which then governs (scripts/field_semantics_event_projection.py _is_not_null); every declared rule is write-enforced (Decision 210); a staged rule is spelled with exclude_before or an owned exemption. KNOWN GAPS (open recs, future CODE work, not this contract): rec-275 (failure-path step telemetry), rec-4030 (the live legacy UUID4 session_id minter's migration to this contract's derivation model), rec-4032 (the later materialised friction-labels form of the reader's rules file that rework_total/exception_total read).
 amendment_log:
+  - {date: "2026-10-25", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-production-catalog bookkeeping: the two not-provisioned-in-production statements now say provisioned in the production telemetry catalog (Decision 230); mechanical status edit, no meaning change."}
   - {date: "2026-10-18", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-read-side-session-end (Decision 228): SESSION STATE governance reads a root session's state from its turns and duration from the later of the producer close and any root turn close; the v4 last-segment residual is closed.", migration_story: "Derived at read; no stored row changes."}
   - {date: "2026-10-17", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-capture-producer-fixes (parser_version 4): governance_notes and the event_kind, event_timestamp, source_ordinal, external_ref and outcome field notes gain the segment-close rule (SC-1, SC-2: one close per root resume boundary for a segment holding an assistant-bearing turn, derived from the tree), the resume row due rule (SC-3), the four new fields' claude_code population (PV-1..PV-4) and the declared last-segment residual (owner rec-4407).", migration_story: "Notes only: no field changes. Parser v4 re-parses every tree from the start; v3 rows are superseded by version, never rewritten."}
   - {date: "2026-10-17", semantic_break: false, change_class: field_add, summary: "PLAN-telemetry-column-additions: four nullable typed columns (harness_session_key, checkout_sha, checkout_base_sha, checkout_dirty).", migration_story: "Nullable additions: every stored row stays valid and reads NULL; no producer emits them before PLAN-telemetry-capture-producer-fixes; the smoke tables gain them through Decision 222's owner step."}
