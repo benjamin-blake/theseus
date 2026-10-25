@@ -107,6 +107,7 @@ from scripts.ops_portal.maintenance_ops import (  # noqa: F401
     selftest_read,
     selftest_roundtrip,
 )
+from scripts.ops_portal.outcomes import FileRecOutcome
 from scripts.ops_portal.risk_scoring import (  # noqa: F401
     _compute_risk_score,
     _derive_computed_fields,
@@ -192,9 +193,21 @@ def file_rec(
     _skip_sync: bool = False,
     context_v2_json: Optional[dict] = None,
 ) -> str:
+    """File a new recommendation and return its allocated ID (see file_rec_with_outcome)."""
+    return file_rec_with_outcome(fields, profile, _migration_int_id, _skip_sync, context_v2_json).rec_id
+
+
+def file_rec_with_outcome(
+    fields: dict,
+    profile: Optional[str] = None,
+    _migration_int_id: Optional[int] = None,
+    _skip_sync: bool = False,
+    context_v2_json: Optional[dict] = None,
+) -> FileRecOutcome:
     """File a new recommendation; the ducklake_writer allocates its ID atomically with the insert.
 
-    On success returns the allocated ID (e.g. 'rec-2171'). On any failure the
+    On success returns a FileRecOutcome whose rec_id is the allocated ID (e.g. 'rec-2171'); inserted is False,
+    with a reason, when a ci_rca dedup path returned an existing id instead of inserting. On any failure the
     call raises LOUDLY (Decision 84 I-4) -- there is no offline outbox; the
     transient-5xx retry inside _ducklake_write (idempotent via the per-call
     ULID) is the only retry.
@@ -215,7 +228,7 @@ def file_rec(
             warning is logged and the rec is filed with legacy free-text context only.
 
     Returns:
-        Allocated ID string ('rec-NNN'). Raises on failure (no offline mode).
+        FileRecOutcome(rec_id, inserted, reason). Raises on failure (no offline mode).
 
     Raises:
         ValueError: If any required non-empty field is absent or blank.
@@ -324,7 +337,7 @@ def file_rec(
                         fingerprint,
                         existing_id,
                     )
-                    return existing_id
+                    return FileRecOutcome(existing_id, False, "ci_rca_open_duplicate")
 
                 # ci-rca-identity-lifecycle: no OPEN match. Status-aware chain: check the
                 # fingerprint's CLOSED head (if any) and run the regression-vs-drop ancestry
@@ -345,7 +358,7 @@ def file_rec(
                             failing_sha,
                             head.rec_id,
                         )
-                        return head.rec_id
+                        return FileRecOutcome(head.rec_id, False, "ci_rca_stale_rerun")
                     fields, context_v2_json = file_regression_record(fields, context_v2_json, head.rec_id)
                     logger.info(
                         "[CI_RCA_LIFECYCLE] fingerprint=%s matches closed %s with no ancestry proof of "
@@ -404,7 +417,7 @@ def file_rec(
         merged["id"] = str(rec_id)
 
     logger.info("[PORTAL] Filed %s: %s", rec_id, merged.get("title", ""))
-    return str(rec_id)
+    return FileRecOutcome(str(rec_id), True, None)
 
 
 def _fetch_rec_from_reader(rec_id: str, profile: Optional[str] = None) -> Optional[dict]:

@@ -12,6 +12,7 @@ import json
 import sys
 
 from scripts.postflight import _common
+from scripts.telemetry_capture.status_line import emit_status
 
 
 def _load_max_age_days() -> int:
@@ -122,22 +123,32 @@ def prune_telemetry_logs(
 
 def run_metrics(steps_total: int = 0, steps_friction: int = 0) -> int:
     """Run session_metrics.py, plan_audit.py, and telemetry pruning."""
-    metrics_cmd = [_common.PYTHON, "scripts/session/metrics.py"]
-    if steps_total or steps_friction:
-        metrics_cmd += ["--steps-total", str(steps_total), "--steps-friction", str(steps_friction)]
-    metrics_result = _common._run(metrics_cmd)
-    audit_result = _common._run([_common.PYTHON, "scripts/roadmap/plan_audit.py"])
+    try:
+        metrics_cmd = [_common.PYTHON, "scripts/session/metrics.py"]
+        if steps_total or steps_friction:
+            metrics_cmd += ["--steps-total", str(steps_total), "--steps-friction", str(steps_friction)]
+        metrics_result = _common._run(metrics_cmd)
+        audit_result = _common._run([_common.PYTHON, "scripts/roadmap/plan_audit.py"])
 
-    prune_result = prune_telemetry_logs()
+        prune_result = prune_telemetry_logs()
 
-    combined = {
-        "metrics": metrics_result.stdout.strip(),
-        "plan_audit": audit_result.stdout.strip(),
-        "metrics_exit_code": metrics_result.returncode,
-        "audit_exit_code": audit_result.returncode,
-        "telemetry_pruning": prune_result,
-    }
-    print(json.dumps(combined, indent=2))
+        combined = {
+            "metrics": metrics_result.stdout.strip(),
+            "plan_audit": audit_result.stdout.strip(),
+            "metrics_exit_code": metrics_result.returncode,
+            "audit_exit_code": audit_result.returncode,
+            "telemetry_pruning": prune_result,
+        }
+        print(json.dumps(combined, indent=2))
+    except Exception:
+        emit_status("postflight.metrics", "failed", "metrics_error")
+        raise
+    if metrics_result.returncode != 0:
+        emit_status("postflight.metrics", "failed", "metrics_exit_nonzero")
+    elif audit_result.returncode != 0:
+        emit_status("postflight.metrics", "failed", "plan_audit_exit_nonzero")
+    else:
+        emit_status("postflight.metrics", "done")
     return 0
 
 

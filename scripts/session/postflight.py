@@ -81,6 +81,7 @@ from scripts.postflight.housekeeping import (  # noqa: E402, F401
 )
 from scripts.postflight.remote import run_push  # noqa: E402, F401
 from scripts.session import postflight_evidence  # noqa: E402
+from scripts.telemetry_capture.status_line import emit_status  # noqa: E402
 
 
 def _parse_scope_table(plan_content: str) -> dict[str, str]:
@@ -462,6 +463,24 @@ def run_auto(commit_message: str, steps_total: int = 0, steps_friction: int = 0)
     return 0 if results.get("status") == "merged" else rc
 
 
+def run_evidence(path: str) -> int:
+    """Write and render structured implementation evidence, reporting the outcome as a status line."""
+    try:
+        evidence = json.loads(Path(path).read_text(encoding="utf-8"))
+        postflight_evidence.validate(evidence)
+    except Exception:
+        emit_status("postflight.evidence", "failed", "invalid_evidence")
+        raise
+    try:
+        postflight_evidence.write(evidence)
+        print(postflight_evidence.render(evidence))
+    except Exception:
+        emit_status("postflight.evidence", "failed", "evidence_error")
+        raise
+    emit_status("postflight.evidence", "done")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Post-session automation")
     group = parser.add_mutually_exclusive_group(required=True)
@@ -511,10 +530,7 @@ def main() -> int:
     if args.metrics:
         return housekeeping.run_metrics(args.steps_total, args.steps_friction)
     if args.evidence:
-        evidence = json.loads(Path(args.evidence).read_text(encoding="utf-8"))
-        postflight_evidence.write(evidence)
-        print(postflight_evidence.render(evidence))
-        return 0
+        return run_evidence(args.evidence)
     if args.close:
         return run_close()
     if args.log_housekeeping:

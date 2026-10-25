@@ -1,6 +1,6 @@
 """Release-order guard for the STATUS v1 grammar (Decision 210 cl.4): nothing emits it before the writer accepts it.
 
-Temporary: the sibling prevention plan relaxes it as a planned change to admit its one emitter helper.
+The one emitter helper (scripts/telemetry_capture/status_line.py) is the only formatting home besides the markers module.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-MARKERS = "src/turn_capture/markers.py"
+FORMATTER_HOMES = {"src/turn_capture/markers.py", "scripts/telemetry_capture/status_line.py"}
 WHOLE_LINE = re.compile(
     r"STATUS v1 source=[A-Za-z0-9_][A-Za-z0-9_.-]* result=(skipped|failed)( reason=[A-Za-z0-9_][A-Za-z0-9_.-]*)?\s*"
 )
@@ -25,7 +25,7 @@ def _tracked_text_files() -> list[Path]:
 def test_no_status_emitter_outside_markers() -> None:
     emitters = [*ROOT.glob("scripts/**/*.py"), *ROOT.glob("src/**/*.py"), *ROOT.glob(".claude/hooks/**/*")]
     for path in emitters:
-        if not path.is_file() or path.relative_to(ROOT).as_posix() == MARKERS:
+        if not path.is_file() or path.relative_to(ROOT).as_posix() in FORMATTER_HOMES:
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         assert "STATUS v1" not in text and "format_status_marker" not in text, path.relative_to(ROOT)
