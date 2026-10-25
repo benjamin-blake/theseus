@@ -8,6 +8,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+import botocore.session
+import pytest
+
 SETUP_SCRIPT = Path("bin/setup-cloud-env.sh")
 
 _INSTALL_TERRAFORM_IF = 'if [ "${INSTALL_TERRAFORM:-0}" = "1" ]; then'
@@ -143,3 +146,101 @@ def test_github_mcp_token_comment_writes_the_proxy_placeholder() -> None:
     assert "#     printf 'proxy-injected\\n' > \"$HOME/.config/gh-mcp/token\"\n" in script
     assert "<PAT>" not in script
     assert "GITHUB_MCP_PAT" not in script
+
+
+_PLACEHOLDER_NAME = "aws-proxy-placeholder-credentials"
+
+
+def _header_block(script: str, start_marker: str, end_marker: str) -> list[str]:
+    lines = script.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith(start_marker))
+    end = next(i for i in range(start, len(lines)) if lines[i].startswith(end_marker))
+    return [line[2:] if line.startswith("# ") else "" for line in lines[start + 1 : end] if line.startswith("#")]
+
+
+def _template_block(script: str, admin: bool) -> str:
+    dev = _header_block(script, "# DEV environment", "# boto3 then resolves")
+    body = [line.removeprefix("    ") for line in dev if line.startswith("    ")]
+    body = [line for line in body if not line.startswith("cd /home/user/ontheloop")]
+    if admin:
+        admin_lines = _header_block(script, "# ADMIN environment", "# and set these")
+        start = next(i for i, line in enumerate(admin_lines) if line.startswith("    [profile"))
+        profile = [line.removeprefix("    ") for line in admin_lines[start:] if line.startswith("    ")]
+        eof = max(i for i, line in enumerate(body) if line == "EOF")
+        body = body[:eof] + [""] + profile + body[eof:]
+    text = "\n".join(body) + "\n"
+    return text.replace("<ACCOUNT_ID>", "acct").replace("<PLACEHOLDER>", "extid")
+
+
+def _install_block(script: str) -> str:
+    start = script.index("# 2b. credential_process placeholder")
+    end = script.index("# 3. AWS CLI v2")
+    return script[start:end]
+
+
+def _run_template(tmp_path: Path, admin: bool) -> tuple[Path, subprocess.CompletedProcess[str]]:
+    script = SETUP_SCRIPT.read_text(encoding="utf-8")
+    home = tmp_path / "home"
+    (home / ".aws").mkdir(parents=True)
+    (home / ".aws" / "credentials").write_text("[agent_static]\naws_access_key_id = stale\n", encoding="utf-8")
+    harness = f"REPO_ROOT={Path.cwd()}\nlog() {{ :; }}\n" + _template_block(script, admin) + _install_block(script)
+    env = {"PATH": os.environ["PATH"], "HOME": str(home)}
+    result = subprocess.run(
+        ["bash", "-c", harness], capture_output=True, text=True, encoding="utf-8", env=env, timeout=30, check=False
+    )
+    return home, result
+
+
+def _resolve(home: Path, profile: str, monkeypatch: pytest.MonkeyPatch) -> botocore.session.Session:
+    for var in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(home / ".aws" / "config"))
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(home / ".aws" / "credentials"))
+    return botocore.session.Session(profile=profile)
+
+
+def test_proxy_template_resolves_agent_static_through_credential_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for admin in (False, True):
+        sub = tmp_path / ("admin" if admin else "dev")
+        sub.mkdir()
+        home, result = _run_template(sub, admin)
+        assert result.returncode == 0, result.stderr
+        assert not (home / ".aws" / "credentials").exists()
+        config = (home / ".aws" / "config").read_text(encoding="utf-8")
+        assert "[profile agent_platform]" in config
+        assert ("[profile agent_platform_admin]" in config) is admin
+        assert config.count("sts_regional_endpoints = regional") == (2 if admin else 1)
+        creds = _resolve(home, "agent_static", monkeypatch).get_credentials()
+        assert creds.access_key == "proxy-injected-key-id"
+
+
+def test_placeholder_install_precedes_first_aws_call() -> None:
+    script = SETUP_SCRIPT.read_text(encoding="utf-8")
+    install = script.index("install -m 0755")
+    assert install < script.index("aws s3 sync")
+    assert install < script.index("bash .claude/hooks/session_start_aws.sh")
+    assert install < script.index('bash "$REPO_ROOT/bin/sync-deps.sh"')
+
+
+def test_placeholder_install_is_idempotent(tmp_path: Path) -> None:
+    script = SETUP_SCRIPT.read_text(encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir()
+    harness = f"REPO_ROOT={Path.cwd()}\nlog() {{ :; }}\nset -euo pipefail\n{_install_block(script)}\n{_install_block(script)}"
+    env = {"PATH": os.environ["PATH"], "HOME": str(home)}
+    result = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, env=env, timeout=30, check=False)
+    assert result.returncode == 0, result.stderr
+    installed = home / ".local" / "bin" / _PLACEHOLDER_NAME
+    assert installed.read_bytes() == (Path("bin") / _PLACEHOLDER_NAME).read_bytes()
+    assert os.access(installed, os.X_OK)
+
+
+def test_header_template_has_no_static_key_and_current_path() -> None:
+    script = SETUP_SCRIPT.read_text(encoding="utf-8")
+    assert "aws_secret_access_key" not in script
+    assert "/home/user/agent-platform" not in script
+    assert "cd /home/user/ontheloop && bash bin/setup-cloud-env.sh" in script
+    assert "sts.eu-west-2.amazonaws.com" in script
+    assert "network secret" in script

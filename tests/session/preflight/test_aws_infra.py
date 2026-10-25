@@ -157,6 +157,13 @@ class TestHandleCredentialsStartup:
         mock_run.assert_not_called()
         assert "DEGRADED" in capsys.readouterr().err
 
+    def test_guidance_names_helper_and_network_secret(self, capsys: pytest.CaptureFixture) -> None:
+        _preflight._handle_credentials_startup("unavailable")
+        err = capsys.readouterr().err
+        assert "scripts.aws_identity caller-arn" in err
+        assert "network secret" in err
+        assert "~/.aws/credentials" not in err
+
 
 class TestCredentialsOrderingInMain:
     """Verify that the credential check runs before ops sync in main()."""
