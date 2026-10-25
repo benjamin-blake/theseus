@@ -4,12 +4,13 @@ handoff_policy:
   timeout_disposition: blocked
 slug: "neon-key-out-of-pr-plans"
 intent: >-  # pragma: allowlist secret -- describes key handling, no credential
-  Stop PR-triggered Terraform plans from reading secret values. The Neon provider API key reaches Terraform only as an
-  ephemeral input variable, so it is never in state or a saved plan. Trusted jobs fetch it at run time. PR speculative
-  plans use a stub key and -refresh=false. The PR-sub planner session loses every unconditioned secret-value read except
-  the tfvars secret: the Neon key and catalog DSN value reads stay only for the reserved drift session, and the GitHub PAT
-  and inference-key value reads go. Executes rec-4618 (Critical) and rec-4616, and the direct-grant half of rec-4619.
-  This is plan N1 of the credential-proxy workstream; the owner password in state stays for N3.
+  Stop PR-triggered Terraform plans from reading the Neon provider API key, and strip the PR-sub planner session's direct
+  secret-value grants. The key reaches Terraform only as an ephemeral input variable, so it is never in state or a saved
+  plan; trusted jobs fetch it at run time and PR speculative plans use a stub key with -refresh=false. The planner keeps
+  no unconditioned secret-value grant except the tfvars secret: the Neon key and catalog DSN value reads stay only for the
+  reserved drift session, and the GitHub PAT and inference-key grants go. Executes rec-4618 (Critical) and rec-4616 and
+  the direct-grant half of rec-4619. Not closed here: the DSN value and catalog owner password stay PR-readable from
+  state and saved plans (TfstateRead, TfplanWrite GetObject) until N3. Plan N1 of the credential-proxy workstream.
 plan_type: IMPLEMENTATION
 verification_tier: V3
 plan_path: docs/plans/PLAN-neon-key-out-of-pr-plans.yaml
@@ -52,29 +53,34 @@ scope:
   - file: scripts/ci/neon_api_key.sh
     action: Create
     purpose: >-
-      Two subcommands. `fetch`: if GITHUB_EVENT_NAME is pull_request or pull_request_target, print
-      "neon-api-key: skipped (PR plan uses a stub)" and exit 0; otherwise, with umask 077, write
-      `aws secretsmanager get-secret-value --secret-id neon-api-key --query SecretString --output text` to
-      "$RUNNER_TEMP/neon-api-key", fail closed on an empty result or a fetch error (one stderr line, no value), and emit
-      ::add-mask:: for the value. The secret is a plain string; never JSON-parse. `run -- CMD...`: read that file (fail
-      loud naming the fetch step if it is missing), delete it, export TF_VAR_neon_api_key in the script's own process only,
-      and exec CMD. Never set -x, never echo the value, never write GITHUB_ENV or GITHUB_OUTPUT.
-  - file: tests/ci/test_neon_api_key_sh.py
+      Two subcommands; the key is never written to disk. `check`: if GITHUB_EVENT_NAME is pull_request or
+      pull_request_target, print "neon-api-key: skipped (PR plan uses a stub)" and exit 0; otherwise read the secret
+      (`aws secretsmanager get-secret-value --secret-id neon-api-key --query SecretString --output text`) into a local
+      variable, fail closed on an empty result or a fetch error (one stderr line, no value), and discard it. This is the
+      pre-apply preflight that lets a missing grant surface in tf_init (Decision 154 infra_error) instead of the apply
+      step. `run -- CMD...`: fetch the same way into a shell variable, emit ::add-mask:: for it before anything else,
+      export TF_VAR_neon_api_key in the script's own process only, and exec CMD. Reusable any number of times in a job
+      (apply-sandbox dispatch plans then applies; apply-reconcile applies, re-plans and applies). Works unchanged against
+      a pre-N1 tree: Terraform ignores a TF_VAR_ for an undeclared variable. The secret is a plain string; never
+      JSON-parse. Never set -x, never echo the value, never write a file, GITHUB_ENV or GITHUB_OUTPUT.
+  - file: tests/test_ci_neon_api_key.py
     action: Create
     purpose: >-
-      Runs the real script with a stub `aws` on PATH and a temp RUNNER_TEMP: fetch skips on pull_request and
-      pull_request_target without calling aws; fetch on push writes a 0600 file and prints exactly one ::add-mask:: line;
-      an empty or failing fetch exits non-zero with no value in output; run exports TF_VAR_neon_api_key to the child,
-      deletes the file before exec, and fails loud when the file is missing; no output line ever carries the stub value
-      except the add-mask line.
+      (tests/test_ci_claude_p_retry.py layout.) Runs the real script with a stub `aws` on PATH and a temp HOME and
+      RUNNER_TEMP: check skips on pull_request and pull_request_target without calling aws; check on push calls aws once
+      and prints no value; an empty or failing fetch exits non-zero with no value in output, for both subcommands; run
+      prints exactly one ::add-mask:: line, exports TF_VAR_neon_api_key to the child, and propagates the child's exit code;
+      two consecutive run calls both succeed; no file is created under RUNNER_TEMP or the cwd; no output line carries the
+      stub value except the add-mask line.
   - file: .github/actions/terraform-init-retry/action.yml
     action: Modify
     purpose: >-
-      Add a second thin-adapter step after init: `bash "$GITHUB_WORKSPACE/scripts/ci/neon_api_key.sh" fetch`. Every user
-      of this action is a terraform/personal job, and tf_init runs on both gated-apply routes and is in every Decision 154
-      pt4 pre-apply allow-list, so a failed fetch writes an infra_error marker rather than a red latch. In reconcile the
-      action resolves from the red-commit checkout, so the fetch script and the Terraform config always come from the same
-      tree (a pre-N1 red commit has neither the variable nor the script). Description updated.
+      Add a second thin-adapter step after init: `bash "$GITHUB_WORKSPACE/scripts/ci/neon_api_key.sh" check`. Every user
+      of this action is a terraform/personal job (apply-sandbox, speculative-plan, gated-apply, both reconcile jobs, and
+      drift after this plan), and tf_init is in every Decision 154 pt4 pre-apply allow-list, so a missing grant writes an
+      infra_error marker rather than a red latch. In reconcile this action resolves from the red-commit checkout; a pre-N1
+      red commit's copy has no check step, which is correct because its config still uses the data source. Description
+      updated.
   - file: .github/workflows/terraform-apply-sandbox.yml
     action: Modify
     purpose: >-  # pragma: allowlist secret -- describes key handling, no credential
@@ -82,40 +88,49 @@ scope:
       `TF_VAR_neon_api_key=pr-speculative-plan-stub-not-a-key terraform plan -refresh=false -lock=false -input=false
       -var-file=terraform.personal.tfvars -out=plan.bin`; the dispatch fresh plan line and both apply lines (apply-sandbox
       and gated-apply) gain the `bash "$GITHUB_WORKSPACE/scripts/ci/neon_api_key.sh" run --` prefix in front of the
-      command they already run (the stale_plan_signature.py wrapper stays). Comments only where the -refresh=false
-      rationale is non-obvious (comment lines are not effective lines).
+      command they already run (the stale_plan_signature.py wrapper stays). Rationale comments must not contain the
+      literal -refresh=false (VP 5 and check (4) count it); comment lines are not effective lines.
   - file: .github/workflows/reconcile.yml
     action: Modify
     purpose: >-
       Same effective-line count (536, at its budget): the apply-reconcile saved apply, fresh re-plan and fresh apply
-      lines, and the gated-apply-reconcile apply line gain the same `run --` prefix. The replan keeps refreshing.
+      lines, and the gated-apply-reconcile apply line gain the prefix `bash "$GITHUB_WORKSPACE/.dispatch-tooling/scripts/ci/neon_api_key.sh" run --`.
+      The script resolves from the dispatch-ref side checkout (both jobs already have it), never from the RED_SHA root
+      checkout, so a pre-N1 red commit still heals (Decision 183): the script exists, and the extra TF_VAR is ignored by
+      the old config. The replan keeps refreshing.
   - file: .github/workflows/terraform-drift.yml
     action: Modify
     purpose: >-
-      The drift plan's terraform line gains the `run --` prefix; drift keeps refreshing (it is the drift control that
-      -refresh=false PR plans now rely on).
+      Replace the inline init retry loop with `uses: ./.github/actions/terraform-init-retry` (same `if:
+      steps.oidc_drift.outcome == 'success'`; same backend file), which brings the check step and removes effective lines.
+      The drift plan's terraform line gains the `run --` prefix. Drift keeps refreshing: it is the drift control that
+      -refresh=false PR plans now rely on. Any test pinning the inline init loop's signature parity is re-pointed at the
+      composite.
   - file: scripts/checks/iam_tf/validate_planner_secret_value_reads.py
     action: Create
     purpose: >-  # pragma: allowlist secret -- describes key handling, no credential
       New check (pre=True, full_after_lint). Reuses validate_convergence_writer_isolation's HCL block and condition
       parsing and validate_invoke_implies_resolve._resolve_statements for source_policy_documents. Asserts: (1) every
       Allow statement in the planner's resolved policy whose actions can return a Secrets Manager value
-      (secretsmanager:GetSecretValue, secretsmanager:Get*, secretsmanager:BatchGetSecretValue, secretsmanager:*, *)
-      either carries the StringLike aws:userid "*:${local.convergence_writer_session_name}" condition or has every
+      (fnmatch of each Action pattern against secretsmanager:GetSecretValue and secretsmanager:BatchGetSecretValue; any
+      NotAction statement fails closed) either carries the StringLike aws:userid "*:${local.convergence_writer_session_name}" condition or has every
       resource inside ALLOWED_UNCONDITIONED (the tfvars secret ARN only, with a comment naming plan C); (2) exactly one
       aws_iam_role_policy and zero aws_iam_role_policy_attachment resources target the planner role; (3) across
       .github/workflows/*.yml the reserved session name appears as a role-session-name value in terraform-drift.yml only;
       (4) in the personal-root workflows (terraform-apply-sandbox.yml, reconcile.yml, terraform-drift.yml) -refresh=false
       appears on the speculative-plan job's plan command and on no other terraform plan, and every other terraform plan
       or apply of the personal root runs through `neon_api_key.sh run --`; (5) no data "aws_secretsmanager_secret_version"
-      block exists under terraform/personal. Declares examined() per Decision 170. Read-only, credential-free.
+      block exists under terraform/personal; (6) every job containing `neon_api_key.sh run --` also uses
+      ./.github/actions/terraform-init-retry, and that action carries the `neon_api_key.sh check` step. Declares
+      examined() per Decision 170. Read-only, credential-free.
   - file: tests/checks/iam_tf/test_validate_planner_secret_value_reads.py
     action: Create
     purpose: >-
       Live-tree green case plus failing-first fixtures: an unconditioned GetSecretValue on a non-allow-listed ARN; Get* on
       the inference keys; a conditioned statement whose condition names a different session; a second planner role policy;
-      a policy attachment; the reserved name in a second workflow; -refresh=false on the drift plan; a dispatch plan
-      without the run prefix; the data source restored.
+      a policy attachment; a NotAction statement; the reserved name in a second workflow; -refresh=false on the drift
+      plan; a dispatch plan without the run prefix; a run-wrapped job without terraform-init-retry; the init-retry action
+      without its check step; the data source restored.
   - file: scripts/checks/iam_tf/_manifest.py
     action: Modify
     purpose: Register validate_planner_secret_value_reads (pre=True, full_segment full_after_lint), beside validate_convergence_writer_isolation.
@@ -133,8 +148,9 @@ scope:
   - file: tests/checks/contracts/test_validate_terraform_cc_web_operations.py
     action: Modify
     purpose: >-
-      Cases: an ephemeral no-default variable listed under ephemeral_runtime_vars passes; the same variable listed under
-      where_values_live fails; an ephemeral variable missing from both fails; a stale ephemeral_runtime_vars entry fails.
+      New cases test_ephemeral_var_listed_under_ephemeral_runtime_vars_passes,
+      test_ephemeral_var_listed_under_where_values_live_fails, test_ephemeral_var_missing_from_both_fails and
+      test_stale_ephemeral_runtime_vars_entry_fails.
   - file: docs/contracts/terraform-cc-web-operations.yaml
     action: Modify
     purpose: >-
@@ -167,12 +183,17 @@ scope:
   - file: tests/ducklake_neon_smoke_test/test_canary.py
     action: Modify
     purpose: >-
-      Re-point the two resolve_project_id stubs; add a case where an explicit project id means resolve_project_id is
-      never called, and a CLI case that --project-id reaches canary_rehearsal.
+      Re-point the two resolve_project_id stubs and delenv NEON_PROJECT_ID in them; new cases
+      test_explicit_project_id_skips_resolve_project_id, test_cli_project_id_reaches_canary_rehearsal and
+      test_missing_project_id_and_listing_failure_fails_loud_with_hint.
 bundled_recommendations:
   - rec-4618
   - rec-4616
-followon_recs: []
+followon_recs:
+  - rec-4627
+  - rec-4628
+  - rec-4629
+  - rec-4630
 infrastructure_dependencies:
   - >-
     terraform/personal apply via the governed CI path only (Decision 126): the merge applies the PR's saved plan (one
@@ -197,7 +218,8 @@ acceptance_criteria:
     the GitHub PAT and inference-key Sids are gone.
   - >-
     PR speculative plans pass a stub key and -refresh=false; every other personal-root plan refreshes; every trusted
-    personal-root plan and apply receives the real key through neon_api_key.sh run, fetched inside tf_init.
+    personal-root plan and apply (apply-sandbox, gated-apply, both reconcile jobs, drift) receives the real key through
+    neon_api_key.sh run, and each of those jobs runs the check preflight inside tf_init.
   - >-
     validate_planner_secret_value_reads is registered (pre) and fails each fixture listed in its test module.
   - >-
@@ -228,8 +250,8 @@ verification_plan:
     graduation_check_id: planner-secret-value-reads
   - step: 2
     phase: pre-deploy
-    action: Run the key helper tests (skip on PR events, fail-closed fetch, mask, run-and-delete).
-    command: bin/venv-python -m pytest tests/ci/test_neon_api_key_sh.py -q
+    action: Run the key helper tests (skip on PR events, fail-closed fetch, mask, reusable run, nothing on disk).
+    command: bin/venv-python -m pytest tests/test_ci_neon_api_key.py -q
     expected: exit 0; every test passes. Before the change the script does not exist.
     fix_if: >-
       The stub value appears in any output line other than the add-mask line -- the script leaks; fix the script, never
@@ -241,8 +263,8 @@ verification_plan:
   - step: 3
     phase: pre-deploy
     action: Run the CC-web operations contract validator tests including the new ephemeral cases.
-    command: bin/venv-python -m pytest tests/checks/contracts/test_validate_terraform_cc_web_operations.py -q
-    expected: exit 0; the new ephemeral cases pass (before the change they fail or do not exist).
+    command: bin/venv-python -m pytest tests/checks/contracts/test_validate_terraform_cc_web_operations.py::test_ephemeral_var_listed_under_ephemeral_runtime_vars_passes tests/checks/contracts/test_validate_terraform_cc_web_operations.py::test_ephemeral_var_listed_under_where_values_live_fails tests/checks/contracts/test_validate_terraform_cc_web_operations.py::test_ephemeral_var_missing_from_both_fails tests/checks/contracts/test_validate_terraform_cc_web_operations.py::test_stale_ephemeral_runtime_vars_entry_fails -q
+    expected: exit 0; the four new node ids pass (before the change they do not exist). The whole file stays green in step 9.
     fix_if: >-
       The live-tree case fails on neon_api_key -- the contract mapping is missing or neon_api_key was put in
       where_values_live; never add it to the tfvars secret.
@@ -253,8 +275,8 @@ verification_plan:
   - step: 4
     phase: pre-deploy
     action: Run the canary tests (explicit project id skips the org-level lookup; CLI pass-through).
-    command: bin/venv-python -m pytest tests/ducklake_neon_smoke_test/test_canary.py -q
-    expected: exit 0; every test passes.
+    command: bin/venv-python -m pytest tests/ducklake_neon_smoke_test/test_canary.py::test_explicit_project_id_skips_resolve_project_id tests/ducklake_neon_smoke_test/test_canary.py::test_cli_project_id_reaches_canary_rehearsal tests/ducklake_neon_smoke_test/test_canary.py::test_missing_project_id_and_listing_failure_fails_loud_with_hint -q
+    expected: exit 0; the three new node ids pass (before the change they do not exist). The whole file stays green in step 9.
     fix_if: resolve_project_id is still called with a project id set -- the skip is wrong.
     hermetic: true
     expected_literals: ["passed"]
@@ -288,8 +310,12 @@ verification_plan:
     fix_if: >-
       A workflow is over budget -- move a prefix onto the existing line or extract an inline body to a delegate script
       (the ci_workflows relief valve); never raise the budget (needs a Decision).
-    hermetic: false
-    graduation: not-applicable
+    hermetic: true
+    expected_literals: ["SIZE_FAILS 0"]
+    graduation: waive
+    graduation_waiver_reason: >-
+      Duplicates three already-registered validate checks (structural size limits, IAM policy size, SLOC limits) that
+      run in every tier; this step only replays them early.
   - step: 7
     phase: pre-deploy
     action: Confirm no Lambda artifact packages any scope file (src/common/neon_api.py is deliberately untouched).
@@ -332,8 +358,11 @@ verification_plan:
       in-place update to aws_iam_role_policy.github_ci_planner and a predicted guard verdict PASS. Read from the PR
       comment and the run, via the GitHub MCP tools.
     command: >-
-      CI-delegated (Decision 119): read the terraform-apply-sandbox speculative-plan job conclusion and its PR comment with
-      mcp__github__ tools; record the run URL, the "N to change" count and the predicted verdict on the PR.
+      mcp__github__actions_list(method="list_workflow_runs", owner="otl-labs", repo="ontheloop",
+      resource_id="terraform-apply-sandbox.yml", workflow_runs_filter={"event": "pull_request", "branch": "<PR head branch>"})
+      -> newest run for the PR head sha; mcp__github__actions_list(method="list_workflow_jobs", resource_id="<run id>")
+      -> job "speculative-plan" conclusion; mcp__github__pull_request_read(method="get_comments", pullNumber=<PR>) -> the
+      plan comment's "Plan:" line and predicted verdict. Record the run URL, both lines and the verdict on the PR.
     expected: Job success; 0 to add, 1 to change, 0 to destroy; predicted verdict PASS; no trust-policy or replace line.
     fix_if: >-
       The plan fails on a Neon refresh -- -refresh=false did not reach the command. A ROUTE verdict or a trust change --
@@ -344,8 +373,10 @@ verification_plan:
     phase: post-deploy
     action: The merge-time apply-sandbox run applied the saved plan with the real key; the convergence record is green.
     command: >-
-      CI-delegated: read the push run of terraform-apply-sandbox for the merge commit with mcp__github__ tools; record its
-      URL and the apply step conclusion.
+      mcp__github__actions_list(method="list_workflow_runs", owner="otl-labs", repo="ontheloop",
+      resource_id="terraform-apply-sandbox.yml", workflow_runs_filter={"event": "push", "branch": "main"}) -> the run whose
+      head_sha is the squash-merge sha; mcp__github__actions_list(method="list_workflow_jobs", resource_id="<run id>") ->
+      job "apply-sandbox" (and "gated-apply" if routed) conclusion and the steps tf_init, apply and record_write.
     expected: apply step success; record_write green; no infra_error marker.
     fix_if: >-
       An infra_error from tf_init naming neon-api-key -- the apply role fetch failed; read the one stderr line. A provider
@@ -358,8 +389,10 @@ verification_plan:
       The next scheduled drift run (hourly at :17) after the apply is green, proving the conditioned value reads, the DSN
       metadata read and the DSN version refresh under the reserved session.
     command: >-
-      CI-delegated: read the first terraform-drift run created after the step 11 apply with mcp__github__ tools; record its
-      URL and conclusion.
+      mcp__github__actions_list(method="list_workflow_runs", owner="otl-labs", repo="ontheloop",
+      resource_id="terraform-drift.yml", workflow_runs_filter={"branch": "main"}) -> the first run with created_at after the
+      step 11 apply finished; mcp__github__actions_list(method="list_workflow_jobs", resource_id="<run id>") -> job
+      "drift-detect" conclusion and the plan step; record the run URL.
     expected: success with plan exit 0.
     fix_if: >-
       AccessDenied on GetSecretValue or DescribeSecret -- the statement shape is wrong; fix forward on a new PR. Never
@@ -406,13 +439,27 @@ verification_plan:
       Benjamin's second Neon re-mint (handoff runbook): new project-scoped key written to neon-api-key, then proof before
       the interim key is revoked -- a dispatched drift run and a canary rehearsal with the project id.
     command: >-
-      CI-delegated drift: dispatch terraform-drift with mcp__github__actions_run_trigger and read its conclusion. Canary
-      (ADMIN, Benjamin's word first): bin/venv-python -m scripts.ducklake_neon_smoke_test --canary-rehearsal --project-id "$NEON_PROJECT_ID" --profile agent_platform_admin
+      mcp__github__actions_run_trigger(method="run_workflow", owner="otl-labs", repo="ontheloop",
+      workflow_id="terraform-drift.yml", ref="main") then mcp__github__actions_list(method="list_workflow_runs",
+      resource_id="terraform-drift.yml", workflow_runs_filter={"event": "workflow_dispatch"}) -> that run's conclusion.
+      Canary (ADMIN, Benjamin's word on this exact command first): bin/venv-python -m scripts.ducklake_neon_smoke_test
+      --canary-rehearsal --project-id "$NEON_PROJECT_ID" --profile agent_platform_admin
     expected: Drift success with the new key; canary PASS. Only then Benjamin revokes the interim key, and the next drift run is green.
     fix_if: >-
       Drift 401/403 on a neon_* refresh -- the project-scoped key does not cover a managed resource; keep the interim key,
       tell Benjamin, record the failing resource. The canary failing on branch create -- record it; it does not block the
       revoke of the org-admin key that is already gone.
+    hermetic: false
+    graduation: not-applicable
+  - step: 16
+    phase: post-deploy
+    action: After the squash-merge with the Resolves trailer, rec-4618 and rec-4616 read closed.
+    command: >-
+      bin/venv-python -c "from src.common.ducklake_reader_client import make_reader, fetch_recs_by_ids as f; rows, missing = f(make_reader(profile='agent_platform'), ['rec-4618', 'rec-4616']); st = sorted((r['id'], r['status']) for r in rows); print(st); assert not missing and all(x == 'closed' for _, x in st)"
+    expected: Prints both ids with status closed; exit 0.
+    fix_if: >-
+      Still open -- the closure job did not run or the acceptance failed; read ci.yml's closure job for the merge sha and
+      the rec's acceptance result. Never close a rec by hand without its acceptance passing.
     hermetic: false
     graduation: not-applicable
 test_obligations:
@@ -442,17 +489,17 @@ test_obligations:
   - source: terraform/personal/variables.tf
     behavior: neon_api_key is ephemeral and listed only under ephemeral_runtime_vars.
     verification_step: 3
-    test_selector: tests/checks/contracts/test_validate_terraform_cc_web_operations.py
-    red_green_expectation: red before (the ephemeral cases do not exist), green after.
+    test_selector: tests/checks/contracts/test_validate_terraform_cc_web_operations.py::test_ephemeral_var_listed_under_ephemeral_runtime_vars_passes
+    red_green_expectation: red before (the node does not exist), green after.
   - source: scripts/ci/neon_api_key.sh
-    behavior: Skips on PR events, fetches fail-closed with a mask, passes the key to one child process and deletes the file.
+    behavior: Skips on PR events, fetches fail-closed with a mask, passes the key to one child process, reusable, nothing on disk.
     verification_step: 2
-    test_selector: tests/ci/test_neon_api_key_sh.py
+    test_selector: tests/test_ci_neon_api_key.py
     red_green_expectation: red before (script missing), green after.
   - source: .github/actions/terraform-init-retry/action.yml
-    behavior: The fetch runs inside tf_init on every terraform/personal job.
+    behavior: The check step runs inside tf_init on every terraform/personal job.
     verification_step: 1
-    test_selector: tests/checks/iam_tf/test_validate_planner_secret_value_reads.py::test_unwrapped_trusted_plan_fails
+    test_selector: tests/checks/iam_tf/test_validate_planner_secret_value_reads.py::test_init_retry_without_check_step_fails
     red_green_expectation: red before (module missing), green after.
   - source: .github/workflows/terraform-apply-sandbox.yml
     behavior: Stub and -refresh=false on the speculative plan only; trusted plan and apply lines wrapped.
@@ -465,24 +512,24 @@ test_obligations:
     test_selector: tests/checks/iam_tf/test_validate_planner_secret_value_reads.py::test_live_tree_passes
     red_green_expectation: red before (unwrapped), green after.
   - source: .github/workflows/terraform-drift.yml
-    behavior: The drift plan is wrapped, refreshing, and the only reserved-session user.
+    behavior: The drift job uses terraform-init-retry, its plan is wrapped and refreshing, and it is the only reserved-session user.
     verification_step: 1
-    test_selector: tests/checks/iam_tf/test_validate_planner_secret_value_reads.py::test_reserved_name_in_second_workflow_fails
+    test_selector: tests/checks/iam_tf/test_validate_planner_secret_value_reads.py::test_run_wrapped_job_without_init_retry_fails
     red_green_expectation: red before (module missing), green after.
   - source: scripts/checks/contracts/validate_terraform_cc_web_operations.py
     behavior: Ephemeral no-default variables are checked against ephemeral_runtime_vars, bidirectionally.
     verification_step: 3
-    test_selector: tests/checks/contracts/test_validate_terraform_cc_web_operations.py
-    red_green_expectation: red before (new cases fail), green after.
+    test_selector: tests/checks/contracts/test_validate_terraform_cc_web_operations.py::test_ephemeral_var_listed_under_where_values_live_fails
+    red_green_expectation: red before (the node does not exist), green after.
   - source: scripts/ducklake_smoke/canary.py
     behavior: An explicit project id skips the org-level project listing.
     verification_step: 4
-    test_selector: tests/ducklake_neon_smoke_test/test_canary.py
+    test_selector: tests/ducklake_neon_smoke_test/test_canary.py::test_explicit_project_id_skips_resolve_project_id
     red_green_expectation: red before (no project_id parameter), green after.
   - source: scripts/ducklake_neon_smoke_test.py
     behavior: --project-id reaches canary_rehearsal.
     verification_step: 4
-    test_selector: tests/ducklake_neon_smoke_test/test_canary.py
+    test_selector: tests/ducklake_neon_smoke_test/test_canary.py::test_cli_project_id_reaches_canary_rehearsal
     red_green_expectation: red before (no flag), green after.
   - source: scripts/checks/iam_tf/_manifest.py
     behavior: The new check is registered in the pre tier.
@@ -499,8 +546,8 @@ test_obligations:
   - source: docs/contracts/terraform-cc-web-operations.yaml
     behavior: ephemeral_runtime_vars lists neon_api_key and matches the module.
     verification_step: 3
-    test_selector: tests/checks/contracts/test_validate_terraform_cc_web_operations.py
-    red_green_expectation: red before (the live-tree case fails on the new ephemeral variable), green after.
+    test_selector: tests/checks/contracts/test_validate_terraform_cc_web_operations.py::test_stale_ephemeral_runtime_vars_entry_fails
+    red_green_expectation: red before (the node does not exist), green after.
   - source: docs/contracts/secret-material-handling.yaml
     behavior: The new pattern and domains line are prose fields read by no evaluator.
     verification_step: 9
@@ -538,68 +585,60 @@ constraints:
     caller-arn; step 13 reads only the account id (exempt class).
   - Approved contract texts are copied verbatim; any wording change goes back to Benjamin.
   - Out-of-scope findings become recs (Decision 59); no rescue agents or workaround loops (Decision 55).
+  - >-
+    Gotchas: the speculative-plan job runs the PR's own workflow, so the IAM condition is the control, never the stub;
+    composite_action_body_baseline may need the new init-retry step registered as a thin adapter (single delegate line);
+    stale_plan_signature.py --wrap must pass the environment through unchanged and never log it; the review subagent step
+    in apply-sandbox runs between plan and apply and must never see the key (it cannot: nothing is written to disk or env
+    outside the run child).
 context:
   - >-
-    Decision-scout verdict FLAGS_FOUND. CITE: 77, 92, 129, 157, 144, 183, 119. Decisions triaged: 188 of 188. Roadmap
-    items intersected: 4; CONFLICT: 0; RELATED: 4. WARN 126/127 resolved (procedure text in deploy-paths, not
-    terraform/CLAUDE.md); SPIRIT 154 resolved (fetch inside tf_init, an allow-listed step). Decision 175 dropped (it is a
-    compaction decision; the rules live in secret-material-handling.yaml). Report:
-    /mnt/project-files/neon-key-pr-exposure/decision-scout-report.md (project share).
-  - "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=<pending>. red_overlap: clear (no reds)."
+    Decision-scout FLAGS_FOUND (resolved). CITE: 77, 92, 129, 157, 144, 183, 119. Decisions triaged: 188 of 188. Roadmap
+    items intersected: 4; CONFLICT: 0; RELATED: 4. WARN 126/127: procedure text goes in deploy-paths, not
+    terraform/CLAUDE.md. SPIRIT 154: the preflight check rides tf_init. Report:
+    /mnt/project-files/neon-key-pr-exposure/decision-scout-report.md.
+  - "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=<pending>. red_overlap: clear."
   - >-
     Approvals: Benjamin "write the plan after reading my feedback", 2026-10-25 18:32
-    (cmsg_01Cqz6E4mzSv6kkGCSCub3WM2vrnLdineigLoAg3ZE3z1X), taking forks 1A, 2A, 3B, 4A and his review's suggestions
-    (PAT and inference-key strip rides N1; contract pattern, no new Decision). T2-T8 below were drafted after step 6b and
-    need his word before this plan PR merges.
+    (cmsg_01Cqz6E4mzSv6kkGCSCub3WM2vrnLdineigLoAg3ZE3z1X): forks 1A, 2A, 3B, 4A plus his review (PAT and inference strip
+    rides N1; contract pattern, no new Decision). T2-T8 were drafted after step 6b and need his word before merge.
   - >-
-    Spike (local, 2026-10-25): neon 0.13.0 makes no API call at configure; an ephemeral variable is absent from plan.bin
-    and must be re-supplied at apply, possibly with a different value; count cannot derive from an ephemeral value (so no
-    ephemeral resource). Consult: /mnt/project-files/neon-key-pr-exposure/ADVICE.md.
+    Accepted residuals (fork 1A): PR plans no longer show refresh-time drift or refresh-read AccessDenied before merge;
+    the hourly drift run and refuse-on-red cover drift, validate_ci_refresh_read_coverage covers grants. A PR importing a
+    neon resource cannot plan (use dispatch). scripts/checks/_terraform.py's informational local plan now reports the
+    missing variable (non-blocking).
   - >-
-    Gotchas: (a) the speculative-plan job runs the PR's own workflow, so the IAM condition is the control, not the stub;
-    (b) a PR that imports a neon resource cannot plan (dispatch path instead); (c) the tfvars, DSN-metadata and tfplan/
-    reads stay; the owner password stays readable from state until N3 (rec-4619 open); (d) composite_action_body_baseline
-    may need the new init-retry step as a thin adapter (single delegate line); (e) stale_plan_signature.py --wrap must
-    pass the environment through unchanged.
+    Not closed (N3, rec-4619, rec-2768): DSN value and owner password via TfstateRead and old plan.bins. Breakglass MFA is
+    rec-4540. Spike and consult: /mnt/project-files/neon-key-pr-exposure/ADVICE.md.
   - >-
-    Re-mint: Benjamin did an interim rotation at 18:09 UTC (drift green at 18:26). The interim key stays PR-readable until
-    the apply, so a second re-mint after step 12 is required (step 15). Timeline for the post-mortem:
-    /mnt/project-files/neon-key-pr-exposure/TIMELINE.md.
+    Re-mint: interim rotation 2026-10-25 18:09 UTC (drift green 18:26); the interim key stays PR-readable until the
+    apply, so step 15 re-mints again. Post-mortem timeline: /mnt/project-files/neon-key-pr-exposure/TIMELINE.md. Plan D
+    rebases onto this plan and no longer deletes the PAT and inference Sids.
   - >-
-    Plan D (Secrets Manager to SSM) rebases onto this plan; its plan 0 no longer deletes the PAT and inference Sids.
-  - "Approved texts (verbatim; T1 is a Terraform description, T2-T8 contract text):"
+    Approved texts. T1 (variables.tf description): "Neon control-plane API key for the neon provider. Supplied per run
+    via TF_VAR_neon_api_key by trusted CI sessions and the admin break-glass loop; PR speculative plans pass a stub and
+    run -refresh=false. Never in tfvars, state, or a saved plan."
   - >-
-    T1 variables.tf description: "Neon control-plane API key for the neon provider. Supplied per run via
-    TF_VAR_neon_api_key by trusted CI sessions and the admin break-glass loop; PR speculative plans pass a stub and run
-    -refresh=false. Never in tfvars, state, or a saved plan."
-  - >-
-    T2 terraform-cc-web-operations tfvars_and_remote_state_recovery.ephemeral_runtime_vars.neon_api_key: {declared_in:
+    T2 (terraform-cc-web-operations tfvars_and_remote_state_recovery.ephemeral_runtime_vars.neon_api_key): {declared_in:
     terraform/personal/variables.tf, source: "Secrets Manager neon-api-key, fetched at run time by
-    scripts/ci/neon_api_key.sh inside tf_init; never in the tfvars secret"}.
+    scripts/ci/neon_api_key.sh run inside each trusted terraform step; never in the tfvars secret"}. T3 (apply_posture
+    sentence becomes): "New no-default variables only require updating that secret -- no per-variable workflow edit --
+    except ephemeral variables (ephemeral_runtime_vars), which trusted jobs fetch at run time." T4 (speculative_plan_job
+    step after the plan step): "Passes a stub TF_VAR_neon_api_key and skips refresh: the planner's PR session holds no
+    Neon or DSN value read, so the plan shows config-versus-state changes only; the hourly drift run is the drift signal."
   - >-
-    T3 apply_posture sentence replaced by: "New no-default variables only require updating that secret -- no
-    per-variable workflow edit -- except ephemeral variables (ephemeral_runtime_vars), which trusted jobs fetch at run
-    time."
-  - >-
-    T4 speculative_plan_job new step after the plan step: "Passes a stub TF_VAR_neon_api_key and runs -refresh=false:
-    the planner's PR session holds no Neon or DSN value read, so the plan shows config-versus-state changes only; the
-    hourly drift run is the drift signal."
-  - >-
-    T5 secret-material-handling patterns.provider_credential_ephemeral_input: "Terraform receives a provider credential
+    T5 (secret-material-handling patterns.provider_credential_ephemeral_input): "Terraform receives a provider credential
     only as an ephemeral = true input variable. Trusted sessions fetch it at run time and pass it as TF_VAR_* to the one
-    terraform process; PR plans receive a stub and run -refresh=false. The value is never in the tfvars secret, state, a
-    saved plan, GITHUB_ENV, or a PR. terraform/github's TF_VAR_github_token is the second instance."
+    terraform process; PR plans receive a stub and skip refresh. The value is never in the tfvars secret, state, a saved
+    plan, a file, GITHUB_ENV, or a PR. terraform/github's TF_VAR_github_token is the second instance." T6 (domains): "Neon
+    provider API key -- terraform/personal/neon_ducklake_catalog.tf (ephemeral input variable neon_api_key; value out of
+    band in neon-api-key; never in state or saved plans)".
   - >-
-    T6 domains line: "Neon provider API key -- terraform/personal/neon_ducklake_catalog.tf (ephemeral input variable
-    neon_api_key; value out of band in neon-api-key; never in state or saved plans)".
-  - >-
-    T7 deploy-paths admin_out_of_band.procedure.steps new entry: "terraform/personal also needs the ephemeral variable
+    T7 (deploy-paths admin_out_of_band.procedure.steps): "terraform/personal also needs the ephemeral variable
     neon_api_key on every plan and every apply, including apply of a saved plan: set TF_VAR_neon_api_key from the
     neon-api-key secret under agent_platform_admin inside the same shell command that runs terraform; never write it to a
-    file, a tfvars, chat, or a PR. The tfvars materialisation recovery does not supply it."
-  - >-
-    T8 account-credential-inventory NEON-05: target "A project-scoped key on ducklake-catalog, in the company organisation
-    at cutover"; rec [rec-4618].
+    file, a tfvars, chat, or a PR. The tfvars materialisation recovery does not supply it." T8 (account-credential-inventory
+    NEON-05): target "A project-scoped key on ducklake-catalog, in the company organisation at cutover"; rec [rec-4618].
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -615,9 +654,10 @@ execution_steps:
     Terraform: neon_ducklake_catalog.tf, variables.tf, oidc.tf, oidc_pipeline_roles.tf per scope. Run terraform fmt -check
     (provider-free) on terraform/personal.
   - >-
-    Create scripts/ci/neon_api_key.sh and its tests; add the init-retry fetch step; wrap the trusted plan and apply lines
-    and change the speculative plan line in the three workflows without adding effective lines.
-  - Create validate_planner_secret_value_reads with fixtures and register it.
+    Create scripts/ci/neon_api_key.sh and its tests; add the init-retry check step; switch drift to the init-retry
+    composite; wrap the trusted plan and apply lines (reconcile via .dispatch-tooling) and change the speculative plan line
+    without adding effective lines to the two at-budget workflows.
+  - Create validate_planner_secret_value_reads with fixtures and register it (manifest, ci_rca_taxonomy).
   - Extend validate_terraform_cc_web_operations and its tests; apply T2-T8 verbatim with one amendment_log entry per contract.
   - Canary project id (canary.py, ducklake_neon_smoke_test.py, test_canary.py).
   - Execute the Verification Plan steps 1-9 locally; open the PR; step 10 on the PR; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55).
