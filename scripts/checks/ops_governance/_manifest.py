@@ -77,7 +77,7 @@ ENTRIES: tuple[Entry, ...] = (
         module="scripts.checks.ops_governance.validate_recs_read_topology",
         attr="validate_recs_read_topology",
         pre=True,
-        pre_globs=("scripts/**", "src/**"),
+        pre_globs=None,
         full_segment="full_after_lint",
     ),
     Entry(

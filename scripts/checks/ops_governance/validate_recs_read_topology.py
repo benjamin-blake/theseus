@@ -33,7 +33,13 @@ ALLOWLIST: tuple[tuple[str, str], ...] = (
     ("src/lambdas/ducklake_writer/**", "the writer boundary itself (Decision 81 cl.1/cl.7)"),
     ("src/lambdas/ducklake_maintenance/**", "the maintenance boundary itself (Decision 81 cl.1/cl.7)"),
     ("src/lambdas/ducklake_maintenance_smoke/**", "the maintenance smoke boundary (Decision 81 cl.1/cl.7)"),
+    (
+        "src/lambdas/ducklake_telemetry_reader/**",
+        "the telemetry reader boundary, own scoped catalog login (Decisions 213, 236)",
+    ),
+    ("src/lambdas/ducklake_telemetry_writer/**", "the telemetry writer boundary, own scoped catalog login (Decision 213)"),
     ("src/lambdas/ducklake_catalog_dr/**", "the catalog DR boundary (Decision 81 cl.1/cl.7)"),
+    ("src/common/ducklake_event_reads.py", "connection layer of the reader-boundary handlers only (Decisions 199 cl.1, 236)"),
     ("scripts/ducklake_smoke/**", "break-glass smoke harness, DUCKLAKE_ALLOW_DIRECT_GATE (Decision 81 cl.7)"),
     ("scripts/ducklake_neon_smoke_test.py", "break-glass smoke harness re-export surface (Decision 81 cl.7)"),
     ("src/telemetry/**", "separate plane-neutral telemetry kernel (Decision 184 cl.2)"),

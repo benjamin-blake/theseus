@@ -45,7 +45,10 @@ PINNED_GLOBS = (
     "src/lambdas/ducklake_writer/**",
     "src/lambdas/ducklake_maintenance/**",
     "src/lambdas/ducklake_maintenance_smoke/**",
+    "src/lambdas/ducklake_telemetry_reader/**",
+    "src/lambdas/ducklake_telemetry_writer/**",
     "src/lambdas/ducklake_catalog_dr/**",
+    "src/common/ducklake_event_reads.py",
     "scripts/ducklake_smoke/**",
     "scripts/ducklake_neon_smoke_test.py",
     "src/telemetry/**",
@@ -285,7 +288,7 @@ class TestRegistration:
     def test_manifest_entry(self) -> None:
         entry = next(e for e in _manifest.ENTRIES if e.name == "validate_recs_read_topology")
         assert entry.pre is True
-        assert entry.pre_globs == ("scripts/**", "src/**")
+        assert entry.pre_globs is None
         assert entry.full_segment == "full_after_lint"
 
     def test_dispatched_in_both_tiers(self) -> None:
