@@ -45,21 +45,26 @@ scope:
       on: pull_request_target {types [opened, synchronize, reopened], paths [terraform/personal/**]} and
       workflow_dispatch; never workflow_call. Top-level permissions: {}. concurrency group per PR number (or run id on
       dispatch), cancel-in-progress true. Jobs, each runs-on ubuntu-latest, timeout-minutes 5, permissions {contents:
-      read, id-token: write}, checkout of github.sha (main) only with persist-credentials false, never the PR head or
-      merge ref, and no github.event.pull_request.* expression inside any run: body:
+      read, id-token: write}, the default actions/checkout with NO ref: or path: input (under both triggers that is main's
+      github.sha) and persist-credentials false, never the PR head or merge ref, and no github.event.pull_request.*
+      expression inside any run: body:
       (1) claims-probe: environment tf-trusted-plan; job-level if (github.event_name == 'workflow_dispatch' ||
       github.event.pull_request.head.repo.full_name == github.repository); one-line run delegate to
       scripts/ci/oidc_claims_probe.py --audience sts.amazonaws.com --require job_workflow_ref.
       (2) claims-probe-no-env: TEMPORARY (S3 deletes it); no environment; if github.event_name == 'pull_request_target'
       && the same-repo condition; same delegate without --require. Answers whether a bare pull_request_target token
       carries ref:refs/heads/main.
-      (3) live-assume: environment tf-trusted-plan; if github.event_name == 'workflow_dispatch'; aws-actions/
+      (3) live-assume: environment tf-trusted-plan; if github.event_name == 'workflow_dispatch'; after the checkout, the
+      ./.github/actions/aws-region step (validate_project_region R4); aws-actions/
       configure-aws-credentials (the repo's pinned version) with role-to-assume
       arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-trusted-plan, role-session-name
-      tf-trusted-plan, region from config/aws-region as other workflows read it; NO continue-on-error; then exactly one
-      run line: aws sts get-caller-identity --region eu-west-1 --endpoint-url https://sts.eu-west-1.amazonaws.com --query
-      Arn --output text | sed -E 's#^arn:aws:sts::[0-9]+:##' (prints assumed-role/<role>/<session> only; the account
-      id is stripped by the command itself, never left to secret masking; a second-region STS host, Plan A pinning).
+      tf-trusted-plan, aws-region ${{ env.AWS_REGION }}, step env MASK_AWS_ROLE_ID_ACCOUNT_PART: ${{
+      secrets.AWS_ROLE_ID_ACCOUNT_PART }} (step or job env, never workflow env; validate_actions_account_id_masking R3/R5),
+      the same pinned action version as dedup-probe.yml; NO continue-on-error; then exactly one run line: aws sts
+      get-caller-identity --query Arn --output text | sed -E 's#^arn:aws:sts::[0-9]+:##' (prints
+      assumed-role/<role>/<session> only; the command strips the account id itself, never relying on masking; no
+      region literal anywhere under .github/, validate_project_region R2; a GitHub runner is not behind the agent
+      proxy, so no STS host pinning is needed).
   - file: scripts/ci/oidc_claims_probe.py
     action: Create
     purpose: >-
@@ -120,8 +125,8 @@ scope:
   - file: config/composite_action_body_baseline.yaml
     action: Modify
     purpose: >-
-      PR 2. Register the new workflow's run bodies only if validate_composite_action_shell_bodies requires it; every body
-      is a one-line delegate (Decision 162), so each entry is 1.
+      PR 2. One r3_workflows entry per new inline run body of terraform-plan-trusted.yml (required:
+      _workflow_shell_bodies fails any unregistered body); every body is one line (Decision 162), so each entry is 1.
   - file: docs/DECISIONS.md
     action: Modify
     purpose: >-  # pragma: allowlist secret -- names secret ARNs and handling, no credential
@@ -191,15 +196,19 @@ scope:
       PR 3. Add ROW_EVALUATORS["trusted_plan_workflow_ref"]: parse local.trusted_plan_workflow_refs from
       terraform/personal/oidc_trusted_plan_role.tf and require it to equal, exactly and in any order, one
       "<owner>/<name>/.github/workflows/<file>@refs/heads/main" value per file in
-      validate_trusted_plan_environment.TRUSTED_WORKFLOWS for each identity the governing phase requires (the same
-      phase logic _evaluate_oidc_trust_segment uses: identity.current, plus identity.target while pre_staged); no
+      validate_trusted_plan_environment.TRUSTED_WORKFLOWS for the identity GitHub mints job_workflow_ref under in the
+      contract's identity.phase: identity.current's owner/name while phase is pre_transfer, both identities while
+      pre_staged, identity.target's from transferred on (today: otl-labs/ontheloop only; the retired name never appears,
+      so _retired_identity's evaluators stay green). This is deliberately NOT _evaluate_oidc_trust_segment's
+      trusted_segments logic: the sub segments are id-based and survive, job_workflow_ref is name-based and does not. No
       wildcard character; a missing file or unparseable local fails. Unless VP step 10 measured another claim form, in
       which case the evaluator encodes the measured form.
   - file: tests/checks/contracts/test_validate_github_org_transfer.py
     action: Modify
     purpose: >-
-      PR 3. Real tree green with the new row; red cases: the row present with no evaluator; a value naming the wrong
-      owner; a missing trusted file's value; a "*" in a value; the local absent.
+      PR 3. Real tree green with the new row; update the exact ROW_EVALUATORS set assertion (line ~195) to include
+      trusted_plan_workflow_ref; red cases: the row present with no evaluator; a value naming the wrong or retired
+      owner; a missing trusted file's value; a "*" in a value; the local absent; phase pre_staged requiring both names.
   - file: terraform/personal/oidc_trusted_plan_role.tf
     action: Create
     purpose: >-
@@ -369,9 +378,10 @@ verification_plan:
       to it (1 to import, 0 to add, 0 to change, 0 to destroy for that address)
     fix_if: >-
       the plan shows a change on tf_trusted_plan -- the UI settings differ from the HCL: show Benjamin which attribute
-      and ask him to fix the UI (never change the HCL to match a weaker setting); the GitHub-root plan errors for a
-      reason unrelated to this resource (rec-4355's pending re-key) -- record the import as unproven on the PR and have
-      Benjamin confirm the four settings in words before merge
+      and ask him to fix the UI (never change the HCL to match a weaker setting); the plan errors on this import (it is
+      keyed on var.repository_name, still theseus until rec-4355's re-key) -- that is the EXPECTED symptom, not a
+      defect: record the import as unproven on the PR and have Benjamin confirm the four settings in words before merge;
+      that confirmation is AC1's evidence (agents cannot read Environments through the proxy)
     hermetic: false
     graduation: not-applicable
   - step: 9
@@ -424,7 +434,12 @@ verification_plan:
       echo 'VIA MCP: after PR 3 merges, list_workflow_runs for terraform-apply-sandbox.yml on main; tell Benjamin the
       gated-apply job is waiting for his approval, with the run link; then read the job conclusion'
     expected: gated-apply concludes success; the convergence record stays green
-    fix_if: an AccessDenied on iam:GetRole -- PR 1's admin apply did not land; stop and RCA, never retry
+    fix_if: >-
+      an AccessDenied on iam:GetRole -- PR 1's admin apply did not land; a MalformedPolicyDocument or invalid condition
+      key on CreateRole -- AWS rejects the trust shape (VP 19 should have caught it). Either way the apply's always-run
+      record write latches the sandbox convergence record red: stop and RCA, never retry; the heal is a forward-fix PR,
+      then the human-reviewed workflow_dispatch acknowledge-and-retry (terraform-cc-web-operations.yaml
+      workflow_dispatch_path), never a silent re-plan
     hermetic: false
   - step: 13
     phase: post-deploy
@@ -512,11 +527,41 @@ verification_plan:
       both jobs are refused by the Environment ("not allowed to deploy" / branch protection rules) before any step
       runs, so no token is minted
     fix_if: >-
-      either job runs -- the protected-branches policy admits a non-main ref: stop before PR 3, tell Benjamin it is a
-      security finding, and offer the custom main-only policy (a github_repository_environment_deployment_policy with
-      branch_pattern main) as the fix; if live-assume ran, record whether AWS refused it (that AccessDenied is the
-      negative proof that job_workflow_ref is enforced)
+      either job runs -- the protected-branches policy admits a non-main ref (possible with organisation rulesets,
+      which predicate g cannot see): STOP before PR 3, tell Benjamin it is a security finding, and wait for his word; the
+      fix (a custom main-only policy) changes environments.tf, predicate (f) and the approved Decision cl.2 wording, so it
+      goes back to the planner as an amendment. The role does not exist yet, so a live-assume AccessDenied here proves
+      nothing about job_workflow_ref
     hermetic: false
+  - step: 19
+    phase: pre-deploy
+    action: >-
+      PR 3, read-only ADMIN: AWS Access Analyzer validates the rendered trust document (proves CreateRole will accept
+      the job_workflow_ref condition key before the gated apply)
+    command: |-
+      bin/venv-python - <<'EOF'
+      import json, boto3
+      repos = ["benjamin-blake@217728084/theseus@1252427466", "otl-labs@330441623/ontheloop@1252427466"]
+      k = "token.actions.githubusercontent.com:"
+      wf = ["otl-labs/ontheloop/.github/workflows/" + f + "@refs/heads/main" for f in ("terraform-plan-trusted.yml", "terraform-github-plan.yml")]
+      doc = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Principal": {"Federated": "arn:aws:iam::" + "1" * 12 + ":oidc-provider/token.actions.githubusercontent.com"}, "Action": "sts:AssumeRoleWithWebIdentity", "Condition": {"StringEquals": {k + "aud": "sts.amazonaws.com", k + "sub": ["repo:" + r + ":environment:tf-trusted-plan" for r in repos], k + "job_workflow_ref": wf}}}]}
+      print("LEN", len(json.dumps(doc, separators=(",", ":"))))
+      aa = boto3.Session(profile_name="agent_platform_admin", region_name="eu-west-2").client("accessanalyzer")
+      f = aa.validate_policy(policyDocument=json.dumps(doc), policyType="RESOURCE_POLICY", validatePolicyResourceType="AWS::IAM::AssumeRolePolicyDocument")["findings"]
+      print("FINDINGS", sorted((x["findingType"], x["issueCode"]) for x in f))
+      assert not [x for x in f if x["findingType"] in ("ERROR", "SECURITY_WARNING")], f
+      print("TRUST_DOC_VALID")
+      EOF
+    expected: >-
+      a LEN line under 2048, a FINDINGS line with no ERROR or SECURITY_WARNING, then TRUST_DOC_VALID. The document must
+      mirror PR 3's HCL (same segments, same values; update the literals here if VP 10 changed the job_workflow_ref
+      form); the placeholder account id is twelve 1s built in code (the never-commit hook blocks any 12-digit literal), never the real one
+    fix_if: >-
+      an ERROR naming the condition key -- AWS does not accept job_workflow_ref in a trust document: stop before merge
+      and return to the planner (the binding fork reopens); a permissions error on the admin profile -- ask Benjamin to
+      allow this read-only call
+    hermetic: false
+    graduation: not-applicable
   - step: 16
     phase: pre-deploy
     action: Full tier, then HEAD attestation, before each commit and push (handoff_policy)
@@ -644,7 +689,7 @@ pre_implementation_checklist:
 execution_steps:
   - "PR 1: edit terraform/bootstrap/github_ci_apply_reads.tf; VP 4, 9; open PR; at CI-green run VP 5-6 and post the counts line; MERGE GATE: no other terraform/bootstrap change is merged but unapplied (S1b, rec-4635, goes first in the default order; Benjamin chose separate sittings) -- check S1b's PR state and its applied-sha comment; merge on review PROCEED + green + code-owner review; then VP 7 on Benjamin's word. A combined sitting with S1b happens only if Benjamin names both changes himself (offer it as an option, never the plan)."
   - "PR 2 (parallel with PR 1): environments.tf, imports.tf, the skeleton workflow, oidc_claims_probe.py and its test, validate_trusted_plan_environment and its test and registrations, the Decision and annotations, the contract rows; VP 2-4, 9; open PR; VP 8 (ask Benjamin to create the Environment, then re-run the GitHub-root plan); merge on review PROCEED + green + code-owner review."
-  - "PR 3 (after S1 applied, PR 1 applied, PR 2 merged): oidc_trusted_plan_role.tf, oidc_pipeline_roles.tf, oidc.tf, test_trusted_plan_identity.py and its registry row, the trusted_plan_workflow_ref contract row with its evaluator and tests; VP 1, 4, 9, 17; open PR (this triggers the probe); VP 10 (adjust only job_workflow_ref's form if measured differently), VP 11; merge with the Resolves: rec-4636 trailer on review PROCEED + green + code-owner review."
+  - "PR 3 (after S1 applied, PR 1 applied, PR 2 merged): oidc_trusted_plan_role.tf, oidc_pipeline_roles.tf, oidc.tf, test_trusted_plan_identity.py and its registry row, the trusted_plan_workflow_ref contract row with its evaluator and tests; VP 1, 4, 9, 17, 19; open PR (this triggers the probe); VP 10 (adjust only job_workflow_ref's form if measured differently), VP 11; merge with the Resolves: rec-4636 trailer on review PROCEED + green + code-owner review."
   - "Right after PR 2 merges, before PR 3 opens: VP 18 (branch-policy proof)."
   - "Post-merge PR 3: VP 12 (Benjamin approves the gated apply), VP 13, VP 14, VP 15; post counts-only evidence on PR 3."
   - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
