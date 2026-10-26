@@ -32,20 +32,18 @@
 #      the guard fail-closes, so it cannot auto-apply):
 #        terraform apply -target=aws_iam_role_policy.github_ci_apply   # from the admin container
 # After Phase 0, Phase 1 auto-applies cleanly: the neon-api-key secret + the apply-role grant already
-# exist (the provider data source resolves at plan time), and the Neon creates + DSN-secret create
-# return guard exit 0.
+# exist, and the Neon creates + DSN-secret create return guard exit 0.
 
 # The neon provider is pinned in main.tf's required_providers block (Terraform allows only one such
 # block per module). Its checksums are committed in .terraform.lock.hcl (supply-chain control).
 #
-# Neon provider API key, read from the out-of-band Secrets Manager secret (Phase 0). This data source
-# resolves at plan time; it is NOT a Terraform-managed resource (no provider->resource cycle).
-data "aws_secretsmanager_secret_version" "neon_api_key" {
-  secret_id = "neon-api-key"
-}
-
+# Neon provider API key: the ephemeral input variable var.neon_api_key, supplied per run (trusted CI
+# fetches it with scripts/ci/neon_api_key.sh; the admin loop follows deploy-paths admin_out_of_band;
+# pattern: secret-material-handling provider_credential_ephemeral_input). It is never in state or a
+# saved plan, and PR speculative plans pass a stub with -refresh=false. The provider pin stays at
+# 0.13.0: the configure-time ephemeral spike is valid for that version only.
 provider "neon" {
-  api_key = data.aws_secretsmanager_secret_version.neon_api_key.secret_string
+  api_key = var.neon_api_key
 }
 
 # ---------------------------------------------------------------------------
