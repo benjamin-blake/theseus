@@ -32,15 +32,19 @@ scope:
     action: Modify
     purpose: >-
       _walk applies HG-1..HG-4: a twin is skipped before _hook_effect and before stream.hooks.append (kind becomes
-      "hook_twin", attached to no turn, counted hook_twin_records); a late startup or clear record attaches to no turn
-      (late_session_start_records); a late resume group's first record is still appended to stream.resumes but closes no
-      turn, and Stream gains resume_at (first-record line -> effective boundary line, rule HG-4; on-time groups map to
-      their own line). _background_spawn reads the boundary through resume_at. Net growth at most 20 SLOC.
+      "hook_twin", attached to no turn, counted hook_twin_records); every SessionStart startup, clear or resume hook
+      record attaches to no turn (a late startup or clear record is counted late_session_start_records); a late resume
+      group's first record is still appended to stream.resumes but closes no turn, and Stream gains resume_at
+      (first-record line -> effective boundary line, rule HG-4; on-time groups map to their own line). _background_spawn
+      both selects its boundary and compares notices by effective line (the first resume whose resume_at line is after
+      the spawn's record). Net growth at most 20 SLOC.
   - file: src/turn_capture/sessions.py
     action: Modify
     purpose: >-
       _segment_closes (SC-1/SC-2) uses stream.resume_at for the boundary position: the turns of the segment before it and
-      the close anchor both stop at the effective line. Resume rows unchanged (they key on the group's first record).
+      the close anchor both stop at the effective line, and the next segment's start advances to that effective line (so
+      the turn a late group landed in belongs to the segment after it). Resume rows unchanged (they key on the group's
+      first record).
   - file: src/turn_capture/provenance.py
     action: Modify
     purpose: >-
@@ -69,9 +73,10 @@ scope:
     purpose: >-
       Class A (Benjamin's word, text inline). The parent_observation_ref process_event note and the governance notes say
       (parser_version 7): one process_event per hook RUN (twins of rule HG-1 are never rows; the first copy in file order
-      is the row); a SessionStart startup or clear hook record written after a prompt record has no enclosing turn, so its
-      parent is NULL. One amendment_log entry. 491 effective lines today; ends at or under 498 (compact an old block-form
-      amendment_log entry to flow form if needed, wording unchanged).
+      is the row); a SessionStart startup, clear or resume hook record never has an enclosing turn, so its parent is NULL
+      even when Claude Code wrote it after a prompt record (on any surface). Cites rec-4439, the owner of the process_event
+      parentage DQ intent. One amendment_log entry. 491 effective lines today; ends at or under 498 (compact an old
+      block-form amendment_log entry to flow form if needed, wording unchanged).
   - file: docs/contracts/telemetry-event-envelope.yaml
     action: Modify
     purpose: >-
@@ -106,10 +111,15 @@ scope:
     purpose: >-
       streams.py's mirror file (coverage floor). New nodes: test_late_startup_records_attach_to_no_turn,
       test_late_resume_group_closes_no_turn_and_is_still_a_resume, test_on_time_resume_group_is_unchanged,
-      test_background_spawn_completes_at_the_effective_boundary. Existing nodes unchanged. Stays under 500 SLOC.
+      test_background_spawn_completes_at_the_effective_boundary (a spawn launched before the effective line completes at
+      the late group; a spawn launched inside the turn the late group landed in is NOT completed at it). Existing nodes
+      unchanged. Stays under 500 SLOC.
   - file: tests/turn_capture/test_segment_closes.py
     action: Modify
-    purpose: New node test_late_resume_segment_close_is_anchored_before_the_effective_boundary.
+    purpose: >-
+      New nodes test_late_resume_segment_close_is_anchored_before_the_effective_boundary and
+      test_turn_after_a_late_resume_belongs_to_the_next_segment (a late resume followed by an on-time resume: the second
+      SC-1 close exists and its outcome reads the turn the late group landed in).
   - file: tests/turn_capture/test_sessions.py
     action: Modify
     purpose: >-
@@ -153,7 +163,8 @@ scope:
     purpose: >-
       A synthetic late resume: turn p1 closed by a witness, then prompt p2 whose timestamp is after the resume hooks
       started, its reply, then the SessionStart:resume group (plain first record whose ts minus durationMs precedes p2's
-      reply), then a witness. Expected: p2 stays one whole turn; a resume row; the SC-1 close anchored on p1's last record.
+      reply), then a witness. Expected: p2 stays one whole turn; a resume row; the SC-1 close anchored on p1's last record;
+      every resume hook process_event with NULL parent.
   - file: tests/fixtures/turn_capture/golden/resume_hook_twins.json
     action: Create
     purpose: >-
@@ -167,7 +178,8 @@ scope:
     purpose: >-
       Re-authored by hand at parser_version 7 under its own AUTHORING RULE (never copied from a verb): header moves to 7;
       a changed tree's entries are re-derived and cite this plan in their why. Expected movement: none outside the new
-      cases, since no existing case holds twins or late groups (confirm from the regenerated diff).
+      cases. The one existing case that moves (observed_real_shapes.json, see execution step 6) is in neither derived
+      file; confirm from the regenerated diff.
   - file: tests/telemetry/fixtures/derived_golden_rollups.yaml
     action: Modify
     purpose: >-
@@ -346,10 +358,12 @@ acceptance_criteria:
     or a PreToolUse and PostToolUse pair of one tool call, stay separate rows; a twin never opens a resume boundary
     (VP 1).
   - >-
-    A SessionStart startup or clear hook record written after a prompt record attaches to no turn. A SessionStart:resume
-    group whose first record's hook started before the latest prompt or assistant record already written closes no turn,
-    is still a resume (resume row, execution_attempt order), and its SC-1 close and background-completion boundary sit at
-    the first prompt of the turn it was written into. On-time groups behave exactly as at v6 (VP 2).
+    A SessionStart startup, clear or resume hook record attaches to no turn, even when written after a prompt record (on
+    any surface). A SessionStart:resume group whose first record's hook started before the latest prompt or assistant
+    record already written closes no turn, is still a resume (resume row, execution_attempt order), and its SC-1 close,
+    the next segment's start and the background-completion boundary all sit at the first prompt of the turn it was
+    written into; a spawn launched inside that turn is never completed at it. On-time groups behave exactly as at v6
+    (VP 2).
   - >-
     PV-2 is unchanged (the open row never reads a pin written after the first prompt), and pin_after_first_prompt counts
     the root streams where that happened (VP 2).
@@ -357,8 +371,9 @@ acceptance_criteria:
     Every rule is decided from the record and the records before it, so incremental capture equals full capture at every
     line cut of every golden case, the three new cases included (VP 4).
   - >-
-    The golden corpus is regenerated at parser_version 7 with the registry bumped and three new cases; the derived golden
-    state and rollups are re-authored by hand at 7 (VP 4).
+    The golden corpus is regenerated at parser_version 7 with the registry bumped and three new cases; the only existing
+    row that changes beyond the version stamps is observed_real_shapes.json's SessionStart:startup hook row sh1 (parent
+    p1 -> NULL); the derived golden state and rollups are re-authored by hand at 7 (VP 4).
   - >-
     The contracts say the same as the code: telemetry_sessions (late pin, late resume), telemetry_observations (one row
     per hook run, late startup parent NULL), the envelope's PARSER_VERSION 7 line before R8, and ports.yaml SA-02; all Class
@@ -392,6 +407,7 @@ verification_plan:
       tests/turn_capture/test_streams.py::test_on_time_resume_group_is_unchanged
       tests/turn_capture/test_streams.py::test_background_spawn_completes_at_the_effective_boundary
       tests/turn_capture/test_segment_closes.py::test_late_resume_segment_close_is_anchored_before_the_effective_boundary
+      tests/turn_capture/test_segment_closes.py::test_turn_after_a_late_resume_belongs_to_the_next_segment
       tests/turn_capture/test_sessions.py::test_segment_closes_read_the_effective_boundary
       tests/turn_capture/test_provenance.py::test_late_pin_is_counted_never_read_by_the_open_row
       tests/turn_capture/test_provenance.py::test_late_resume_pin_is_not_counted_for_the_open_row -q
@@ -537,8 +553,10 @@ verification_plan:
     phase: post-deploy
     action: >-
       After the squash merge carries "Resolves: rec-4633": the closure job closed rec-4633, and the next scheduled
-      telemetry-golden-replay run on main (daily) replays the v7 corpus through the deployed writer and reader; its job log
-      saved to $REPLAY_LOG.
+      telemetry-golden-replay run on main (daily) replays the v7 corpus through the deployed writer and reader. Find the
+      first run whose head is at or after the merge commit with mcp__github__actions_list (list_workflow_runs, workflow
+      telemetry-golden-replay.yml, branch main), then list_workflow_jobs, and save its replay job's log
+      (mcp__github__get_job_logs) to $REPLAY_LOG.
     command: >-
       bin/venv-python -c "from scripts.ops_data_portal import _fetch_rec_from_reader as
       f;s=(f('rec-4633') or {}).get('status');print('rec-4633',s);assert s=='closed'" && grep -E "GOLDEN_SMOKE
@@ -652,10 +670,13 @@ constraints:
     HG-3 late resume: the first record of a SessionStart:resume group (the record that would open the group in _walk) is
     late when its timestamp minus its durationMs (its timestamp alone when durationMs is not an int) is earlier than the
     latest timestamp of any prompt or assistant record before it in the stream; a record without a timestamp is never
-    late. HG-4 effects: a twin is no row, no boundary, no group start and attaches to no turn; a late session-start record
-    attaches to no turn; a late resume group is appended to stream.resumes, closes no turn, and its effective boundary is
-    the first prompt record of the turn current when it arrives (its own line when no turn is current). SessionStart:fork
-    and SessionStart:compact keep v6 behaviour.
+    late. HG-4 effects: a twin is no row, no boundary, no group start and attaches to no turn; every SessionStart:startup,
+    SessionStart:clear and SessionStart:resume hook record attaches to no turn on every surface (observed_real_shapes sh1
+    included; HG-2's verdict only feeds the late_session_start_records counter); a late resume group is appended to
+    stream.resumes, closes no turn, and its effective boundary (stream.resume_at) is the first prompt record of the turn
+    current when it arrives (its own line when no turn is current); _segment_closes starts the next segment at that
+    effective line, and _background_spawn selects and compares its boundary by resume_at. SessionStart:fork and
+    SessionStart:compact keep v6 behaviour.
   - >-
     Purity (envelope R7, Decision 207): every HG verdict reads only the record and the records before it in file order, so
     a verdict never flips when the file grows; no rule reads the CLI's heldContent flag, a wall clock, git or the
@@ -686,7 +707,7 @@ context:
     the earliest record is the CLI's first queue-operation, before every hook), 236, 95, 97, 222, 118, 131, 48, 79.
     ROADMAP T3.20, T3.22, T2.54, T4.23 RELATED. Decisions triaged: 188 of 188. Roadmap items intersected: 4; CONFLICT: 0;
     RELATED: 4.
-  - 'gates: decision-scout=FLAGS_FOUND (NOTE answered); plan-critique=pending'
+  - 'gates: decision-scout=FLAGS_FOUND (NOTE answered); plan-critique=round 1 REVISE (M1, J1-J5 addressed)'
   - >-
     Evidence: /mnt/project-files/project-thread-hooks/FINDINGS.md 5d-5e and fresh-thread-checks-22a0f589.md; a third
     observation in this plan's own planning thread (late group after its first Stop, plain twins right after the held
@@ -699,9 +720,11 @@ context:
     exception; a fresh start whose SessionStart records never land is never pinned and shows up in the daily completeness
     run. The coordinator reports the CLI behaviour (held, twinned, dropped plugin SessionStart records) to Anthropic.
   - >-
-    Declared residuals of HG-3/HG-4: a held first record of a fast hook can read on time (its timestamp is the group's
-    release time); a group that lands after the NEXT prompt puts its boundary one turn late; both are counted
-    (late_resume_group) and unobserved. Late resume groups themselves are unobserved; the fixture is synthetic.
+    Declared residuals of HG-3/HG-4, uncounted (late_resume_group counts detected groups only): a held first record of a
+    fast hook can read on time (its timestamp is the group's release time); a group that lands after the NEXT prompt puts
+    its boundary one turn late; a cross-container clock running behind by more than the resume gap could read an on-time
+    group as late. Late resume groups themselves are unobserved; the fixture is synthetic. Rejected: the Fable
+    late_hook_group_disagreement counter (streams.py SLOC headroom; the residuals stay declared, not measured).
   - >-
     Build-merge gate: Class A text (telemetry_sessions, telemetry_observations, envelope) is pasted inline to Benjamin and
     needs his word before the build merges; the plan PR itself merges under the plan merge gate.
@@ -727,13 +750,15 @@ execution_steps:
     parsed timestamps the caller already holds, and import nothing from streams.py.
   - >-
     3. streams.py (HG-4): in _walk, before the hook branch, a twin is detected on a per-stream key set and gets kind
-    "hook_twin" (attached to no turn, never in stream.hooks, counted hook_twin_records); a late session-start record
-    attaches to no turn (late_session_start_records); a late resume group's first record is registered in stream.resumes
-    and stream.resume_at maps it to cur.first.line (late_resume_group), without closing cur; on-time groups map to their own
-    line. _background_spawn reads resume_at. Add the four test_streams.py nodes; keep test_streams.py at 100% coverage of
+    "hook_twin" (attached to no turn, never in stream.hooks, counted hook_twin_records); every SessionStart startup, clear
+    and resume record attaches to no turn (a late startup/clear record is counted late_session_start_records); a late
+    resume group's first record is registered in stream.resumes and stream.resume_at maps it to cur.first.line
+    (late_resume_group), without closing cur; on-time groups map to their own line. _background_spawn selects and compares
+    its boundary by resume_at (effective line). Add the four test_streams.py nodes; keep test_streams.py at 100% coverage of
     streams.py.
   - >-
-    4. sessions.py _segment_closes and provenance.py's counter, with their nodes (test_sessions.py, test_segment_closes.py,
+    4. sessions.py _segment_closes (SC-1 close and the next segment's start both use the effective line, so a turn after a
+    late resume belongs to the next segment) and provenance.py's counter, with their nodes (test_sessions.py, test_segment_closes.py,
     test_provenance.py). Then test_hook_resume_twins.py. Run VP 1 and VP 2 until green.
   - >-
     5. Contracts: telemetry_sessions.yaml, telemetry_observations.yaml, telemetry-event-envelope.yaml (PARSER_VERSION 7
@@ -743,7 +768,8 @@ execution_steps:
     6. Version and corpus: PARSER_VERSION 7, PRODUCER_VERSION "turn-capture-7", the sanctioned pin change, the three
     builders and cases, the index and registry CASES. Only after VP 1-3 pass, regenerate every case's expected_rows from
     record_turn and review the diff by kind: parser_version and producer_version on every row; new rows only in the new
-    cases; any other change in an existing case is a defect to explain or fix. Set the registry v7 entry with the
+    cases; the one expected change in an existing case is observed_real_shapes sh1 (its resume hook rows' parent moves
+    from p1 to NULL, per HG-4); any other change in an existing case is a defect to explain or fix. Set the registry v7 entry with the
     regenerated digest. Re-author derived_golden_state.yaml and derived_golden_rollups.yaml by hand at 7. Run VP 4.
   - 7. Execute VP 5 (local real trees) and VP 6 (live smoke); on an unrecoverable failure stop and RCA (Decision 55).
   - >-
