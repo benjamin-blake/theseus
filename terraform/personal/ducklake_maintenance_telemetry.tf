@@ -6,8 +6,8 @@
 # series; the ops series stays undimensioned (T2.18 c2, rec-3870). No IAM change: PLAN-telemetry-production-catalog
 # granted the ducklake-telemetry/ prefix.
 #
-# Thresholds are literals from /mnt/project-files/telemetry-slice2c/MEASUREMENT.md (window 2026-10-13T13:27:55Z to
-# 2026-10-20T13:27:55Z), never derived at apply time. The merge-duration threshold alone derives from the admin
+# Thresholds are literals from the 7-day pre-create measurement of the smoke telemetry catalog (window 2026-10-13 to
+# 2026-10-20, recorded by PLAN-telemetry-production-catalog), never derived at apply time. The merge-duration threshold alone derives from the admin
 # function's own timeout (rec-4218 trigger 2 is defined as half of it).
 #
 # Cadence on the reserved_concurrent_executions=1 singleton: control_health :15, ops merge :30, ops gc Sun 03:45,
@@ -16,11 +16,11 @@
 # ---------------------------------------------------------------------------
 
 locals {
-  # MEASUREMENT.md D_files_per_day (1369.1, rounded to an integer).
+  # Measured D_files_per_day (1369.1, rounded to an integer).
   telemetry_data_files_per_day = 1369
-  # MEASUREMENT.md R_stats_rows_per_day (48262).
+  # Measured R_stats_rows_per_day (48262).
   telemetry_stats_rows_per_day = 48262
-  # MEASUREMENT.md commit_latency_p95_ms_7d (5912).
+  # Measured commit_latency_p95_ms_7d (5912).
   telemetry_commit_latency_p95_ms_7d = 5912
   # SNAPSHOT_RETAIN_DAYS 30 + 7: a superseded file's stats rows persist until the weekly GC expires snapshots past retention.
   telemetry_stats_retention_days = 37
