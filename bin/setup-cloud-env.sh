@@ -87,9 +87,8 @@
 #   6. Installs the github-mcp-server binary (for the .mcp.json `github-full`
 #      MCP server -- full GitHub toolset incl. Actions: workflow runs / job logs).
 #   7. Pre-builds the pre-commit hook environments into ~/.cache/pre-commit so
-#      the hooks (detect-secrets, ruff, file hygiene) run offline in later sessions.
-#   8. Mirrors the repo's Claude Code hooks, skills, commands and agents into ~/.claude
-#      for project threads, then runs the remaining checkout-local SessionStart checks.
+#      the hooks (detect-secrets, ruff, file hygiene) run offline in later sessions,
+#      then runs the remaining checkout-local SessionStart checks used by Claude.
 #
 # What it does NOT do:
 #   - Materialise ~/.aws/{credentials,config} or ~/.config/gh-mcp/token (done by
@@ -255,17 +254,6 @@ if [ -x .venv/bin/pre-commit ]; then
     fi
 else
     log "WARNING: .venv/bin/pre-commit missing (requirements-dev.txt not installed?); skipping hook cache."
-fi
-
-# 8. User-level mirror of the repo's Claude Code hooks, skills, commands and agents (snapshot-cached) ---------
-# Project threads start Claude Code with --setting-sources user, which skips .claude/settings.json and the
-# .claude skills/commands/agents trees. The mirror under ~/.claude restores them there; web sessions load both
-# sources and run an identical hook command once. It refreshes only when this snapshot is rebuilt -- the
-# user_hooks_mirror SessionStart check reports drift (see .claude/hooks/user_hooks_mirror.py).
-if out="$(bin/venv-python .claude/hooks/user_hooks_mirror.py install)"; then
-    log "$out"
-else
-    log "WARNING: user-level hook mirror install failed (non-fatal); project threads run without repo hooks."
 fi
 
 # Codex cloud invokes this tracked setup script instead of .claude/settings.json.

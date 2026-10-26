@@ -74,9 +74,16 @@ class TestVenvPythonWrapper:
         missing = run(".claude/hooks/gone.py")
         assert missing.returncode == 1
         assert "script not found: .claude/hooks/gone.py" in missing.stderr
+        after_options = run("-X", "utf8", "-u", "gone.py")
+        assert (after_options.returncode, "script not found: gone.py" in after_options.stderr) == (1, True)
         present = run("present.py", "x")
         assert (present.returncode, present.stdout.strip()) == (0, "ran x")
+        assert run("-X", "utf8", "present.py", "y").stdout.strip() == "ran y"
         assert run("-c", "raise SystemExit(2)").returncode == 2
+        assert run("-m", "gone_module").returncode != 0
+        (tmp_path / "pkg").mkdir()
+        (tmp_path / "pkg" / "__main__.py").write_text("print('ran pkg')\n", encoding="utf-8")
+        assert run("pkg").stdout.strip() == "ran pkg"
 
     def test_falls_back_to_dep_bearing_system_interpreter_when_venv_absent(self, tmp_path: Path) -> None:
         wrapper = _install_wrapper(tmp_path)
