@@ -60,6 +60,7 @@ from tests.fixtures.turn_capture_v3_cases import V3_BUILDERS, check_schedule, ke
 from tests.fixtures.turn_capture_v4_cases import V4_BUILDERS
 from tests.fixtures.turn_capture_v5_cases import V5_BUILDERS
 from tests.fixtures.turn_capture_v6_cases import V6_BUILDERS
+from tests.fixtures.turn_capture_v7_cases import V7_BUILDERS
 
 SECRET_KINDS = ("aws_access", "aws_secret", "aws_session", "anthropic", "github", "github_pat", "bearer")
 
@@ -365,6 +366,7 @@ def test_new_cases_are_built_from_their_builders() -> None:
         **V4_BUILDERS,
         **V5_BUILDERS,
         **V6_BUILDERS,
+        **V7_BUILDERS,
     }
     for name, builder in builders.items():
         assert load_case(name)[0] == builder(), name
@@ -536,7 +538,7 @@ def test_finalization_cuts_are_recorded_once_and_survive_a_reset() -> None:
     stale = dataclasses.replace(first.next_cursor, parser_version=PARSER_VERSION - 1)
     re_emitted = capture(files, stale, final=True)
     assert [r["event_kind"] for r in re_emitted.sessions].count("close") == 1 and re_emitted.next_cursor.finalize_cuts == cuts
-    assert PRODUCER_VERSION == "turn-capture-6" and PARSER_VERSION == 6
+    assert PRODUCER_VERSION == "turn-capture-7" and PARSER_VERSION == 7
 
 
 def test_a_stream_with_no_assistant_reply_emits_no_row_in_any_table() -> None:
