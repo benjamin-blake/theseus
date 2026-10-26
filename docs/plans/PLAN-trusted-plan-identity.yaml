@@ -119,15 +119,17 @@ scope:
       {("terraform-plan-trusted.yml", "claims-probe-no-env")} with a comment that S3 (rec-4637) removes the entry.
       Over .github/workflows/*.yml (parse via scripts.verify_ci_workflow's loader): (a) only TRUSTED_WORKFLOWS reference
       ENV (string or {name:} form, any job); (b) only TRUSTED_WORKFLOWS combine a pull_request_target trigger with
-      id-token: write at workflow or job level; (c) no TRUSTED_WORKFLOWS file declares workflow_call, and
-      every TRUSTED_WORKFLOWS file exists; (d) in TRUSTED_WORKFLOWS, every job holding id-token: write that can run on
-      pull_request_target declares environment ENV (except TEMP_NO_ENV_JOBS) and a job-level if in which
-      github.event.pull_request.head.repo.full_name == github.repository is a top-level && conjunct (same parsing as
-      below; a substring match would pass "... == github.repository || true"). A job "can run on pull_request_target" when
-      its workflow has that trigger and its job-level if does not have github.event_name == 'workflow_dispatch' as a
-      top-level && conjunct (the if text with ${{ }} stripped, split on && outside parentheses); so live-assume
-      (if: github.event_name == 'workflow_dispatch') is dispatch-only and excluded, and an if such as
-      github.event_name == 'workflow_dispatch' || true is not; (e) in TRUSTED_WORKFLOWS no run: body contains "github.event.pull_request." or "github.head_ref"
+      a token-minting job (effective permissions, defined under (d)); (c) no TRUSTED_WORKFLOWS file declares workflow_call, and
+      every TRUSTED_WORKFLOWS file exists; (d) in TRUSTED_WORKFLOWS, every token-minting job that can run on
+      pull_request_target declares environment ENV (except TEMP_NO_ENV_JOBS) and a job-level if guarded per disjunct:
+      strip ${{ }}, split on || outside parentheses, then split each disjunct on && outside parentheses; every
+      disjunct must carry github.event_name == 'workflow_dispatch' or github.event.pull_request.head.repo.full_name ==
+      github.repository as one of its own top-level conjuncts (a substring match would pass "... || true"). A job "can
+      run on pull_request_target" when its workflow has that trigger and some disjunct lacks the dispatch conjunct (no
+      if at all counts as one unguarded disjunct). So claims-probe (dispatch || same-repo) and claims-probe-no-env
+      (pull_request_target && same-repo) pass, live-assume (dispatch only) is excluded, and any "|| true" form is red.
+      Token-minting means EFFECTIVE permissions: the job's permissions if present, else the workflow's; the string
+      write-all or a mapping with id-token: write counts (predicates b, d, g and h all use this); (e) in TRUSTED_WORKFLOWS no run: body contains "github.event.pull_request." or "github.head_ref"
       inside a ${{ }} expression; (f) terraform/github declares github_repository_environment with environment = ENV,
       can_admins_bypass = false, no reviewers block, protected_branches = false, custom_branch_policies = true and
       prevent_destroy = true, exactly one github_repository_environment_deployment_policy for ENV with branch_pattern =
@@ -158,15 +160,18 @@ scope:
       ./.github/actions/unowned; a token-minting job running python3 scripts/ci/oidc_claims_probe.py without -I, and
       one running python3 -m scripts.ci.oidc_claims_probe; an id-token job whose if is
       github.event.pull_request.head.repo.full_name == github.repository || true. A no-env job NOT in TEMP_NO_ENV_JOBS
-      is red. Real-tree green covers the dispatch-only
+      is red; a non-trusted pull_request_target workflow with workflow-level permissions: write-all, and one whose
+      workflow-level id-token: write is inherited by a job with no permissions block. Real-tree green asserts claims-probe
+      and claims-probe-no-env are governed and pass, and covers the dispatch-only
       live-assume job.
   - file: scripts/checks/ci_guards/_manifest.py
     action: Modify
     purpose: >-
       PR 2. Register validate_trusted_plan_environment with the ci_guards domain. pre_globs: .github/workflows/**,
       terraform/github/**, scripts/checks/ci_guards/validate_trusted_plan_environment.py, scripts/verify_ci_workflow/**,
-      scripts/checks/_common.py, scripts/checks/registry.py (predicates a and b police every workflow, so any workflow
-      edit must run it).
+      scripts/checks/_common.py, scripts/checks/registry.py, .github/CODEOWNERS (predicates a and b police every
+      workflow, so any workflow edit must run it; predicate h reads CODEOWNERS, so a CODEOWNERS-only edit must run it
+      too, since validate_pre_glob_closure audits only .py imports).
   - file: config/ci_rca_taxonomy.yaml
     action: Modify
     purpose: >-
@@ -575,7 +580,7 @@ verification_plan:
     fix_if: >-
       main dispatch fails AccessDenied while the step 10 claims match the live trust exactly -- STS does not evaluate the
       binding as documented: stop, return to the planner (the binding fork reopens), and correct the landed Decision
-      only by a dated annotation (Decision 177, the Decision 94 precedent); otherwise main dispatch fails AccessDenied
+      only by a dated annotation (Decision 177); otherwise main dispatch fails AccessDenied
       -- compare the step 10 claims with the live trust and RCA (never widen to
       StringLike)
     hermetic: false
