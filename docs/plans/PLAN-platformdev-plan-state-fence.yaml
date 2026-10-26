@@ -43,8 +43,10 @@ scope:
   action: Create
   purpose: >-
     rec-4635's acceptance test. A public validate_plan_state_fence(text) -> list[str] over the policy file text
-    (statement blocks split per Sid, the regex idiom of test_platform_dev_data_lake_read_fence.py; import its helpers
-    or copy them, builder's choice). It asserts, for each of the four Sids: present exactly once, Effect Deny, no
+    (preferred splitter: the brace-balanced scripts/checks/iam_tf/_read_coverage.py _parse_bootstrap_statements(text,
+    "platform_dev_runtime"), which resolves the hoisted local and splits by object, plus a local Condition-key probe
+    on each object's text; the Sid-to-Sid regex idiom of test_platform_dev_data_lake_read_fence.py is acceptable only
+    with the structural parsing below; builder's choice). It asserts, for each of the four Sids: present exactly once, Effect Deny, no
     Condition, Action set exactly as scoped, Resource set exactly as scoped. It also asserts: no Deny statement in the
     file names a Resource of "${local.data_lake_bucket_arn}/*", ".../convergence/*" or ".../ci-rca-evidence/*" (the
     agent-read paths stay open); exactly four Sids start with "DenyState" (the DEP-13 set is untouched). Tests:
@@ -95,7 +97,8 @@ acceptance_criteria:
   PR for that head.
 - >-
   After the human-directed apply, a live head-object as PlatformDev returns 403 on a real tfplan, tfstate/github and
-  transcript object (200 on each before the apply) and 200 on the three positive controls; the live simulate (which
+  transcript object (200 on each before the apply) and 200 on the three positive controls -- or, where a prefix holds
+  no object, steps 11 and 17's simulate row for it, recorded as unproven-live in the PR description; the live simulate (which
   includes the unmanaged AgentPlatformRuntime policy) matches the pre-merge decisions; evidence is a counts-only
   comment on the merged PR naming the applied sha.
 - >-
@@ -274,9 +277,10 @@ verification_plan:
         ("control-read-convergence", "s3:GetObject", "convergence/personal/sandbox.json", "allowed"),
         ("control-read-evidence", "s3:GetObject", "ci-rca-evidence/probe.json", "allowed"),
         ("control-write-evidence", "s3:PutObject", "ci-rca-evidence/probe.json", "allowed"),
+        ("read-bootstrap-state", "s3:GetObject", "arn:aws:s3:::agent-platform-bootstrap-tfstate/terraform.tfstate", "implicitDeny"),
     ]
     def sim(extra, act, key):
-        return iam.simulate_principal_policy(PolicySourceArn=role, ActionNames=[act], ResourceArns=[o(key)], **extra)["EvaluationResults"][0]["EvalDecision"]
+        return iam.simulate_principal_policy(PolicySourceArn=role, ActionNames=[act], ResourceArns=[key if key.startswith("arn:") else o(key)], **extra)["EvaluationResults"][0]["EvalDecision"]
     today = {n: sim({}, a, k) for n, a, k, _ in rows}
     after = today if live else {n: sim({"PolicyInputList": [cand]}, a, k) for n, a, k, _ in rows}
     print(json.dumps({"live": today} if live else {"today": today, "with_candidate": after}))
@@ -287,11 +291,14 @@ verification_plan:
     print("SIMULATE OK (" + ("live" if live else "candidate") + ") -- every probe fenced, every control kept") if ok else sys.exit("SIMULATE STOP")
     EOF
   expected: >-
-    two JSON lines of probe names and decisions only: with_candidate explicitDeny on the nine fenced rows and allowed
-    on the four controls; open_today includes read-tfplan and write-tfstate-github (the gap this closes; read-tfstate-
+    two JSON lines of probe names and decisions only: with_candidate explicitDeny on the nine fenced rows, allowed on the
+    four controls, and implicitDeny on read-bootstrap-state (the bootstrap root's state bucket, which holds both
+    ExternalIds and on which no PlatformDev policy, managed or not, may grant anything); open_today includes read-tfplan and write-tfstate-github (the gap this closes; read-tfstate-
     personal is explicitDeny today through DEP-13); then SIMULATE OK. Simulated ARNs are representative (the simulator
     evaluates strings, not objects). Post both lines in the PR description with step 10's.
   fix_if: >-
+    read-bootstrap-state allowed -- some PlatformDev policy (likely the unmanaged AgentPlatformRuntime) grants the
+    bootstrap state bucket: STOP and raise it with Benjamin as a security finding, it is outside this plan's Sids;
     a fenced row allowed with the candidate -- the Sid's Resource or Action is wrong: fix it in this PR and re-run
     steps 10-12; a control denied -- a Deny is too wide (convergence/ or ci-rca-evidence/ caught): fix and re-run;
     read-tfplan not open today -- someone already applied a fence: stop and establish who before going on
@@ -376,29 +383,83 @@ verification_plan:
   graduation: not-applicable
 - step: 16
   phase: post-deploy
-  action: LIVE CHECK (as PlatformDev) -- the fenced objects now return 403 and the controls still return 200
-  command: >-
-    echo 'Re-run the step 12 command with PHASE=after exported (PHASE=after bin/venv-python - <<EOF ... as in step 12),
-    then the step 14 recs read, which runs as PlatformDev and must still return rows'
+  action: LIVE CHECK (as PlatformDev) -- the fenced objects now return 403, the controls still return 200, and the recs read still works
+  command: |-
+    bin/venv-python -c "from src.common.ducklake_reader_client import fetch_recs_by_ids, make_reader; rows, _ = fetch_recs_by_ids(make_reader(profile='agent_platform'), ['rec-2768', 'rec-4353', 'rec-4635']); want='pytest tests/checks/iam_tf/test_platform_dev_plan_and_state_fence.py'; got={r['id']: want in (r.get('acceptance') or '') for r in rows}; print(got); assert got == {'rec-2768': True, 'rec-4353': True, 'rec-4635': True}, got" && PHASE=after bin/venv-python - <<'EOF'
+    import json, os, sys, boto3, botocore
+    s3 = boto3.Session(profile_name="agent_platform", region_name="eu-west-2").client("s3")
+    B = "agent-platform-data-lake"
+    def first(prefix, suffix=""):
+        r = s3.list_objects_v2(Bucket=B, Prefix=prefix, Delimiter="/" if prefix == "ci-rca-evidence/" else "", MaxKeys=50)
+        ks = [c["Key"] for c in r.get("Contents", []) if c["Key"].endswith(suffix)]
+        return ks[0] if ks else None
+    def head(k):
+        if k is None:
+            return "empty"
+        try:
+            s3.head_object(Bucket=B, Key=k); return 200
+        except botocore.exceptions.ClientError as e:
+            return int(e.response["ResponseMetadata"]["HTTPStatusCode"])
+    probes = {"tfplan": first("tfplan/personal/"), "tfstate_github": "tfstate/github/terraform.tfstate", "transcript": first("ci-rca-evidence/review-transcripts/"), "control_ducklake": first("ducklake/"), "control_convergence": "convergence/personal/sandbox.json", "control_evidence": first("ci-rca-evidence/", ".json")}
+    got = {n: head(k) for n, k in probes.items()}
+    print(json.dumps(got))
+    after = os.environ.get("PHASE") == "after"
+    want = {n: (403 if after and not n.startswith("control") else 200) for n in probes}
+    print(f"LIVE PROBE OK ({'after' if after else 'before'} the apply)") if got == want else sys.exit("LIVE PROBE STOP")
+    EOF
   expected: >-
-    step 12's JSON line reads 403 for tfplan, tfstate_github and transcript and 200 for the three controls, then LIVE
-    PROBE OK (after the apply); the recs read returns rows. Post the JSON line and the applied sha as a comment on the
-    merged PR (statuses only).
+    first the rec id map, all True (the recs read still works as PlatformDev after the fence); then the JSON line
+    reads 403 for tfplan, tfstate_github and transcript and 200 for the three controls, then LIVE PROBE OK (after the
+    apply). Post the JSON line and the applied sha as a comment on the merged PR (statuses only).
   fix_if: >-
     a fenced probe still 200 -- the apply did not take or the profile is not PlatformDev: check the apply output and
-    scripts.aws_identity caller-arn --profile agent_platform, never widen anything; a control 403 -- a Deny is too
-    wide: stop and RCA with Benjamin (rollback below)
+    scripts.aws_identity caller-arn --profile agent_platform, never widen anything; a control 403 or the recs read
+    failing -- a Deny is too wide: stop and RCA with Benjamin (rollback below); "empty" -- unproven live, rely on step 17
   hermetic: false
   graduation: not-applicable
 - step: 17
   phase: post-deploy
   action: LIVE SIMULATE (ADMIN) -- the live role, including the unmanaged AgentPlatformRuntime policy and the boundary, gives the pre-merge decisions
-  command: >-
-    echo 'Re-run the step 11 command with LIVE=1 exported (no candidate file is needed; the live call replaces the
-    candidate call)'
+  command: |-
+    LIVE=1 && M="${TMPDIR:-/tmp}/pd-fence-gate" && { test -n "$LIVE" || test -s "$M/candidate-policy.json"; } && M="$M" LIVE=1 bin/venv-python - <<'EOF'
+    import json, os, sys, boto3
+    s = boto3.Session(profile_name="agent_platform_admin", region_name="eu-west-2")
+    acct = s.client("sts", region_name="eu-west-1", endpoint_url="https://sts.eu-west-1.amazonaws.com").get_caller_identity()["Account"]
+    iam = s.client("iam")
+    role = "arn" + ":aws:iam::" + acct + ":role/PlatformDev"
+    o = lambda k: "arn:aws:s3:::agent-platform-data-lake/" + k
+    live = bool(os.environ["LIVE"])
+    cand = None if live else open(os.path.join(os.environ["M"], "candidate-policy.json")).read()
+    rows = [
+        ("read-tfplan", "s3:GetObject", "tfplan/personal/1/probe.bin", "explicitDeny"),
+        ("read-tfstate-github", "s3:GetObject", "tfstate/github/terraform.tfstate", "explicitDeny"),
+        ("read-tfstate-personal", "s3:GetObject", "tfstate/personal/sandbox/terraform.tfstate", "explicitDeny"),
+        ("read-transcript", "s3:GetObject", "ci-rca-evidence/review-transcripts/1/review.json", "explicitDeny"),
+        ("version-read-tfplan", "s3:GetObjectVersion", "tfplan/personal/1/probe.bin", "explicitDeny"),
+        ("write-tfstate-github", "s3:PutObject", "tfstate/github/terraform.tfstate", "explicitDeny"),
+        ("write-tfstate-github-lock", "s3:PutObject", "tfstate/github/terraform.tfstate.tflock", "explicitDeny"),
+        ("delete-version-tfplan", "s3:DeleteObjectVersion", "tfplan/personal/1/probe.bin", "explicitDeny"),
+        ("write-transcript", "s3:PutObject", "ci-rca-evidence/review-transcripts/1/review.json", "explicitDeny"),
+        ("control-read-ducklake", "s3:GetObject", "ducklake/probe.parquet", "allowed"),
+        ("control-read-convergence", "s3:GetObject", "convergence/personal/sandbox.json", "allowed"),
+        ("control-read-evidence", "s3:GetObject", "ci-rca-evidence/probe.json", "allowed"),
+        ("control-write-evidence", "s3:PutObject", "ci-rca-evidence/probe.json", "allowed"),
+        ("read-bootstrap-state", "s3:GetObject", "arn:aws:s3:::agent-platform-bootstrap-tfstate/terraform.tfstate", "implicitDeny"),
+    ]
+    def sim(extra, act, key):
+        return iam.simulate_principal_policy(PolicySourceArn=role, ActionNames=[act], ResourceArns=[key if key.startswith("arn:") else o(key)], **extra)["EvaluationResults"][0]["EvalDecision"]
+    today = {n: sim({}, a, k) for n, a, k, _ in rows}
+    after = today if live else {n: sim({"PolicyInputList": [cand]}, a, k) for n, a, k, _ in rows}
+    print(json.dumps({"live": today} if live else {"today": today, "with_candidate": after}))
+    bad = [n for n, _, _, want in rows if after[n] != want]
+    leaked_today = sorted(n for n, _, _, want in rows if want == "explicitDeny" and today[n] == "allowed")
+    print(json.dumps({"mismatch": bad, "open_today": leaked_today}))
+    ok = not bad and (live or ("read-tfplan" in leaked_today and "write-tfstate-github" in leaked_today))
+    print("SIMULATE OK (" + ("live" if live else "candidate") + ") -- every probe fenced, every control kept") if ok else sys.exit("SIMULATE STOP")
+    EOF
   expected: >-
-    one JSON line of probe names and live decisions only, every fenced row explicitDeny and every control allowed, then
-    SIMULATE OK (live); posted with step 16's line
+    two JSON lines of probe names and live decisions only: every fenced row explicitDeny, every control allowed,
+    read-bootstrap-state implicitDeny, mismatch empty, then SIMULATE OK (live); posted with step 16's line
   fix_if: any mismatch -- stop and RCA; the live simulate is the authoritative proof because it includes AgentPlatformRuntime
   hermetic: false
   graduation: not-applicable
@@ -438,9 +499,11 @@ context:
 - "Approval: Benjamin, 2026-10-26, cmsg_01Cqz6E4mzSv6kkGCSCub3WMWa9ZLwK3RsGti4ZSmKusiU ('i agree with your recommendations', taken as write the plan) on /mnt/project-files/platformdev-plan-state-fence/step6b-presentation.md: F1-A (deny transcript reads and writes), F2-A (the apply waits until the bootstrap diff is this change alone). Build PR merge (IAM) and the exact apply command each need his word."
 - "Correction after step 6b: 6b settled-item S7 said the recs close after the live checks, not by merge trailer. docs/contracts/git-ops.yaml resolves_trailer sanctions a manual close only after a transport failure or merge-leg refusal, so the recs close through the build merge's Resolves trailer (precedent PLAN-secrets-to-ssm-grants rec-4626). The handoff asks Benjamin to approve the merge and the apply together so the closed-before-live window stays short."
 - "Slice map and edges: /mnt/project-files/trusted-plan-executor/SPLIT.md. Owns PlatformDev only; S1 rec-4632 owns the CI branch role; S4 rec-4640 owns the standing multi-principal simulate fixture, the principle check over live inline policies, and the AgentPlatformRuntime decision. Shelved fallback for the wider N3 work: /mnt/project-files/owner-password-out-of-state/SHELVED-forget-fallback.md."
+- "Plan-time live evidence (2026-10-26, read-only): VP step 12's command as PlatformDev returned 200 on a real tfplan, tfstate/github and transcript object and on the three controls; step 17's command (live mode) showed read-tfplan, read-tfstate-github, read-transcript and the three write rows allowed today, read-tfstate-personal explicitDeny (DEP-13), read-bootstrap-state implicitDeny."
 - "Non-use evidence: grep of scripts/, src/, bin/, .claude/, .github/, config/ (2026-10-26) finds no PlatformDev reader of tfplan/, tfstate/github or review-transcripts; drain_glue_orphan reads state under the admin profile; DEV validation runs init -backend=false (scripts/checks/_terraform.py:171-173). CloudTrail has no S3 data events, so steps 12 and 16 are the live proof."
 - "Gotchas: an explicit Deny in DailyOps beats the unmanaged AgentPlatformRuntime inline policy's bucket-wide Allow (terraform/CLAUDE.md:53-56); agents read convergence/personal/sandbox.json (scripts/ci/reconcile_target.py:28) and write ci-rca-evidence/<sha>.json, so neither parent prefix may be fenced; a DEV terraform/github plan as PlatformDev now fails at init (intended, rec-4353)."
 - "terraform/github hand apply after the fence: it already runs from AWS CloudShell under an operator identity, and cloud sessions cannot apply it (terraform/github/CLAUDE.md:18-24); the open org-rekey amendment (#1653) reads that state through the ADMIN profile. The fence removes only PlatformDev, so the runbook and environment-taxonomy.yaml axis_a.github stay true and no follow-on rec is needed. S5 (rec-4638) moves the GitHub-root plan to the trusted executor."
+- "S1's follow-on rec-4645 (the CI branch-role Deny in the shared boundary, admin root) is NOT bundled: this plan was past step 6b when it was offered, and F2-A keeps each bootstrap apply to its own diff. rec-4645 gets its own plan and applies before or after this one, never in one sitting with a combined diff unless Benjamin approves that diff (told to the S1 thread 2026-10-26)."
 - "Start conditions: no other bootstrap apply in flight (secrets-to-ssm-grants, secrets-to-ssm-retire, Plan B); runs in parallel with S1. Edits to platform_dev_policies.tf by those plans are textually disjoint (other Sids); rebase, never merge their Sids into this diff."
 - "V3 resolution: terraform/bootstrap is admin-only and applies after merge (Decision 126). The pre-merge evidence is the gate's counts-only lines for the CI-green head (VP steps 10-12), posted on the PR with $PR_HEAD_SHA; it substitutes for the pre-merge post-deploy evidence the implement V3 Merge Gate and code-review V3 check require. The behavioural acceptance (Decision 48) is the post-merge human-directed apply walk (VP steps 15-17), evidenced by a counts-only comment on the merged PR naming the applied sha."
 pre_implementation_checklist:
