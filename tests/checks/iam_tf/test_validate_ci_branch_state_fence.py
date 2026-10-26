@@ -124,3 +124,8 @@ def test_entry_point(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, text: str 
     failed: list[str] = []
     mod.validate_ci_branch_state_fence(failed)
     assert bool(failed) is red
+
+
+def test_red_when_role_policy_mapping_absent() -> None:
+    problems = mod.fence_problems(_hcl().split("resource ")[0])
+    assert any("cannot resolve" in p for p in problems)
