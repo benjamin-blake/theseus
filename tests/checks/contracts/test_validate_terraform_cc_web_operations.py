@@ -316,7 +316,9 @@ _EPHEMERAL_ENTRY = {"declared_in": "terraform/personal/variables.tf", "source": 
 _WIDGET_ENTRY = {"declared_in": "terraform/personal/variables.tf", "source": "state"}
 
 
-def _ephemeral_repo(tmp_path: Path, *, where_values_live: dict, ephemeral_runtime_vars: dict | None, tf: str = _EPHEMERAL_VAR_TF) -> Path:
+def _ephemeral_repo(
+    tmp_path: Path, *, where_values_live: dict, ephemeral_runtime_vars: dict | None, tf: str = _EPHEMERAL_VAR_TF
+) -> Path:
     recovery: dict = {"where_values_live": {"description": "per-variable recovery source", **where_values_live}}
     if ephemeral_runtime_vars is not None:
         recovery["ephemeral_runtime_vars"] = ephemeral_runtime_vars

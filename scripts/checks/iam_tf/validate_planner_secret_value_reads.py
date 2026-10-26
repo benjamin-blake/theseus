@@ -201,7 +201,7 @@ def _check_policy(text: str, key: str, failed: list[str]) -> None:
 
     if _SECRET_VERSION_DATA_RE.search(_strip_hcl_comments(text)):
         failed.append(
-            f"{key} a data \"aws_secretsmanager_secret_version\" block exists under terraform/personal -- "
+            f'{key} a data "aws_secretsmanager_secret_version" block exists under terraform/personal -- '
             "the Neon key is an ephemeral input variable, never a data source (state would hold the value)"
         )
 
@@ -223,20 +223,60 @@ def _logical_commands(run: str) -> list[str]:
     return [c for c in out if c]
 
 
+def _check_command(name: str, job_id: str, cmd: str, m: re.Match[str], key: str, failed: list[str]) -> tuple[bool, bool]:
+    """Check one terraform plan/apply command. Returns (wrapped, has_refresh_false)."""
+    speculative = (name, job_id) == _SPECULATIVE_JOB and m.group(1) == "plan"
+    has_refresh_false = "-refresh=false" in cmd
+    wrapped = bool(_RUN_PREFIX_RE.search(cmd))
+    where = f"{key} {name}:{job_id}"
+    if speculative:
+        if not has_refresh_false or wrapped:
+            failed.append(
+                f"{where} speculative plan must run -refresh=false with a stub key and no neon_api_key.sh run prefix"
+            )
+        return wrapped, has_refresh_false
+    if has_refresh_false:
+        failed.append(f"{where} -refresh=false outside the speculative plan: {cmd[:90]}")
+    if not wrapped:
+        failed.append(f"{where} personal-root terraform {m.group(1)} is not run through neon_api_key.sh run --: {cmd[:90]}")
+    return wrapped, has_refresh_false
+
+
+def _check_job(name: str, job_id: str, job: dict, key: str, failed: list[str]) -> tuple[int, int]:
+    steps = job.get("steps") or []
+    examined = refresh_false = 0
+    wrapped_here = False
+    for step in steps:
+        run = step.get("run")
+        if not isinstance(run, str):
+            continue
+        for cmd in _logical_commands(run):
+            m = _TF_CMD_RE.search(cmd)
+            if not m:
+                continue
+            examined += 1
+            wrapped, rf = _check_command(name, job_id, cmd, m, key, failed)
+            wrapped_here = wrapped_here or wrapped
+            refresh_false += int(rf)
+    if wrapped_here and not any(s.get("uses") == _INIT_RETRY_USES for s in steps):
+        failed.append(f"{key} {name}:{job_id} runs neon_api_key.sh run -- but does not use terraform-init-retry")
+    return examined, refresh_false
+
+
 def _check_workflows(root: Path, session_name: str, key: str, failed: list[str]) -> int:
     wf_dir = root / _WORKFLOW_DIR
-    examined = 0
-    reserved_users: list[str] = []
-    for path in sorted(wf_dir.glob("*.yml")):
-        if re.search(rf"role-session-name:\s*{re.escape(session_name)}\b", path.read_text(encoding="utf-8")):
-            reserved_users.append(path.name)
+    reserved_users = [
+        path.name
+        for path in sorted(wf_dir.glob("*.yml"))
+        if re.search(rf"role-session-name:\s*{re.escape(session_name)}\b", path.read_text(encoding="utf-8"))
+    ]
     if reserved_users != ["terraform-drift.yml"]:
         failed.append(
             f"{key} the reserved session name {session_name!r} must be a role-session-name value in "
             f"terraform-drift.yml only (found {reserved_users}) -- a PR-reachable workflow would hold the key"
         )
 
-    refresh_false = 0
+    examined = refresh_false = 0
     for name in _PERSONAL_WORKFLOWS:
         path = wf_dir / name
         if not path.is_file():
@@ -244,41 +284,13 @@ def _check_workflows(root: Path, session_name: str, key: str, failed: list[str])
             continue
         doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         for job_id, job in (doc.get("jobs") or {}).items():
-            steps = job.get("steps") or []
-            wrapped_here = False
-            for step in steps:
-                run = step.get("run")
-                if not isinstance(run, str):
-                    continue
-                for cmd in _logical_commands(run):
-                    m = _TF_CMD_RE.search(cmd)
-                    if not m:
-                        continue
-                    examined += 1
-                    speculative = (name, job_id) == _SPECULATIVE_JOB and m.group(1) == "plan"
-                    has_refresh_false = "-refresh=false" in cmd
-                    wrapped = bool(_RUN_PREFIX_RE.search(cmd))
-                    wrapped_here = wrapped_here or wrapped
-                    if has_refresh_false:
-                        refresh_false += 1
-                    if speculative:
-                        if not has_refresh_false or wrapped:
-                            failed.append(
-                                f"{key} {name}:{job_id} speculative plan must run -refresh=false with a stub key and "
-                                "no neon_api_key.sh run prefix"
-                            )
-                    else:
-                        if has_refresh_false:
-                            failed.append(f"{key} {name}:{job_id} -refresh=false outside the speculative plan: {cmd[:90]}")
-                        if not wrapped:
-                            failed.append(
-                                f"{key} {name}:{job_id} personal-root terraform {m.group(1)} is not run through "
-                                f"neon_api_key.sh run --: {cmd[:90]}"
-                            )
-            if wrapped_here and not any(s.get("uses") == _INIT_RETRY_USES for s in steps):
-                failed.append(f"{key} {name}:{job_id} runs neon_api_key.sh run -- but does not use terraform-init-retry")
+            e, r = _check_job(name, job_id, job, key, failed)
+            examined += e
+            refresh_false += r
     if refresh_false != 1:
-        failed.append(f"{key} -refresh=false must appear on exactly one plan command (the speculative plan), found {refresh_false}")
+        failed.append(
+            f"{key} -refresh=false must appear on exactly one plan command (the speculative plan), found {refresh_false}"
+        )
     return examined
 
 
@@ -288,7 +300,9 @@ def _check_action(root: Path, key: str, failed: list[str]) -> None:
     if not action.is_file() or "neon_api_key_check.sh" not in action.read_text(encoding="utf-8"):
         failed.append(f"{key} terraform-init-retry/action.yml has no neon_api_key_check.sh step")
     if not delegate.is_file() or not re.search(
-        r'^exec bash "\$GITHUB_WORKSPACE/scripts/ci/neon_api_key\.sh" check$', delegate.read_text(encoding="utf-8"), re.MULTILINE
+        r'^exec bash "\$GITHUB_WORKSPACE/scripts/ci/neon_api_key\.sh" check$',
+        delegate.read_text(encoding="utf-8"),
+        re.MULTILINE,
     ):
         failed.append(f"{key} neon_api_key_check.sh does not exec neon_api_key.sh check")
 

@@ -78,8 +78,10 @@ def test_unconditioned_value_read_fails(tree: Path) -> None:
 def test_get_star_on_inference_keys_fails(tree: Path) -> None:
     _append_planner_statement(
         tree,
-        '  statement {\n    sid = "Inference"\n    effect = "Allow"\n    actions = ["secretsmanager:Describe*", "secretsmanager:Get*"]\n'
-        '    resources = ["arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:agent-platform-anthropic-api-key-*"]\n  }\n',
+        '  statement {\n    sid = "Inference"\n    effect = "Allow"\n'
+        '    actions = ["secretsmanager:Describe*", "secretsmanager:Get*"]\n'
+        '    resources = ["arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:'
+        'secret:agent-platform-anthropic-api-key-*"]\n  }\n',
     )
     assert any("Inference" in f for f in _run(tree))
 
@@ -106,7 +108,8 @@ def test_condition_naming_a_different_session_fails(tree: Path) -> None:
         tree,
         '  statement {\n    sid = "Other"\n    effect = "Allow"\n    actions = ["secretsmanager:GetSecretValue"]\n'
         '    resources = ["arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:other-*"]\n'
-        '    condition {\n      test = "StringLike"\n      variable = "aws:userid"\n      values = ["*:terraform-plan-pr"]\n    }\n  }\n',
+        '    condition {\n      test = "StringLike"\n      variable = "aws:userid"\n'
+        '      values = ["*:terraform-plan-pr"]\n    }\n  }\n',
     )
     assert any("Other" in f for f in _run(tree))
 
@@ -140,7 +143,9 @@ def test_policy_attachment_fails(tree: Path) -> None:
 
 def test_reserved_name_in_second_workflow_fails(tree: Path) -> None:
     path = tree / ".github/workflows/reconcile.yml"
-    path.write_text(path.read_text(encoding="utf-8") + "\n# role-session-name: tf-drift-convergence-writer\n", encoding="utf-8")
+    path.write_text(
+        path.read_text(encoding="utf-8") + "\n# role-session-name: tf-drift-convergence-writer\n", encoding="utf-8"
+    )
     assert any("reserved session name" in f for f in _run(tree))
 
 
@@ -155,7 +160,12 @@ def test_refresh_false_on_drift_plan_fails(tree: Path) -> None:
 
 
 def test_refresh_false_missing_from_speculative_plan_fails(tree: Path) -> None:
-    _edit(tree, ".github/workflows/terraform-apply-sandbox.yml", "terraform plan -refresh=false -lock=false", "terraform plan -lock=false")
+    _edit(
+        tree,
+        ".github/workflows/terraform-apply-sandbox.yml",
+        "terraform plan -refresh=false -lock=false",
+        "terraform plan -lock=false",
+    )
     assert any("speculative plan must run -refresh=false" in f for f in _run(tree))
 
 
@@ -196,14 +206,17 @@ def test_init_retry_without_check_step_fails(tree: Path) -> None:
 
 
 def test_delegate_not_exec_check_fails(tree: Path) -> None:
-    (tree / ".github/actions/terraform-init-retry/neon_api_key_check.sh").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    (tree / ".github/actions/terraform-init-retry/neon_api_key_check.sh").write_text(
+        "#!/usr/bin/env bash\nexit 0\n", encoding="utf-8"
+    )
     assert any("does not exec" in f for f in _run(tree))
 
 
 def test_secret_version_data_source_fails(tree: Path) -> None:
     path = tree / "terraform/personal/neon_ducklake_catalog.tf"
     path.write_text(
-        path.read_text(encoding="utf-8") + '\ndata "aws_secretsmanager_secret_version" "neon_api_key" {\n  secret_id = "neon-api-key"\n}\n',
+        path.read_text(encoding="utf-8")
+        + '\ndata "aws_secretsmanager_secret_version" "neon_api_key" {\n  secret_id = "neon-api-key"\n}\n',
         encoding="utf-8",
     )
     assert any("aws_secretsmanager_secret_version" in f for f in _run(tree))
@@ -223,7 +236,8 @@ def test_drift_value_read_covering_only_one_arn_fails(tree: Path) -> None:
     _edit(
         tree,
         "terraform/personal/oidc_pipeline_roles.tf",
-        '      "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:ducklake-neon-catalog-dsn-*",\n    ]\n    condition',
+        '      "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:'
+        'secret:ducklake-neon-catalog-dsn-*",\n    ]\n    condition',
         "    ]\n    condition",
     )
     assert any("expected exactly one" in f for f in _run(tree))
