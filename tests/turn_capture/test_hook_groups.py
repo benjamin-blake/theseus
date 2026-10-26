@@ -45,7 +45,7 @@ def test_late_resume_compares_hook_start_with_the_latest_reply() -> None:
 
 def test_late_resume_uses_ts_alone_without_duration() -> None:
     reply = T0 + timedelta(seconds=10)
-    for duration in (None, "5000", 5.0, True):
+    for duration in (None, "5000", 5.0, True, -5000, 10**20):
         assert late_resume_start(T0 + timedelta(seconds=9), duration, reply) is True
         assert late_resume_start(T0 + timedelta(seconds=11), duration, reply) is False
 

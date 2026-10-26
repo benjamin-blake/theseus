@@ -12,6 +12,7 @@ from typing import Any
 
 RESUME_HOOK = "SessionStart:resume"
 TURNLESS_HOOKS = ("SessionStart:startup", "SessionStart:clear", RESUME_HOOK)
+MAX_DURATION_MS = 86_400_000
 LATE_START_HOOKS = TURNLESS_HOOKS[:2]
 
 
@@ -29,8 +30,9 @@ def is_late_session_start(name: str, prompt_seen: bool) -> bool:
 
 
 def late_resume_start(ts: datetime | None, duration_ms: Any, latest_reply: datetime | None) -> bool:
-    """Rule HG-3: the hook started (ts minus durationMs, ts alone without it) before the latest prompt or assistant record."""
+    """Rule HG-3: the hook started before the latest prompt or assistant record (ts alone without a usable durationMs)."""
     if ts is None or latest_reply is None:
         return False
-    started = ts - timedelta(milliseconds=duration_ms) if type(duration_ms) is int else ts
+    usable = type(duration_ms) is int and 0 <= duration_ms <= MAX_DURATION_MS
+    started = ts - timedelta(milliseconds=duration_ms) if usable else ts
     return started < latest_reply

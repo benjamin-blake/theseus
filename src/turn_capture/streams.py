@@ -293,7 +293,7 @@ def _walk(stream: Stream, closing: bool, diag: Counter[str]) -> None:
             if groups["resume"]:
                 stream.resume_ends[stream.resumes[-1].line] = rec.line
             groups = {"resume": False, "compact": False}
-            latest = rec.ts if latest is None or rec.ts is None else max(latest, rec.ts)
+            latest = latest if rec.ts is None else rec.ts if latest is None else max(latest, rec.ts)
         if rec.kind == "prompt":
             cur, rec.kind = _open_turn(stream, cur, rec, seen, diag)
             prompted = prompted or rec.kind == "prompt"
@@ -309,7 +309,7 @@ def _walk(stream: Stream, closing: bool, diag: Counter[str]) -> None:
             cur = _hook_effect(stream, rec, cur, groups, latest, diag)
             stream.hooks.append(rec)
             if str(att.get("hookName") or "").startswith(TURNLESS_HOOKS):
-                diag["late_session_start_records"] += is_late_session_start(str(att["hookName"]), prompted)
+                diag["late_session_start_records"] += 1 if is_late_session_start(str(att["hookName"]), prompted) else 0
                 _attach_to_turn(rec, None)
                 continue
         _attach_to_turn(rec, cur)
