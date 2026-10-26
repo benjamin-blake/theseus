@@ -132,7 +132,7 @@ def _callers() -> list[tuple[str, Any, int | None]]:
     ]
 
 
-@pytest.mark.parametrize("caller", range(4))
+@pytest.mark.parametrize("caller", range(4), ids=["monitor", "completeness", "capture", "golden"])
 @pytest.mark.parametrize(
     ("cls", "scope"),
     [("a", "s"), ("completeness_listed_not_captured", "2026-10-18"), ("golden_replay_error", "abc12345")],
@@ -161,3 +161,9 @@ def test_an_old_format_rec_is_still_found_and_rewritten_once() -> None:
     assert outcome.actions == {"a": "update"} and portal.calls[0][1]["context"].endswith(_CONTEXT_NOTE)
     rows = [_rec("rec-1", portal.calls[0][1]["context"])]
     assert _raise({"a": 2}, Portal(), scope="s1", rows=rows).unchanged == 1
+
+
+def test_the_fixed_note_alone_clears_the_context_floor() -> None:
+    projection = yaml.safe_load((ROOT / "config" / "lambda" / "ducklake" / "field_semantics.yaml").read_text("utf-8"))
+    floor = projection["ops_tables"]["ops_recommendations"]["columns"]["context"]["min_length"]
+    assert len(_CONTEXT_NOTE.strip()) >= floor

@@ -2,7 +2,7 @@
 
 Every verification finding class files or updates exactly one telemetry_verify rec through scripts.rec_episode.run_episode and
 never closes it (an operator or a later plan closes a rec once its cause is fixed). Rec text carries counts, class names, the
-scope label and parser_version only: never a row value, transcript content, session id or ref.
+scope label, parser_version and one fixed sentence only: never a row value, transcript content, session id or ref.
 """
 
 from __future__ import annotations
