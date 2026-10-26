@@ -176,7 +176,7 @@ def _validate_recovery_table_coverage(failed: list[str], contract_data: object, 
         )
         return
 
-    ephemeral_runtime_vars = tfvars_recovery.get("ephemeral_runtime_vars", {})
+    ephemeral_runtime_vars = (tfvars_recovery or {}).get("ephemeral_runtime_vars", {})
     if not isinstance(ephemeral_runtime_vars, dict):
         failed.append(
             "terraform-cc-web-operations contract: tfvars_and_remote_state_recovery.ephemeral_runtime_vars "

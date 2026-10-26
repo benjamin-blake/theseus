@@ -12,7 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from scripts.checks import registry
-from scripts.checks.iam_tf.validate_planner_secret_value_reads import validate_planner_secret_value_reads
+from scripts.checks.iam_tf.validate_planner_secret_value_reads import _logical_commands, validate_planner_secret_value_reads
 
 REPO = Path(__file__).resolve().parents[3]
 _FILES = [
@@ -248,3 +248,43 @@ def test_registered_in_pre_and_full_sequence() -> None:
     full = {step.name for step in registry.full_sequence() if step.kind == "check"}
     assert "validate_planner_secret_value_reads" in pre
     assert "validate_planner_secret_value_reads" in full
+
+
+def test_planner_policy_mapping_missing_fails(tree: Path) -> None:
+    _edit(
+        tree,
+        "terraform/personal/oidc_pipeline_roles.tf",
+        'resource "aws_iam_role_policy" "github_ci_planner"',
+        'resource "aws_iam_role_policy" "renamed"',
+    )
+    assert any("could not resolve" in f for f in _run(tree))
+
+
+def test_unresolvable_source_document_fails(tree: Path) -> None:
+    _edit(
+        tree,
+        "terraform/personal/oidc_pipeline_roles.tf",
+        "data.aws_iam_policy_document.ci_full_refresh_read.json",
+        "data.aws_iam_policy_document.nope.json",
+    )
+    assert any("unresolvable policy document" in f for f in _run(tree))
+
+
+def test_missing_workflow_fails(tree: Path) -> None:
+    (tree / ".github/workflows/reconcile.yml").unlink()
+    assert any("reconcile.yml is missing" in f for f in _run(tree))
+
+
+def test_no_terraform_files_fails(tmp_path: Path) -> None:
+    (tmp_path / "terraform/personal").mkdir(parents=True)
+    assert any("cannot read any *.tf" in f for f in _run(tmp_path))
+
+
+def test_missing_session_local_fails(tree: Path) -> None:
+    _edit(tree, "terraform/personal/oidc.tf", "convergence_writer_session_name = ", "renamed_local = ")
+    assert any("convergence_writer_session_name not found" in f for f in _run(tree))
+
+
+def test_logical_commands_joins_continuations_and_keeps_trailing_buffer() -> None:
+    got = [" ".join(c.split()) for c in _logical_commands("# c\nterraform plan \\\n  -x\nnext \\")]
+    assert got == ["terraform plan -x", "next"]

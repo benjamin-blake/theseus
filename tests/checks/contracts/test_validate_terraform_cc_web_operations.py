@@ -377,3 +377,10 @@ def test_ephemeral_entry_for_non_ephemeral_variable_fails(tmp_path: Path) -> Non
     failed: list[str] = []
     validate_terraform_cc_web_operations(failed, repo_root=tmp_path)
     assert failed
+
+
+def test_scalar_ephemeral_runtime_vars_fails(tmp_path: Path) -> None:
+    _ephemeral_repo(tmp_path, where_values_live={"widget_id": _WIDGET_ENTRY}, ephemeral_runtime_vars="not a mapping")  # type: ignore[arg-type]
+    failed: list[str] = []
+    validate_terraform_cc_web_operations(failed, repo_root=tmp_path)
+    assert any("ephemeral_runtime_vars is not a per-variable mapping" in f for f in failed)
