@@ -140,7 +140,7 @@ scope:
   - file: tests/checks/ci_guards/test_validate_trusted_plan_environment.py
     action: Create
     purpose: >-
-      PR 2. Real tree green; one red case per predicate (a)-(g) on synthetic input: a third workflow naming the
+      PR 2. Real tree green; one red case per predicate (a)-(h) on synthetic input: a third workflow naming the
       Environment; a non-trusted pull_request_target workflow with id-token write; workflow_call in the trusted file;
       an id-token job without the Environment or without the same-repo if; a run body interpolating
       github.event.pull_request.head.ref, and one interpolating github.head_ref; the Environment resource with
@@ -229,7 +229,8 @@ scope:
       177), directly under the existing annotations of each: Decision 92: "> **Amended by Decision 237 (2026-10-26):** the Wave 2 speculative plan ratified here as direction no longer runs under a PR-sub planner session; it runs under an environment- and workflow-bound role. This body is otherwise unedited; see Decision 237." Decision 144: "> **Amended by Decision 237 (2026-10-26):** the T2.49 consolidation its clause 7 sequenced loses its plan half to a dedicated trusted-plan role; drift stays on the planner. This body is otherwise unedited; see Decision 237." The decisions
       cache and ops_decisions follow the repo's standing post-merge backfill (Decision 84); never edit
       logs/.decisions-index.jsonl. Size: the rendered entry must stay under validate_decisions_size's 6,144 B per-entry
-      cap (about 5.8 KB measured at plan time); if it is over, stop and ask Benjamin which clause to compress, never
+      cap (about 5.9 KB measured with the round-3/4 text, about 240 B of headroom; use the short Warehouse ID form
+      "dec-NNN (per Decision 84 backfill)", the Decision 223 precedent); if it is over, stop and ask Benjamin which clause to compress, never
       reword the approved text silently.
   - file: docs/contracts/github-org-transfer.yaml
     action: Modify
@@ -325,7 +326,8 @@ scope:
     purpose: PR 2. Registry row (test_selector) for VP step 3's node, guard_target scripts/ci/oidc_claims_probe.py.
 bundled_recommendations:
   - rec-4636
-followon_recs: []
+followon_recs:
+  - rec-4651
 infrastructure_dependencies:
   - "PR 1 (terraform/bootstrap): admin-only root; read-only ADMIN pre-merge plan, then the admin apply on Benjamin's word on the exact command, BEFORE PR 3 merges."
   - "PR 2 (terraform/github): human-gated CloudShell root; the Environment is created by Benjamin in the GitHub UI at build time (he asked to be told when and how), and the import block is adopted at the next CloudShell apply (rec-4355's re-key, or -var repository_name=ontheloop). No agent applies terraform/github."
@@ -338,7 +340,7 @@ acceptance_criteria:
   - the live-assume dispatch on main succeeds, and a dispatch from a non-main ref is refused by the Environment
   - the planner can no longer s3:GetObject tfplan/personal/*
   - validate_trusted_plan_environment and test_trusted_plan_identity are green in the fast tier
-  - the approved Decision is in docs/DECISIONS.md with dated annotations on Decisions 92 and 144; the two github-org-transfer.yaml rows match the approved text
+  - the approved Decision is in docs/DECISIONS.md with dated annotations on Decisions 92 and 144 (VP 21); the two github-org-transfer.yaml rows match the approved text
   - rec-4636 is closed
 verification_plan:
   - step: 1
@@ -393,7 +395,7 @@ verification_plan:
       PRE-MERGE GATE (ADMIN), PR 1 -- read-only plan of terraform/bootstrap at the CI-green PR head: one in-place update
       of the apply role's reads policy, nothing created or destroyed
     command: |-
-      test -n "$PR_HEAD_SHA" && M="${TMPDIR:-/tmp}/trusted-plan-gate" && (umask 077 && mkdir -p "$M") && aws secretsmanager get-secret-value --secret-id agent-platform-terraform-personal-tfvars --profile agent_platform_admin --query SecretString --output text | grep -E '^[[:space:]]*(account_id|owner_email|platform_dev_external_id|platform_admin_external_id|agent_service_account_user_name)[[:space:]]*=' > "$M/bootstrap.tfvars" && W="$M/wt" && git fetch origin "$PR_HEAD_SHA" && git worktree add --detach "$W" "$PR_HEAD_SHA" > /dev/null && rc=0 && { terraform -chdir="$W/terraform/bootstrap" init -input=false > /dev/null && terraform -chdir="$W/terraform/bootstrap" plan -input=false -lock=false -var-file="$M/bootstrap.tfvars" -out="$M/head.tfplan" > /dev/null && terraform -chdir="$W/terraform/bootstrap" show -json "$M/head.tfplan" > "$M/head.json"; } || rc=1; git worktree remove --force "$W"; rm -f "$M/head.tfplan" "$M/bootstrap.tfvars"; test $rc -eq 0 && M="$M" bin/venv-python - <<'EOF'
+      test -n "$PR_HEAD_SHA" && M="${TMPDIR:-/tmp}/trusted-plan-gate" && (umask 077 && mkdir -p "$M") && aws secretsmanager get-secret-value --secret-id agent-platform-terraform-personal-tfvars --profile agent_platform_admin --query SecretString --output text | grep -E '^[[:space:]]*(account_id|owner_email|platform_dev_external_id|platform_admin_external_id|agent_service_account_user_name)[[:space:]]*=' > "$M/bootstrap.tfvars" && W="$M/wt" && git fetch origin "$PR_HEAD_SHA" && git worktree add --detach "$W" "$PR_HEAD_SHA" > /dev/null && rc=0 && { terraform -chdir="$W/terraform/bootstrap" init -input=false > /dev/null && terraform -chdir="$W/terraform/bootstrap" plan -input=false -lock=false -var-file="$M/bootstrap.tfvars" -out="$M/head.tfplan" > /dev/null && terraform -chdir="$W/terraform/bootstrap" show -json "$M/head.tfplan" > "$M/head.json"; } || rc=1; git worktree remove --force "$W"; rm -f "$M/head.tfplan" "$M/bootstrap.tfvars"; test $rc -eq 0 || rm -f "$M/head.json"; test $rc -eq 0 && M="$M" bin/venv-python - <<'EOF'
       import json, os, sys
       m = os.environ["M"]
       rc = json.load(open(f"{m}/head.json")).get("resource_changes", [])
@@ -605,8 +607,9 @@ verification_plan:
   - step: 19
     phase: pre-deploy
     action: >-
-      PR 3, read-only ADMIN: AWS Access Analyzer validates the rendered trust document (proves CreateRole will accept
-      the job_workflow_ref condition key before the gated apply)
+      PR 3, read-only ADMIN: AWS Access Analyzer finds no grammar errors in the rendered trust document (CreateRole
+      acceptance itself is proven only at VP 12; Access Analyzer may not model provider-specific keys, so a pass here
+      is necessary, not sufficient, before the gated apply)
     command: |-
       bin/venv-python - <<'EOF'
       import json, boto3
@@ -649,6 +652,35 @@ verification_plan:
     hermetic: false
     graduation: waive
     graduation_waiver_reason: The test module is already graduated as terraform/github's import-block guard; this plan only adds an expected-id type and a case.
+  - step: 21
+    phase: pre-deploy
+    action: PR 3. AC7 -- the Decision, its two amendment annotations and its size are present on the branch
+    command: |-
+      bin/venv-python - <<'EOF'
+      import re
+      t = open("docs/DECISIONS.md", encoding="utf-8").read()
+      heads = list(re.finditer(r"^## Decision (\d+):", t, re.M))
+      new = [m for m in heads if "No agent-controlled identity reads Terraform state" in t[m.start():m.start() + 200]]
+      assert len(new) == 1, "Decision heading missing or duplicated"
+      n = new[0].group(1)
+      i = heads.index(new[0])
+      body = t[new[0].start():heads[i + 1].start() if i + 1 < len(heads) else len(t)]
+      print("DECISION", n, "BYTES", len(body.encode()))
+      assert len(body.encode()) < 6144
+      for d in ("92", "144"):
+          m = re.search(r"^## Decision " + d + r":", t, re.M)
+          nxt = re.search(r"^## Decision \d+:", t[m.end():], re.M)
+          seg = t[m.start():m.end() + (nxt.start() if nxt else len(t))]
+          assert "> **Amended by Decision " + n + " (" in seg, "annotation missing on " + d
+      print("AC7_OK")
+      EOF
+    expected: one DECISION line with BYTES under 6144, then AC7_OK
+    fix_if: >-
+      the size is over -- stop and ask Benjamin which clause to compress; a missing annotation -- add it under that
+      Decision's existing annotations (Decision 177), never edit either body
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: validate_decisions_size already guards the size in --pre; heading and annotation presence is a one-time landing fact, not a regression surface.
 test_obligations:
   - source: terraform/personal/oidc_trusted_plan_role.tf
     behavior: one environment- and job_workflow_ref-bound trust statement; exactly the four Sids plus the shared refresh-read surface
@@ -686,7 +718,7 @@ test_obligations:
     test_selector: tests/checks/ci_guards/test_validate_trusted_plan_environment.py
     red_green_expectation: red before (predicate c's file-exists leg and predicate f fail), green after
   - source: scripts/checks/ci_guards/validate_trusted_plan_environment.py
-    behavior: each predicate (a)-(g) reddens on its synthetic breach
+    behavior: each predicate (a)-(h) reddens on its synthetic breach
     verification_step: 2
     test_selector: tests/checks/ci_guards/test_validate_trusted_plan_environment.py
     red_green_expectation: red before (module absent), green after
@@ -773,7 +805,7 @@ context:
   - "Gotcha: under pull_request_target github.sha and GITHUB_REF are main's; the skeleton's checkout of github.sha is main's tree by construction."
   - "Gotcha: CODEOWNERS covers terraform/bootstrap/, terraform/github/ and .github/workflows/terraform-*.yml, so PRs 1 and 2 need Benjamin's code-owner review; terraform/personal/ is NOT code-owned, so PR 3's need for his word is this plan's merge rule, not the ruleset."
   - "V3 resolution: terraform/bootstrap is admin-only and applies after merge (Decision 126). The pre-merge evidence is the gate's counts-only line for PR 1's CI-green head (VP step 6), posted on PR 1 with $PR_HEAD_SHA; it substitutes for the pre-merge post-deploy evidence the implement V3 Merge Gate and code-review V3 check require. The behavioural acceptance (Decision 48) is the post-merge human-directed apply walk (VP step 7), evidenced by a counts-only comment on the merged PR 1 naming the applied sha."
-  - "Merge rule: PR 1 and PR 2 merge on code review PROCEED + green CI + Benjamin's code-owner review; PR 3 on code review PROCEED + green CI + Benjamin's word on its final diff in the build thread, plus VP 10, 11, 18 and 19 evidence on the PRs."
+  - "Merge rule: PR 1 and PR 2 merge on code review PROCEED + green CI + Benjamin's code-owner review, which in practice is his word on the final diff plus the admin-bypass merge while PRs are authored under his GitHub identity (he cannot approve his own PR; rec-2827); PR 3 on code review PROCEED + green CI + Benjamin's word on its final diff in the build thread, plus VP 10, 11, 18 and 19 evidence on the PRs."
   - "Decision-scout verdict: FLAGS_FOUND (Decisions triaged: 188 of 188; Roadmap items intersected: 6; CONFLICT: 0; RELATED: 6). CITE: 77, 92, 94, 144, 172, 223, 225, 157, 129, 120, 83, 126, 177, 167, 67, 101. NOTE flags 154, 205, 172, 223 and SPIRIT WARN 143 are folded into the Decision text (cl.3-6) and scope."
   - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING"
 pre_implementation_checklist:
@@ -786,14 +818,20 @@ pre_implementation_checklist:
 execution_steps:
   - "PR 1: edit terraform/bootstrap/github_ci_apply_reads.tf; create tests/checks/iam_tf/test_trusted_plan_identity.py with the bootstrap assertion and its registry row; VP 1, 4, 9; open PR; at CI-green run VP 5-6 and post the counts line; MERGE GATE: no other terraform/bootstrap change is merged but unapplied (S1b, rec-4635, goes first in the default order; Benjamin chose separate sittings) -- check S1b's PR state and its applied-sha comment; merge on review PROCEED + green + code-owner review; then VP 7 on Benjamin's word. A combined sitting with S1b happens only if Benjamin names both changes himself (offer it as an option, never the plan)."
   - "PR 2 (parallel with PR 1): environments.tf, imports.tf, variables.tf, the import-block test, CODEOWNERS, the skeleton workflow, oidc_claims_probe.py and its test, validate_trusted_plan_environment and its test and registrations, the environment_fail_open contract edit; VP 2-4, 9, 20; open PR; VP 8 (ask Benjamin to create the Environment, then re-run the GitHub-root plan); merge on review PROCEED + green + code-owner review."
-  - "PR 3 (after S1 applied, PR 1 applied, PR 2 merged): oidc_trusted_plan_role.tf, oidc_pipeline_roles.tf, oidc.tf, the rest of test_trusted_plan_identity.py, the Decision and its annotations on 92 and 144, the trusted_plan_workflow_ref contract row with its evaluator and tests; VP 1, 4, 9, 17, 19; open PR (this triggers the probe); VP 10 (adjust only job_workflow_ref's form if measured differently), VP 11; merge with the Resolves: rec-4636 trailer on review PROCEED + green CI + Benjamin's word on the final diff, with VP 10, 11, 18 and 19 evidence on the PRs (terraform/personal is not code-owned)."
+  - "PR 3 (after S1 applied, PR 1 applied, PR 2 merged): oidc_trusted_plan_role.tf, oidc_pipeline_roles.tf, oidc.tf, the rest of test_trusted_plan_identity.py, the Decision and its annotations on 92 and 144, the trusted_plan_workflow_ref contract row with its evaluator and tests; VP 1, 4, 9, 17, 19, 21; open PR (this triggers the probe); VP 10 (adjust only job_workflow_ref's form if measured differently), VP 11; merge with the Resolves: rec-4636 trailer on review PROCEED + green CI + Benjamin's word on the final diff, with VP 10, 11, 18 and 19 evidence on the PRs (terraform/personal is not code-owned)."
   - "Right after PR 2 merges, before PR 3 opens: VP 18 (branch-policy proof)."
   - "Post-merge PR 3: VP 12 (Benjamin approves the gated apply), VP 13, VP 14, VP 15; post counts-only evidence on PR 3."
   - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
-  - "Report: what was implemented, verification results, the no-env probe's sub value (for S3 and the Decision 172 transfer contract)"
+  - "Branches: each PR needs its own harness-assigned branch (agents never create branches, git-ops.yaml). Either ask the coordinator for a build thread per PR, or run them in order on one session branch, restarting it from main after each squash-merge (the merged-PR rule; force-with-lease only over already-merged history). VP 18 dispatches from a non-main branch that carries the merged workflow: the session branch restarted from main after PR 2's merge."
+  - "Closure evidence for each PR, recorded as four SEPARATE facts (implement skill Commit Flows): GitHub readiness state; parent validator evidence (VP 16 full-tier exit 0 plus validation_result --verify-head for the pushed HEAD); structured postflight evidence (write the scripts.session.postflight_evidence.CATEGORIES JSON in the scratchpad, then bin/venv-python -m scripts.session.postflight --evidence <file>); the real outcome -- push, PR, CI green by event-driven wake (never polled), squash-merge (PR 3 with 'Resolves: rec-4636'), then that PR's post-deploy steps."
+  - "Report: what was implemented, verification results, each PR's four closure facts, and the no-env probe's sub value (for S3 and the Decision 172 transfer contract). If that sub is the main-branch form (ref:refs/heads/main), file a rec through the portal against the main-sub trusts (github_ci_branch, github_ci_deploy, the planner's AssumeMainReservedSession): any pull_request_target workflow on main could then mint them, and predicate (b) becomes load-bearing for those roles too."
 work_areas: []
 rollback: >-
-  PR 3: revert the PR (the role destroy routes to gated apply; prune the bootstrap ARN only after the destroy applied).
+  PR 3: a forward PR, not a revert, because the Decision body is append-only (Decision 177) and amendment_log rows are
+  history: remove the role HCL (the destroy routes to gated apply), restore the planner's TfplanWrite, remove the
+  IAMCIRolesRead entry, and drop the trusted_plan_workflow_ref row and evaluator with a new amendment_log row; record
+  the reversal as a dated annotation on the Decision (or a superseding Decision, on Benjamin's word); prune the
+  bootstrap ARN only after the destroy applied.
   PR 2: revert the workflow, check and CODEOWNERS lines; the Environment stays live (prevent_destroy) and is harmless
   with no trust naming it -- replace its two resource blocks and import blocks with removed { from = ... lifecycle {
   destroy = false } } blocks, because deleting a prevent_destroy resource from config errors at plan time.
