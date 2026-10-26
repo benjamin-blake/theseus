@@ -76,6 +76,8 @@ infrastructure_dependencies:
   aws_iam_role_policy.platform_dev_runtime, adding exactly the four Sids and changing or removing none. If any other
   merged-but-unapplied bootstrap change shows (secrets-to-ssm-grants, secrets-to-ssm-retire and Plan B all change this
   root, and two of them this same policy), this plan's apply waits until that change is applied through its own plan.
+  The one declared exception is S2's PR 1 (PLAN-trusted-plan-identity, one IAMRolesRead ARN in the apply role's reads
+  policy): step 10 carries its combined expected outcome, and the combined apply needs Benjamin's word naming both.
 - >-
   Post-merge (VP steps 15-17): the human-directed admin apply from main on Benjamin's word on the exact command, then
   the live probes and live simulate. Never in parallel with another bootstrap apply.
@@ -212,7 +214,7 @@ verification_plan:
     PRE-MERGE GATE (ADMIN) -- read-only plan of terraform/bootstrap at the CI-green PR head: one in-place update of
     PlatformDev's DailyOps that adds exactly the four Sids and changes nothing else
   command: |-
-    test -n "$PR_HEAD_SHA" && M="${TMPDIR:-/tmp}/pd-fence-gate" && (umask 077 && mkdir -p "$M") && aws secretsmanager get-secret-value --secret-id agent-platform-terraform-personal-tfvars --profile agent_platform_admin --query SecretString --output text | grep -E '^[[:space:]]*(account_id|owner_email|platform_dev_external_id|platform_admin_external_id|agent_service_account_user_name)[[:space:]]*=' > "$M/bootstrap.tfvars" && W="$M/wt" && git fetch origin "$PR_HEAD_SHA" && git worktree add --detach "$W" "$PR_HEAD_SHA" > /dev/null && rc=0 && { terraform -chdir="$W/terraform/bootstrap" init -input=false -backend-config="region=$(tr -d '[:space:]' < "$W/config/aws-region")" > /dev/null && terraform -chdir="$W/terraform/bootstrap" plan -input=false -lock=false -var-file="$M/bootstrap.tfvars" -out="$M/head.tfplan" > /dev/null && terraform -chdir="$W/terraform/bootstrap" show -json "$M/head.tfplan" > "$M/head.json"; } || rc=1; git worktree remove --force "$W"; rm -f "$M/head.tfplan" "$M/bootstrap.tfvars"; test $rc -eq 0 && M="$M" bin/venv-python - <<'EOF'
+    test -n "$PR_HEAD_SHA" && M="${TMPDIR:-/tmp}/pd-fence-gate" && (umask 077 && mkdir -p "$M") && aws secretsmanager get-secret-value --secret-id agent-platform-terraform-personal-tfvars --profile agent_platform_admin --query SecretString --output text | grep -E '^[[:space:]]*(account_id|owner_email|platform_dev_external_id|platform_admin_external_id|agent_service_account_user_name)[[:space:]]*=' > "$M/bootstrap.tfvars" && W="$M/wt" && git fetch origin "$PR_HEAD_SHA" && git worktree add --detach "$W" "$PR_HEAD_SHA" > /dev/null && rc=0 && { terraform -chdir="$W/terraform/bootstrap" init -input=false -backend-config="region=$(tr -d '[:space:]' < "$W/config/aws-region")" > /dev/null && terraform -chdir="$W/terraform/bootstrap" plan -input=false -lock=false -var-file="$M/bootstrap.tfvars" -out="$M/head.tfplan" > /dev/null && terraform -chdir="$W/terraform/bootstrap" show -json "$M/head.tfplan" > "$M/head.json"; } || rc=1; git worktree remove --force "$W"; rm -f "$M/head.tfplan" "$M/bootstrap.tfvars"; test $rc -eq 0 && M="$M" RIDE_ALONG="${RIDE_ALONG:-}" bin/venv-python - <<'EOF'
     import json, os, sys
     m = os.environ["M"]
     rc = json.load(open(f"{m}/head.json")).get("resource_changes", [])
@@ -222,19 +224,32 @@ verification_plan:
     new = {"DenyTerraformArtifactRead", "DenyTerraformArtifactWrite", "DenyReviewTranscriptRead", "DenyReviewTranscriptWrite"}
     out = {"add": sum("create" in r["change"]["actions"] for r in moving), "change": sum(r["change"]["actions"] == ["update"] for r in moving), "destroy": sum("delete" in r["change"]["actions"] for r in moving), "moving_types": sorted({r["type"] for r in moving})}
     pol = [r for r in moving if r["address"] == addr and r["change"]["actions"] == ["update"]]
-    if len(moving) == 1 and pol:
+    sids = lambda r, k: {s["Sid"]: s for s in json.loads(r["change"][k]["policy"])["Statement"]}
+    extra = [r for r in moving if r["address"] != addr]
+    s2 = os.environ["RIDE_ALONG"] == "s2-trusted-plan-identity"
+    if s2 and len(extra) == 1 and extra[0]["address"] == "aws_iam_policy.github_ci_apply_reads" and extra[0]["change"]["actions"] == ["update"]:
+        eb, ea = sids(extra[0], "before"), sids(extra[0], "after")
+        out["ride_along"] = {"address": extra[0]["address"], "changed_sids": sorted(k for k in set(ea) | set(eb) if ea.get(k) != eb.get(k))}
+        extra = [] if out["ride_along"]["changed_sids"] == ["IAMRolesRead"] else extra
+    if not extra and pol:
         b = {s["Sid"]: s for s in json.loads(pol[0]["change"]["before"]["policy"])["Statement"]}
         a = {s["Sid"]: s for s in json.loads(pol[0]["change"]["after"]["policy"])["Statement"]}
         out.update(added_sids=sorted(set(a) - set(b)), removed_sids=sorted(set(b) - set(a)), changed_sids=sorted(k for k in set(a) & set(b) if a[k] != b[k]), denies_unconditioned=all(a[k]["Effect"] == "Deny" and "Condition" not in a[k] for k in new & set(a)), minified_bytes=len(pol[0]["change"]["after"]["policy"].replace(" ", "").replace("\n", "")))
         open(f"{m}/candidate-policy.json", "w").write(pol[0]["change"]["after"]["policy"])
     print(json.dumps(out))
-    good = out.get("added_sids") == sorted(new) and out.get("removed_sids") == [] and out.get("changed_sids") == [] and out.get("denies_unconditioned") and (out["add"], out["change"], out["destroy"]) == (0, 1, 0) and out.get("minified_bytes", 99999) <= 10240
-    print("PRE-MERGE PLAN OK -- one DailyOps update adding exactly the four Denies") if good else sys.exit("PRE-MERGE PLAN STOP")
+    want_counts = (0, 2, 0) if "ride_along" in out and not extra else (0, 1, 0)
+    good = not extra and out.get("added_sids") == sorted(new) and out.get("removed_sids") == [] and out.get("changed_sids") == [] and out.get("denies_unconditioned") and (out["add"], out["change"], out["destroy"]) == want_counts and out.get("minified_bytes", 99999) <= 10240
+    print("PRE-MERGE PLAN OK -- DailyOps adds exactly the four Denies" + (" (with the declared S2 ride-along)" if want_counts == (0, 2, 0) else "")) if good else sys.exit("PRE-MERGE PLAN STOP")
     EOF
   expected: >-
     one counts-only JSON line: add 0, change 1, destroy 0, moving_types ["aws_iam_role_policy"], added_sids the four
     new Sids, removed_sids [], changed_sids [], denies_unconditioned true, minified_bytes about 5,920 (at most 10,240);
-    then PRE-MERGE PLAN OK. Nothing is applied; -lock=false keeps the read off the state lock; the plan file, its JSON
+    then PRE-MERGE PLAN OK. Declared second outcome (N3 planner, 2026-10-26): if S2's PR 1
+    (PLAN-trusted-plan-identity) is merged but unapplied, re-run with RIDE_ALONG=s2-trusted-plan-identity; expected
+    then add 0, change 2, destroy 0, moving_types ["aws_iam_policy", "aws_iam_role_policy"], ride_along naming
+    aws_iam_policy.github_ci_apply_reads with changed_sids ["IAMRolesRead"] only, the same four added Sids. That
+    combined outcome is F2-B: the apply proceeds only on Benjamin's word naming both changes; otherwise wait (F2-A).
+    Nothing is applied; -lock=false keeps the read off the state lock; the plan file, its JSON
     and the tfvars are deleted in this step (the candidate policy JSON stays in the scratch folder for step 11). Post
     the JSON line and PR_HEAD_SHA in the PR description.
   fix_if: >-
@@ -378,7 +393,8 @@ verification_plan:
     changed, 0 destroyed
   fix_if: >-
     the post-merge plan differs from the gate's line (another bootstrap change merged meanwhile) -- stop and show him
-    (F2-A: wait); an apply error -- stop and RCA, never retry with -target (Decision 223)
+    (F2-A: wait), except the declared S2 combined outcome of step 10, which proceeds only on his word naming both
+    changes; an apply error -- stop and RCA, never retry with -target (Decision 223)
   hermetic: false
   graduation: not-applicable
 - step: 16
