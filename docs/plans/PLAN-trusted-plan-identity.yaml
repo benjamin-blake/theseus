@@ -75,8 +75,8 @@ scope:
       default actions/checkout with NO ref:, repository: or path: input (under both triggers that is main's
       github.sha) and persist-credentials false, never the PR head or merge ref, and no github.event.pull_request.*
       or github.head_ref expression inside any run: body:
-      (1) claims-probe: environment tf-trusted-plan; job-level if (github.event_name == 'workflow_dispatch' ||
-      github.event.pull_request.head.repo.full_name == github.repository); one-line run delegate python3 -I
+      (1) claims-probe: environment tf-trusted-plan; job-level if: github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.head.repo.full_name == github.repository (written without enclosing parentheses); one-line run delegate python3 -I
       scripts/ci/oidc_claims_probe.py --audience sts.amazonaws.com --require job_workflow_ref (-I, isolated mode: neither
       scripts/ci/ nor the cwd joins sys.path, so an unreviewed scripts/ci/json.py cannot shadow a stdlib import while the
       token-request variables are in the environment; the runner's python3 is 3.12).
@@ -118,11 +118,12 @@ scope:
       {terraform-plan-trusted.yml, terraform-github-plan.yml}; ENV = "tf-trusted-plan"; TEMP_NO_ENV_JOBS =
       {("terraform-plan-trusted.yml", "claims-probe-no-env")} with a comment that S3 (rec-4637) removes the entry.
       Over .github/workflows/*.yml (parse via scripts.verify_ci_workflow's loader): (a) only TRUSTED_WORKFLOWS reference
-      ENV (string or {name:} form, any job); (b) only TRUSTED_WORKFLOWS combine a pull_request_target trigger with
+      ENV (string or {name:} form, any job), and no workflow names an environment by expression (any ${{ in an
+      environment name is red); (b) only TRUSTED_WORKFLOWS combine a pull_request_target trigger with
       a token-minting job (effective permissions, defined under (d)); (c) no TRUSTED_WORKFLOWS file declares workflow_call, and
       every TRUSTED_WORKFLOWS file exists; (d) in TRUSTED_WORKFLOWS, every token-minting job that can run on
       pull_request_target declares environment ENV (except TEMP_NO_ENV_JOBS) and a job-level if guarded per disjunct:
-      strip ${{ }}, split on || outside parentheses, then split each disjunct on && outside parentheses; every
+      strip ${{ }} and balanced enclosing parentheses, normalise whitespace and quote style, split on || outside parentheses, then split each disjunct on && outside parentheses; every
       disjunct must carry github.event_name == 'workflow_dispatch' or github.event.pull_request.head.repo.full_name ==
       github.repository as one of its own top-level conjuncts (a substring match would pass "... || true"). A job "can
       run on pull_request_target" when its workflow has that trigger and some disjunct lacks the dispatch conjunct (no
@@ -457,7 +458,9 @@ verification_plan:
       default from it, then re-run the terraform-github-plan check on PR 2. Policy read command, quoted to him verbatim
       from the plan context line "VP 8 policy read".'
     expected: >-
-      Benjamin replies with exactly one policy, name main, type branch. While var.repository_name still defaults to
+      Benjamin replies with exactly one policy, name main, type branch. Tell him in the same ask, and in PR 2's body,
+      that from PR 2's merge until the CloudShell adoption every terraform/github PR's advisory plan is red on these
+      two imports (not a required check, Decision 83), so he can adopt promptly or accept the window knowingly. While var.repository_name still defaults to
       theseus (until rec-4355's re-key), the re-run GitHub-root plan errors on the repository-keyed imports: that error
       is the expected outcome, so record the imports as unproven on PR 2 and have Benjamin confirm the settings in
       words before merge (his words plus the pasted policy line are AC1's evidence; agents cannot read Environments
@@ -732,7 +735,7 @@ test_obligations:
     behavior: claims-only skeleton satisfies the fence (same-repo gate, Environment, no workflow_call, no payload interpolation, main-only checkout)
     verification_step: 2
     test_selector: tests/checks/ci_guards/test_validate_trusted_plan_environment.py
-    red_green_expectation: red before (predicate c's file-exists leg and predicate f fail), green after
+    red_green_expectation: red before (predicate c's file-exists leg fails; g and h have no governed job to pass), green after
   - source: scripts/checks/ci_guards/validate_trusted_plan_environment.py
     behavior: each predicate (a)-(h) reddens on its synthetic breach
     verification_step: 2
@@ -823,7 +826,7 @@ context:
   - "V3 resolution: terraform/bootstrap is admin-only and applies after merge (Decision 126). The pre-merge evidence is the gate's counts-only line for PR 1's CI-green head (VP step 6), posted on PR 1 with $PR_HEAD_SHA; it substitutes for the pre-merge post-deploy evidence the implement V3 Merge Gate and code-review V3 check require. The behavioural acceptance (Decision 48) is the post-merge human-directed apply walk (VP step 7), evidenced by a counts-only comment on the merged PR 1 naming the applied sha."
   - "Merge rule: PR 1 and PR 2 merge on code review PROCEED + green CI + Benjamin's code-owner review, which in practice is his word on the final diff plus the admin-bypass merge while PRs are authored under his GitHub identity (he cannot approve his own PR; rec-2827); PR 3 on code review PROCEED + green CI + Benjamin's word on its final diff in the build thread, plus VP 10, 11, 18 and 19 evidence on the PRs."
   - "Decision-scout verdict: FLAGS_FOUND (Decisions triaged: 188 of 188; Roadmap items intersected: 6; CONFLICT: 0; RELATED: 6). CITE: 77, 92, 94, 144, 172, 223, 225, 157, 129, 120, 83, 126, 177, 167, 67, 101. NOTE flags 154, 205, 172, 223 and SPIRIT WARN 143 are folded into the Decision text (cl.3-6) and scope."
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED (round 8, after seven REVISE rounds folded in)"
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
