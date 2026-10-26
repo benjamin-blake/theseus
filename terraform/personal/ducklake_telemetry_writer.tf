@@ -237,6 +237,63 @@ resource "aws_cloudwatch_metric_alarm" "ducklake_telemetry_writer_errors" {
   }
 }
 
+# Writer alarms on the production MetaSchema series only, so the smoke twin can never trip them and they stay quiet
+# until PLAN-telemetry-production-flip points production traffic at this catalog. An OccRetryCount of 3 is the fourth
+# of OCC_MAX_ATTEMPTS = 5, one attempt short of exhaustion. The warm-wall p95 Decision 214 cl.4 names is unmeasured
+# for this writer (rec-4482 owns it); CommitLatencyMs, the commit that dominates an append, is the alarmed series.
+resource "aws_cloudwatch_metric_alarm" "ducklake_telemetry_writer_occ" {
+  alarm_name          = "ducklake-telemetry-writer-occ"
+  alarm_description   = "DuckLake production telemetry writer is one attempt short of OCC exhaustion on an append. T2.36 c5."
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 1
+  metric_name         = "OccRetryCount"
+  namespace           = "DuckLakeTelemetryWriter"
+  period              = 3600
+  statistic           = "Maximum"
+  threshold           = 3
+
+  dimensions = {
+    MetaSchema = local.ducklake_telemetry_prod_meta_schema
+  }
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+
+  treat_missing_data = "notBreaching"
+
+  tags = {
+    Name    = "DuckLake Telemetry Writer OCC Alarm"
+    Purpose = "T2.36 c5 production telemetry writer contention"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "ducklake_telemetry_writer_commit_latency" {
+  alarm_name          = "ducklake-telemetry-writer-commit-latency"
+  alarm_description   = "DuckLake production telemetry writer append commit latency is well above its measured baseline. T2.36 c5."
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  datapoints_to_alarm = 3
+  metric_name         = "CommitLatencyMs"
+  namespace           = "DuckLakeTelemetryWriter"
+  period              = 3600
+  extended_statistic  = "p95"
+  threshold           = ceil(2 * local.telemetry_commit_latency_p95_ms_7d / 1000) * 1000
+
+  dimensions = {
+    MetaSchema = local.ducklake_telemetry_prod_meta_schema
+  }
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+
+  treat_missing_data = "notBreaching"
+
+  tags = {
+    Name    = "DuckLake Telemetry Writer Commit Latency Alarm"
+    Purpose = "T2.36 c5 production telemetry writer commit latency"
+  }
+}
+
 output "ducklake_telemetry_writer_function_url" {
   description = "AWS_IAM Function URL for the ducklake_telemetry_writer Lambda."
   value       = aws_lambda_function_url.ducklake_telemetry_writer.function_url
