@@ -61,6 +61,25 @@ class TestVenvPythonWrapper:
         assert result.returncode == 0
         assert "venv-resolved" in result.stdout
 
+    def test_a_missing_script_exits_1_never_the_hook_block_code(self, tmp_path: Path) -> None:
+        wrapper = _install_wrapper(tmp_path)
+        venv_bin = tmp_path / ".venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        os.symlink(sys.executable, venv_bin / "python")
+        (tmp_path / "present.py").write_text("import sys; print('ran', sys.argv[1])\n", encoding="utf-8")
+
+        def run(*args: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run([str(wrapper), *args], capture_output=True, text=True, encoding="utf-8", cwd=tmp_path)
+
+        missing = run(".claude/hooks/gone.py")
+        assert missing.returncode == 1
+        assert "script not found: .claude/hooks/gone.py" in missing.stderr
+        present = run("present.py", "x")
+        assert (present.returncode, present.stdout.strip()) == (0, "ran x")
+        assert run("-c", "raise SystemExit(2)").returncode == 2
+        assert run("-Im", "json.tool", "--help").returncode == 0
+        assert run("-Ic", "print(1)").stdout.strip() == "1"
+
     def test_falls_back_to_dep_bearing_system_interpreter_when_venv_absent(self, tmp_path: Path) -> None:
         wrapper = _install_wrapper(tmp_path)
         fake_path_dir = tmp_path / "fakebin"
