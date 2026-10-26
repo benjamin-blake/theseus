@@ -108,8 +108,6 @@ does not consume the recommendation queue. Invokes the `overseer` skill.
 
 When a slash command instructs you to "apply" or "invoke" a skill, use the `Skill` tool - do **not** manually `Read` `SKILL.md` files. The Skill tool loads them on demand.
 
-Project threads (cloud threads in a claude.ai project) never read `.claude/settings.json`; the repo's hooks, skills, commands and agents reach them through the `ontheloop` plugin (root `.claude/`, marketplace `.claude-plugin/`), so names carry the prefix there (`/ontheloop:plan`, skill `ontheloop:planning`). After editing hooks in `.claude/settings.json`, run `bin/venv-python .claude/hooks/plugin_hooks.py render` to regenerate the plugin's gated `.claude/hooks/hooks.json`.
-
 ## Operational data governance - Single Portal Invariant
 All recommendation and decision writes go through `python -m scripts.ops_data_portal`. Never `Edit` or `Write` to `logs/.decisions-index.jsonl` directly -- `validate.py` will fail CI. Recommendations have no local cache (Decision 215): read them through the ducklake-reads named verbs. Recommendation IDs are allocated BY THE WRITER atomically with the insert (`file_ops`, Decision 84 I-2) -- never client-side; decision numbering authority is `DECISIONS.md` (callers supply `decision_id`). The local decisions JSONL is a read-only cache.
 

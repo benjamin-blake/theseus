@@ -69,7 +69,7 @@ def test_gating_keeps_what_the_capture_parser_reads() -> None:
         assert hook_name({"command": mod.gated(command)}) == hook_name({"command": command})
     pin = next(c for e, c in _commands(_settings()["hooks"]) if e == "SessionStart" and "--project-ref=" in c)
     attachment = {"type": "hook_success", "hookName": "SessionStart:startup", "hookEvent": "SessionStart"}
-    record = {"type": "attachment", "uuid": "h1", "timestamp": "2026-01-01T00:00:00.000Z"}
+    record: dict[str, Any] = {"type": "attachment", "uuid": "h1", "timestamp": "2026-01-01T00:00:00.000Z"}
     record["attachment"] = {**attachment, "command": mod.gated(pin)}
     prompt = {"type": "user", "uuid": "u1", "timestamp": "2026-01-01T00:00:01.000Z", "message": {"content": "hi"}}
     body = "".join(json.dumps(r) + "\n" for r in (record, prompt))
@@ -86,16 +86,17 @@ def _run_gated(command: str, project: Path, marker: str | None) -> subprocess.Co
 
 
 def test_the_gate_runs_a_hook_only_without_the_settings_marker_and_inside_a_plugin_checkout(tmp_path: Path) -> None:
-    checkout, other = tmp_path / "checkout", tmp_path / "other"
-    (checkout / ".claude" / ".claude-plugin").mkdir(parents=True)
-    (checkout / ".claude" / ".claude-plugin" / "plugin.json").write_text("{}", encoding="utf-8")
+    checkout, other, foreign = tmp_path / "checkout", tmp_path / "other", tmp_path / "foreign"
+    for project, name in ((checkout, "ontheloop"), (foreign, "someone-else")):
+        (project / ".claude" / ".claude-plugin").mkdir(parents=True)
+        (project / ".claude" / ".claude-plugin" / "plugin.json").write_text(f'{{\n  "name": "{name}"\n}}\n', encoding="utf-8")
     other.mkdir()
     probe = tmp_path / "probe.sh"
     probe.write_text("echo ran >&2\nexit 2\n", encoding="utf-8")
     command = f"sh {probe}"
     ran = _run_gated(command, checkout, None)
     assert (ran.returncode, ran.stderr.strip()) == (2, "ran")
-    for project, marker in ((checkout, "1"), (other, None), (other, "1")):
+    for project, marker in ((checkout, "1"), (other, None), (other, "1"), (foreign, None)):
         skipped = _run_gated(command, project, marker)
         assert (skipped.returncode, skipped.stdout, skipped.stderr) == (0, "", "")
     assert _run_gated(command, checkout, "").returncode == 2
@@ -123,6 +124,7 @@ def test_the_marketplace_lists_the_claude_dir_as_the_ontheloop_plugin() -> None:
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     assert [(p["name"], p["source"]) for p in marketplace["plugins"]] == [(manifest["name"], "./.claude")]
     assert manifest["name"] == "ontheloop" and '"$CLAUDE_PROJECT_DIR/.claude/.claude-plugin/plugin.json"' in load().GATE
+    assert load().MANIFEST_NAME in MANIFEST.read_text(encoding="utf-8"), "the gate greps the manifest for this literal"
     assert not (ROOT / ".claude" / "bin").exists(), "claude.ai refuses a plugin with a top-level bin/ directory"
 
 

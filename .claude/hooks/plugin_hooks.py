@@ -4,7 +4,7 @@
 Project threads never read .claude/settings.json, so the repository's hooks reach them through the plugin, which claude.ai
 loads in every cloud session of the account. Each plugin hook is the settings hook behind GATE, which skips it silently
 (no transcript record) when the project settings loaded, since their `env` sets ONTHELOOP_PROJECT_SETTINGS, or when the
-session's project is not a checkout that carries the plugin manifest. A hook therefore runs exactly once wherever the
+session's project is not a checkout whose plugin manifest names this plugin. A hook therefore runs exactly once wherever the
 settings load, in project threads, and nowhere else. The gate keeps the command's own tokens, so the capture parser
 reads the same script stem and pin (rules H-1, P-1).
 
@@ -24,7 +24,9 @@ CLAUDE_DIR = Path(__file__).resolve().parents[1]
 SETTINGS = CLAUDE_DIR / "settings.json"
 HOOKS_FILE = CLAUDE_DIR / "hooks" / "hooks.json"
 MARKER_ENV = "ONTHELOOP_PROJECT_SETTINGS"
-GATE = f'[ -n "${{{MARKER_ENV}:-}}" ] || [ ! -f "$CLAUDE_PROJECT_DIR/.claude/.claude-plugin/plugin.json" ] || '
+MANIFEST_NAME = '"name": "ontheloop"'
+MANIFEST = "$CLAUDE_PROJECT_DIR/.claude/.claude-plugin/plugin.json"
+GATE = f'[ -n "${{{MARKER_ENV}:-}}" ] || ! grep -qs \'{MANIFEST_NAME}\' "{MANIFEST}" || '
 CHECK = "bin/venv-python .claude/hooks/plugin_hooks.py check"
 TAG = "[plugin_hooks]"
 _CONTROL = (";", "&", "|", "\n", "`", "$(")
