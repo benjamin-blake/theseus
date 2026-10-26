@@ -320,7 +320,7 @@ jobs:
         if: success() && github.event_name == 'workflow_dispatch'
         working-directory: ${{ env.WORKDIR }}
         run: |
-          terraform plan -input=false -lock-timeout=120s -var-file=terraform.personal.tfvars -out=plan.bin
+          bash "$GITHUB_WORKSPACE/scripts/ci/neon_api_key.sh" run -- terraform plan -input=false -lock-timeout=120s -var-file=terraform.personal.tfvars -out=plan.bin
           terraform show -json plan.bin > plan.json
 
       - name: Deterministic apply guard (fail-closed)
@@ -382,7 +382,7 @@ jobs:
         # is preserved by design at this push-path site).
         if: success() && steps.guard.outputs.routed != 'true'
         working-directory: ${{ env.WORKDIR }}
-        run: python3 "$GITHUB_WORKSPACE/scripts/ci/stale_plan_signature.py" --wrap -- terraform apply -input=false -lock-timeout=120s plan.bin
+        run: bash "$GITHUB_WORKSPACE/scripts/ci/neon_api_key.sh" run -- python3 "$GITHUB_WORKSPACE/scripts/ci/stale_plan_signature.py" --wrap -- terraform apply -input=false -lock-timeout=120s plan.bin
 
       - name: Emit fresh plan.bin sha256 (SANDBOX_FRESH_PLAN_ARTIFACT sha256 job-output EMIT)
         # Decision 183, mirrors reconcile.yml's RECONCILE_FRESH_PLAN_ARTIFACT EMIT verbatim: the
@@ -610,8 +610,8 @@ jobs:
         # merge-time apply under github_ci_apply still locks normally.
         if: success() && steps.oidc_plan.outcome == 'success'
         working-directory: ${{ env.WORKDIR }}
-        run: |
-          terraform plan -lock=false -input=false -var-file=terraform.personal.tfvars -out=plan.bin
+        run: |  # pragma: allowlist secret -- stub literal, no credential
+          TF_VAR_neon_api_key=pr-speculative-plan-stub-not-a-key terraform plan -refresh=false -lock=false -input=false -var-file=terraform.personal.tfvars -out=plan.bin
           terraform show -json plan.bin > plan.json
 
       - name: Deterministic apply guard (predicted verdict)
@@ -999,7 +999,7 @@ jobs:
         # content); recovery stays the workflow_dispatch acknowledge-and-retry path only.
         if: success()
         working-directory: ${{ env.WORKDIR }}
-        run: python3 "$GITHUB_WORKSPACE/scripts/ci/stale_plan_signature.py" --wrap -- terraform apply -input=false -lock-timeout=120s plan.bin
+        run: bash "$GITHUB_WORKSPACE/scripts/ci/neon_api_key.sh" run -- python3 "$GITHUB_WORKSPACE/scripts/ci/stale_plan_signature.py" --wrap -- terraform apply -input=false -lock-timeout=120s plan.bin
 
       - name: Write convergence record (always-run, red-on-failure)
         id: record_write

@@ -32,7 +32,9 @@
 #                            84 closed boundary), ConvergenceRecordWrite (now FAIL-CLOSED,
 #                            aws:userid-conditioned -- see validate_convergence_writer_isolation
 #                            for the standing semantic check).
-# Same refresh-read surface as before (ci_full_refresh_read, composed below) -- unchanged.
+#   plus DriftSessionSecretValueRead -- the only Secrets Manager value read on the Neon key and catalog
+#                            DSN, aws:userid-conditioned on the reserved drift session (site 5/5).
+# Refresh-read surface: ci_full_refresh_read, composed below (metadata reads plus the tfvars value read).
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_role" "github_ci_planner" {
@@ -45,7 +47,7 @@ resource "aws_iam_role" "github_ci_planner" {
     Statement = [
       {
         # Main-sub: the scheduled/dispatch drift workflow ONLY. Requires the RESERVED
-        # session-name (site 1/4, local.convergence_writer_session_name) -- the sole
+        # session-name (site 1/5, local.convergence_writer_session_name) -- the sole
         # session-name this role's ConvergenceRecordWrite condition (below) accepts.
         Sid    = "AssumeMainReservedSession"
         Effect = "Allow"
@@ -72,7 +74,7 @@ resource "aws_iam_role" "github_ci_planner" {
       },
       {
         # PR-sub: the speculative-plan job. Trust mirrors github_ci_pr's sub condition, PLUS
-        # StringNotEquals the reserved session-name (site 2/4) -- a PR-context assumption can
+        # StringNotEquals the reserved session-name (site 2/5) -- a PR-context assumption can
         # never present the one session-name that satisfies the main-sub statement above or the
         # ConvergenceRecordWrite permission condition below (non-spoofable, Decision 92 pt2).
         Sid    = "AssumePrNonReservedSession"
@@ -105,7 +107,7 @@ resource "aws_iam_role" "github_ci_planner" {
 }
 
 data "aws_iam_policy_document" "github_ci_planner" {
-  # DRY composition (T2.34): the shared 20-statement refresh-read surface, not re-declared
+  # DRY composition (T2.34): the shared 17-statement refresh-read surface, not re-declared
   # inline -- identical to the pre-merge plan/drift roles. ci_full_refresh_read itself
   # composes ci_ssm_refresh_read.
   source_policy_documents = [data.aws_iam_policy_document.ci_full_refresh_read.json]
@@ -192,7 +194,7 @@ data "aws_iam_policy_document" "github_ci_planner" {
   statement {
     # c2 FAIL-CLOSED convergence write (Decision 92 pt2, hardening item 1): the SOLE allow on
     # convergence/personal/* in this policy, conditioned on aws:userid matching the RESERVED
-    # session (site 3/4, local.convergence_writer_session_name) -- default-deny for every other
+    # session (site 3/5, local.convergence_writer_session_name) -- default-deny for every other
     # session identity. Combined with the trust partition above, a PR-context assumption can
     # neither obtain the reserved session-name nor satisfy this condition. Standing semantic
     # check: scripts/checks/iam_tf/validate_convergence_writer_isolation.py asserts this is the
@@ -204,6 +206,24 @@ data "aws_iam_policy_document" "github_ci_planner" {
     effect    = "Allow"
     actions   = ["s3:GetObject", "s3:PutObject"]
     resources = ["${aws_s3_bucket.data_lake.arn}/convergence/personal/*"]
+    condition {
+      test     = "StringLike"
+      variable = "aws:userid"
+      values   = ["*:${local.convergence_writer_session_name}"]
+    }
+  }
+
+  statement {
+    # Neon provider API key and catalog DSN value reads for the reserved drift session only (site 5/5,
+    # local.convergence_writer_session_name). PR sessions hold no value read on either secret; PR plans run
+    # with a stub key and skip refresh. Standing check: validate_planner_secret_value_reads.
+    sid     = "DriftSessionSecretValueRead"
+    effect  = "Allow"
+    actions = ["secretsmanager:GetSecretValue"]
+    resources = [
+      "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:neon-api-key-*",
+      "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:ducklake-neon-catalog-dsn-*",
+    ]
     condition {
       test     = "StringLike"
       variable = "aws:userid"

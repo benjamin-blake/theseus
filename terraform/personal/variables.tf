@@ -50,9 +50,7 @@ variable "agent_service_account_user_name" {
 # ---------------------------------------------------------------------------
 # DuckLake catalog -- Neon serverless Postgres backend (T2.16b / CD.34, pending).
 #
-# The Neon provider API key is NOT a variable: the provider reads it from a Secrets Manager secret
-# (`neon-api-key`) created out-of-band in Phase 0 (see neon_ducklake_catalog.tf). Making it a var
-# would either commit a literal or, if Terraform-managed, create a provider->resource cycle.
+# The Neon provider API key is the ephemeral variable neon_api_key below.
 #
 # There is no neon_org_id: this is a personal Neon account (no organization).
 #
@@ -62,6 +60,14 @@ variable "agent_service_account_user_name" {
 # controls -- enforced TLS (sslmode=require) + a scoped non-owner neon_role + the DSN in Secrets
 # Manager -- and the Neon-aware apply guard fail-closes on any neon_* update/replace/delete.
 # ---------------------------------------------------------------------------
+
+variable "neon_api_key" {
+  description = "Neon control-plane API key for the neon provider. Supplied per run via TF_VAR_neon_api_key by trusted CI sessions and the admin break-glass loop; PR speculative plans pass a stub and run -refresh=false. Never in tfvars, state, or a saved plan."
+  type        = string
+  ephemeral   = true
+  sensitive   = true
+  nullable    = false
+}
 
 variable "neon_region_id" {
   description = "Neon region_id for the DuckLake catalog project. Default aws-eu-west-2 (Neon AWS Europe/London) co-locates with the data lake in the project region. Verified against Neon's supported-regions list at implementation time."

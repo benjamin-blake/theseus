@@ -34,6 +34,15 @@ contract:
     check: validate_terraform_cc_web_operations
 
 amendment_log:
+  - date: "2026-10-26"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-neon-key-out-of-pr-plans (rec-4618): the Neon provider API key becomes the ephemeral input variable
+      neon_api_key, supplied per run by trusted jobs through scripts/ci/neon_api_key.sh and never in the tfvars secret.
+      New tfvars_and_remote_state_recovery.ephemeral_runtime_vars mapping; the apply_posture, recoverable_vars,
+      speculative_plan_job, capability_split and planner_main_sub_iam sentences that would otherwise describe the old
+      setup are amended; scripts/ci/neon_api_key.sh joins referenced_repo_paths.
   - date: "2026-10-18"
     semantic_break: false
     change_class: prose_improvement
@@ -141,6 +150,7 @@ referenced_repo_paths:
   - docs/contracts/deploy-paths.yaml
   - docs/contracts/environment-taxonomy.yaml
   - scripts/checks/iam_tf/validate_convergence_writer_isolation.py
+  - scripts/ci/neon_api_key.sh
   - scripts/ci/redaction_check.py
   - terraform/bootstrap/github_ci_apply.tf
   - terraform/bootstrap/platform_dev_policies.tf
@@ -194,12 +204,12 @@ tfvars_and_remote_state_recovery:
     standalone `s3://.../terraform.personal.tfvars` object to fetch -- do not go looking for
     that file.
   recoverable_vars: >-
-    Five no-default vars (`account_id`, `alerts_email`, `owner_email`,
+    Five no-default, non-ephemeral vars (`account_id`, `alerts_email`, `owner_email`,
     `platform_dev_external_id`, `platform_admin_external_id`) are recoverable; see
     `where_values_live` below for each variable's declaring file and per-variable recovery
     source. `validate_terraform_cc_web_operations` enforces this list bidirectionally against
-    `terraform/personal/*.tf` -- it fails on a declared no-default variable missing from the
-    table below, and equally on a table entry for a variable the module no longer declares.
+    `terraform/personal/*.tf` -- it fails on a declared no-default, non-ephemeral variable missing from the
+    table below (ephemeral no-default variables are checked against ephemeral_runtime_vars instead), and equally on a table entry for a variable the module no longer declares.
   state_location: >-
     State: `s3://agent-platform-data-lake/tfstate/personal/sandbox/terraform.tfstate` (region
     from `config/aws-region`), wired via `terraform -chdir=terraform/personal init
@@ -246,6 +256,10 @@ tfvars_and_remote_state_recovery:
         the SNS topic subscription `endpoint` attribute in the remote state -- the deliverable
         alerts-mailbox role-alias (see `owner_vs_alerts_email` below; this is never the Owner
         tag identity).
+  ephemeral_runtime_vars:
+    neon_api_key:
+      declared_in: terraform/personal/variables.tf
+      source: "Secrets Manager neon-api-key, fetched at run time by scripts/ci/neon_api_key.sh run inside each trusted terraform step; never in the tfvars secret"
   owner_vs_alerts_email: >-
     `owner_email` and `alerts_email` are two different role-alias identities that must never be
     reconciled to the same value: `owner_email` backs the GitHub no-reply identity used for
@@ -329,12 +343,12 @@ operator_only_break_glass:
     (record-backed sandbox CD, CD.35 / T2.20 Wave 1) Sandbox CD auto-apply
     (`.github/workflows/terraform-apply-sandbox.yml`; push-to-main touching
     `terraform/personal/**` auto-applies behind the guard + subagent plan review). It sources
-    all no-default root-module variables from the `agent-platform-terraform-personal-tfvars`
+    all no-default root-module variables except ephemeral variables (ephemeral_runtime_vars) from the `agent-platform-terraform-personal-tfvars`
     Secrets Manager entry -- the apply role's `SecretsManagerReadOnly` grant fetches its body
     to `terraform.personal.tfvars`, which is passed to `terraform plan` via `-var-file`.
-    New no-default variables only require updating that secret -- no per-variable workflow edit.
-    `TF_VAR_aws_profile=""` is the sole remaining env override (blanks the named-profile default
-    so the OIDC credential env vars take effect).
+    New no-default variables only require updating that secret -- no per-variable workflow edit -- except ephemeral variables (ephemeral_runtime_vars), which trusted jobs fetch at run time.
+    `TF_VAR_aws_profile=""` is the sole job-level env override (blanks the named-profile default
+    so the OIDC credential env vars take effect); `TF_VAR_neon_api_key` is set per terraform process only (ephemeral_runtime_vars).
 
 speculative_plan_and_apply_the_saved_plan:
   heading: "Speculative plan + apply-the-saved-plan (CD.35 / T2.21 Wave 2)"
@@ -348,6 +362,7 @@ speculative_plan_and_apply_the_saved_plan:
       - "Triggers on pull_request paths terraform/personal/**; same-repo fork-gated (if: head.repo.full_name == github.repository)."
       - "Assumes agent-platform-github-ci-planner's PR-sub statement (tfstate-read, tfplan-write; no convergence write, no tfstate write/delete; T2.49 merged plan+drift into one dual-sub role)."
       - "Runs terraform plan -lock=false (read-only; the plan role cannot take the S3 native lock)."
+      - "Passes a stub TF_VAR_neon_api_key and skips refresh: the planner's PR session holds no Secrets Manager value read on the Neon key or DSN, so the plan shows config-versus-state changes only; the hourly drift run is the drift signal."
       - "Runs the unmodified guard to capture the PREDICTED verdict (advisory; the merge-time verdict is authoritative)."
       - "Persists plan.bin to s3://agent-platform-data-lake/tfplan/personal/<pr-head-sha>.bin."
       - "Scrubs account_id, both ExternalIds and owner_email from the comment via scripts/ci/redaction_check.py; self-fails if a 12-digit sequence survives the plan text or any secret literal survives the body (public-repo safety)."
@@ -383,8 +398,7 @@ speculative_plan_and_apply_the_saved_plan:
     (github_ci_pr vs the planner role's PR-sub statement) `github_ci_pr`: convergence record
     read, provider-mirror read, DuckLake invoke. No tfstate read (fork-safe;
     simulate-principal-policy returns implicitDeny on s3:GetObject tfstate/...). Planner PR-sub
-    (T2.49 merged plan+drift): tfstate READ, tfplan WRITE, full refresh-read surface (mirrors
-    apply-role plan-time reads). No convergence write (see convergence_anchor below), no tfstate
+    (T2.49 merged plan+drift): tfstate READ, tfplan WRITE, the refresh-read metadata surface with no Secrets Manager value read except the tfvars secret (the Neon key and catalog DSN value reads belong to the reserved drift session only; PR plans run with a stub key and skip refresh). No convergence write (see convergence_anchor below), no tfstate
     write/delete, no DeleteObject anywhere. Fork gating: enforced at the WORKFLOW JOB level (if:
     head.repo.full_name == github.repository) -- NOT the OIDC trust condition. Trust mirrors
     github_ci_pr (pull_request sub) plus a sts:RoleSessionName partition (see convergence_anchor
@@ -440,8 +454,8 @@ alarm_only_scheduled_drift_detection:
     (least-privilege, T2.49 absorbed drift's capabilities) tfstate READ + scoped .tflock
     PutObject/DeleteObject + convergence/personal/* GetObject/PutObject (fail-closed,
     aws:userid-conditioned -- see convergence_anchor below) + ducklake-WRITER
-    InvokeFunction/InvokeFunctionUrl (NOT the reader; Decision 84 closed boundary) + same
-    refresh-time read surface as the PR-sub statement. No state-object write, no tfplan, no
+    InvokeFunction/InvokeFunctionUrl (NOT the reader; Decision 84 closed boundary) + the same
+    refresh-time read surface as the PR-sub statement, plus GetSecretValue on the Neon key and catalog DSN conditioned on aws:userid naming the reserved drift session (DriftSessionSecretValueRead). No state-object write, no tfplan, no
     resource mutation, no IAM write. Role creation is covered by the single "Role creation is
     guard-BLOCKED" note in speculative_plan_and_apply_the_saved_plan above -- one gated-apply
     create serves both subs.
