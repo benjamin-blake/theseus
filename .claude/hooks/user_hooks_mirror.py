@@ -8,14 +8,17 @@ copies the hooks block into ~/.claude/settings.json unchanged and links each ski
 and every hook keeps its own command and stderr in the transcript, which the capture parser reads (rules P-1, WT-2).
 
 The mirror refreshes only when the environment snapshot is rebuilt, so a change to the hooks block or a new entry under
-those trees needs a rebuild before project threads see it. `check` (SessionStart) reports that drift: a warning on stdout
-(session context) and one stderr line. Both subcommands exit 0 on every path.
+those trees needs a rebuild before project threads see it. `check` (SessionStart) reports that drift, including mirrored
+commands whose script this checkout lacks: a warning on stdout (session context) and one stderr line. A missing Python
+hook script exits 1, not 2, through bin/venv-python, so a stale mirror never blocks a tool call. Both subcommands exit 0
+on every path.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -27,12 +30,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 KINDS = ("skills", "commands", "agents")
 SIDECAR = "ontheloop-hooks-mirror.json"
 TAG = "[user_hooks_mirror]"
+_SCRIPT_TOKEN = re.compile(r".+\.(py|sh)$")
+_PROJECT_DIR = re.compile(r"^\$(CLAUDE_PROJECT_DIR|\{CLAUDE_PROJECT_DIR\})/")
 
 
 class Drift(NamedTuple):
     missing: int
     stale: int
     unlinked: int
+    absent: int
     head: str
 
 
@@ -48,29 +54,53 @@ def _read_object(path: Path) -> dict[str, Any] | None:
 
 
 def _write_atomic(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(json.dumps(data, indent=2) + "\n")
-    os.chmod(tmp, 0o644)
-    os.replace(tmp, path)
+    """Replace *path* (a link's target, if a link) keeping its mode; a new file is 0644."""
+    target = path.resolve() if path.is_symlink() else path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    mode = target.stat().st_mode & 0o777 if target.exists() else 0o644
+    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(data, indent=2) + "\n")
+        os.chmod(tmp, mode)
+        os.replace(tmp, target)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
-def _repo_hooks(repo: Path) -> dict[str, Any]:
-    settings = _read_object(repo / ".claude" / "settings.json") or {}
-    hooks = settings.get("hooks")
-    return hooks if isinstance(hooks, dict) else {}
+def _repo_hooks(repo: Path) -> dict[str, Any] | None:
+    """The checkout's hooks block; None when .claude/settings.json is missing or unreadable."""
+    path = repo / ".claude" / "settings.json"
+    settings = _read_object(path) if path.is_file() else None
+    if settings is None:
+        return None
+    hooks = settings.get("hooks", {})
+    return hooks if isinstance(hooks, dict) else None
 
 
-def _entries(hooks: object) -> set[tuple[str, str, str]]:
-    """(event, matcher, hook JSON) per registered hook: order-free, but any change to a matcher or a hook field counts."""
-    found: set[tuple[str, str, str]] = set()
+def _hooks(hooks: object) -> list[tuple[str, str, dict[str, Any]]]:
+    """(event, matcher, hook) per registered hook."""
+    found: list[tuple[str, str, dict[str, Any]]] = []
     for event, groups in hooks.items() if isinstance(hooks, dict) else ():
         for group in groups if isinstance(groups, list) else ():
             if isinstance(group, dict):
-                for hook in group.get("hooks") or ():
-                    found.add((event, str(group.get("matcher", "")), json.dumps(hook, sort_keys=True)))
+                found += [(event, str(group.get("matcher", "")), h) for h in group.get("hooks") or () if isinstance(h, dict)]
     return found
+
+
+def _entries(hooks: object) -> set[tuple[str, str, str]]:
+    """Order-free identity of each hook: any change to a matcher or a hook field counts."""
+    return {(event, matcher, json.dumps(hook, sort_keys=True)) for event, matcher, hook in _hooks(hooks)}
+
+
+def _script(command: object, repo: Path) -> Path | None:
+    """The first .py/.sh token of *command* as a checkout path, the way the capture parser picks it (rule H-1)."""
+    for token in (t.strip("'\"") for t in command.split()) if isinstance(command, str) else ():
+        if _SCRIPT_TOKEN.match(token):
+            path = Path(_PROJECT_DIR.sub("", token))
+            return path if path.is_absolute() else repo / path
+    return None
 
 
 def _sources(repo: Path) -> list[tuple[Path, Path]]:
@@ -81,6 +111,16 @@ def _sources(repo: Path) -> list[tuple[Path, Path]]:
         if src.is_dir():
             pairs += [(entry, Path(kind) / entry.name) for entry in sorted(src.iterdir()) if not entry.name.startswith(".")]
     return pairs
+
+
+def _points_at(link: Path, entry: Path) -> bool:
+    return link.is_symlink() and Path(os.readlink(link)) == entry
+
+
+def _ours(link: Path, repo: Path) -> bool:
+    """A link into one of the repository's mirrored trees, or a dangling one."""
+    target = Path(os.readlink(link))
+    return target.parent in {repo / ".claude" / kind for kind in KINDS} or not link.exists()
 
 
 def _head(repo: Path) -> str:
@@ -99,16 +139,20 @@ def _head(repo: Path) -> str:
     return result.stdout.strip() or "unknown"
 
 
-def _link(entry: Path, link: Path, lines: list[str]) -> None:
-    if link.is_symlink():
-        if Path(os.readlink(link)) == entry:
-            return
-        link.unlink()
-    elif link.exists():
-        lines.append(f"{TAG} WARNING: {link} is not a link; left unchanged")
-        return
-    link.parent.mkdir(parents=True, exist_ok=True)
-    link.symlink_to(entry, target_is_directory=entry.is_dir())
+def _link(entry: Path, link: Path, repo: Path) -> str | None:
+    """Link *link* to *entry*; the warning when a foreign entry holds the name or the filesystem refuses."""
+    try:
+        if _points_at(link, entry):
+            return None
+        if link.is_symlink() and _ours(link, repo):
+            link.unlink()
+        elif link.is_symlink() or link.exists():
+            return f"{TAG} WARNING: {link} is not this repository's link; left unchanged"
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(entry, target_is_directory=entry.is_dir())
+    except OSError as exc:
+        return f"{TAG} WARNING: {link} not linked: {exc}"
+    return None
 
 
 def _prune(repo: Path, claude: Path) -> None:
@@ -116,30 +160,29 @@ def _prune(repo: Path, claude: Path) -> None:
     for kind in KINDS:
         root, target_root = claude / kind, repo / ".claude" / kind
         for link in sorted(root.iterdir()) if root.is_dir() else ():
-            target = Path(os.readlink(link)) if link.is_symlink() else None
-            if target is not None and target.parent == target_root and not target.exists():
+            if link.is_symlink() and Path(os.readlink(link)).parent == target_root and not link.exists():
                 link.unlink()
 
 
 def install(repo: Path, home: Path) -> list[str]:
-    """Mirror *repo*'s hooks block and link its entries under *home*/.claude; all or nothing, never over foreign hooks."""
+    """Mirror *repo*'s hooks block and link its entries under *home*/.claude; never over foreign hooks."""
     claude = home / ".claude"
     settings_path, sidecar = claude / "settings.json", claude / SIDECAR
+    hooks = _repo_hooks(repo)
+    if hooks is None:
+        return [f"{TAG} WARNING: {repo / '.claude' / 'settings.json'} is missing or unreadable; mirror not installed"]
     settings = _read_object(settings_path)
     if settings is None:
         return [f"{TAG} WARNING: {settings_path} is not a JSON object; mirror not installed"]
     if settings.get("hooks") and not sidecar.exists():
         return [f"{TAG} WARNING: {settings_path} holds hooks this script did not install; mirror not installed"]
-    lines: list[str] = []
-    settings["hooks"] = _repo_hooks(repo)
-    _write_atomic(settings_path, settings)
-    for entry, rel in _sources(repo):
-        _link(entry, claude / rel, lines)
-    _prune(repo, claude)
     head = _head(repo)
     _write_atomic(sidecar, {"repo_root": str(repo), "head": head, "installed_at": datetime.now(UTC).isoformat()})
-    lines.append(f"{TAG} mirrored {len(_entries(settings['hooks']))} hook(s) from {head}")
-    return lines
+    settings["hooks"] = hooks
+    _write_atomic(settings_path, settings)
+    lines = [warning for entry, rel in _sources(repo) if (warning := _link(entry, claude / rel, repo))]
+    _prune(repo, claude)
+    return [*lines, f"{TAG} mirrored {len(_entries(hooks))} hook(s) from {head}"]
 
 
 def drift(repo: Path, home: Path) -> Drift | None:
@@ -147,11 +190,13 @@ def drift(repo: Path, home: Path) -> Drift | None:
     claude = home / ".claude"
     if not (claude / SIDECAR).exists():
         return None
-    sidecar = _read_object(claude / SIDECAR)
-    mirrored, live = _entries((_read_object(claude / "settings.json") or {}).get("hooks")), _entries(_repo_hooks(repo))
-    unlinked = sum(1 for _, rel in _sources(repo) if not (claude / rel).exists())
-    head = str((sidecar or {}).get("head", "unknown"))
-    return Drift(len(live - mirrored), len(mirrored - live), unlinked, head)
+    mirrored_hooks = (_read_object(claude / "settings.json") or {}).get("hooks")
+    mirrored, live = _entries(mirrored_hooks), _entries(_repo_hooks(repo))
+    unlinked = sum(1 for entry, rel in _sources(repo) if not _points_at(claude / rel, entry))
+    scripts = {_script(hook.get("command"), repo) for _, _, hook in _hooks(mirrored_hooks)}
+    absent = sum(1 for path in scripts if path is not None and not path.exists())
+    head = str((_read_object(claude / SIDECAR) or {}).get("head", "unknown"))
+    return Drift(len(live - mirrored), len(mirrored - live), unlinked, absent, head)
 
 
 def check(repo: Path, home: Path) -> tuple[str, str]:
@@ -159,15 +204,16 @@ def check(repo: Path, home: Path) -> tuple[str, str]:
     found = drift(repo, home)
     if found is None:
         return "", f"{TAG} no mirror installed"
-    if not any(found[:3]):
+    if not any(found[:4]):
         return "", f"{TAG} mirror in sync"
     warning = (
         f"WARNING: the user-level hook mirror (~/.claude, built from {found.head}) differs from this checkout: "
-        f"{found.missing} hook(s) not mirrored, {found.stale} stale, {found.unlinked} skill, command or agent "
-        "entries not linked. Project threads run the mirror, not .claude/settings.json, until the cloud environment snapshot "
-        "is rebuilt (bin/setup-cloud-env.sh reinstalls it)."
+        f"{found.missing} hook(s) not mirrored, {found.stale} stale, {found.absent} mirrored script(s) missing here, "
+        f"{found.unlinked} skill, command or agent entries not linked. Project threads run the mirror, not "
+        ".claude/settings.json, until the cloud environment snapshot is rebuilt (bin/setup-cloud-env.sh reinstalls it)."
     )
-    return warning, f"{TAG} drift missing={found.missing} stale={found.stale} unlinked={found.unlinked} head={found.head}"
+    counts = f"missing={found.missing} stale={found.stale} absent={found.absent} unlinked={found.unlinked}"
+    return warning, f"{TAG} drift {counts} head={found.head}"
 
 
 def main(argv: list[str]) -> int:
@@ -183,7 +229,7 @@ def main(argv: list[str]) -> int:
         else:
             sys.stderr.write(f"{TAG} usage: user_hooks_mirror.py install|check\n")
     except Exception as exc:  # noqa: BLE001 -- advisory on every path; never wedges setup or session start
-        sys.stderr.write(f"{TAG} failed: {type(exc).__name__}: {exc}\n")
+        print(f"{TAG} WARNING: failed: {type(exc).__name__}: {exc}")
     return 0
 
 
