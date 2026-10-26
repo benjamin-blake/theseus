@@ -1,19 +1,36 @@
 variable "github_token" {
-  description = "GitHub admin PAT. Supplied at apply time from Secrets Manager -- never committed. Required scopes: repo, admin:repo_hook, read:org."
+  description = "GitHub token, supplied at run time and never committed: the PR-time plan's App installation token, or the classic admin PAT (repo, admin:repo_hook, read:org) as rollback until it is revoked. Leave unset when github_app_auth is true."
   type        = string
   sensitive   = true
+  default     = null
+
+  validation {
+    condition     = (var.github_token != null) != var.github_app_auth
+    error_message = "Set exactly one credential: TF_VAR_github_token, or TF_VAR_github_app_auth=true with GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID and GITHUB_APP_PEM_FILE in the environment."
+  }
+
+  validation {
+    condition     = var.github_token != ""
+    error_message = "github_token is empty; an empty token makes the provider fall back to anonymous access."
+  }
+}
+
+variable "github_app_auth" {
+  description = "true: authenticate as the org-owned terraform/github apply App from the GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID and GITHUB_APP_PEM_FILE environment variables, so its key never enters a variable or a saved plan (rec-4355). false: use github_token."
+  type        = bool
+  default     = false
 }
 
 variable "github_owner" {
   description = "GitHub organisation or user that owns the repository."
   type        = string
-  default     = "benjamin-blake"
+  default     = "otl-labs"
 }
 
 variable "repository_name" {
   description = "GitHub repository name managed by this module."
   type        = string
-  default     = "theseus"
+  default     = "ontheloop"
 }
 
 variable "main_protection_ruleset_id" {
