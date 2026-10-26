@@ -56,9 +56,10 @@ scope:
       (3) live-assume: environment tf-trusted-plan; if github.event_name == 'workflow_dispatch'; aws-actions/
       configure-aws-credentials (the repo's pinned version) with role-to-assume
       arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-trusted-plan, role-session-name
-      tf-trusted-plan, region from config/aws-region as other workflows read it; NO continue-on-error; then a one-line
-      delegate printing only the assumed-role/<role>/<session> suffix of the caller ARN via the repo identity helper
-      (Plan A STS pinning; never the account id).
+      tf-trusted-plan, region from config/aws-region as other workflows read it; NO continue-on-error; then exactly one
+      run line: aws sts get-caller-identity --region eu-west-1 --endpoint-url https://sts.eu-west-1.amazonaws.com --query
+      Arn --output text | sed -E 's#^arn:aws:sts::[0-9]+:##' (prints assumed-role/<role>/<session> only; the account
+      id is stripped by the command itself, never left to secret masking; a second-region STS host, Plan A pinning).
   - file: scripts/ci/oidc_claims_probe.py
     action: Create
     purpose: >-
@@ -90,7 +91,9 @@ scope:
       github.repository; (e) in TRUSTED_WORKFLOWS no run: body contains "github.event.pull_request." inside a ${{ }}
       expression; (f) terraform/github declares github_repository_environment with environment = ENV,
       can_admins_bypass = false, no reviewers block, protected_branches = true, custom_branch_policies = false and
-      prevent_destroy = true, plus its import block. terraform-github-plan.yml (pull_request today) passes every
+      prevent_destroy = true, plus its import block; (g) every github_repository_ruleset in terraform/github whose
+      target is branch includes only refs/heads/main (so "protected branches only" means main; a ruleset protecting
+      another branch would silently widen the Environment). terraform-github-plan.yml (pull_request today) passes every
       predicate vacuously until S5. Each predicate takes parsed data so red cases run on synthetic input.
   - file: tests/checks/ci_guards/test_validate_trusted_plan_environment.py
     action: Create
@@ -99,10 +102,15 @@ scope:
       Environment; a non-trusted pull_request_target workflow with id-token write; workflow_call in the trusted file;
       an id-token job without the Environment or without the same-repo if; a run body interpolating
       github.event.pull_request.head.ref; the Environment resource with can_admins_bypass true, a reviewers block, or no
-      prevent_destroy, and a missing import block. A no-env job NOT in TEMP_NO_ENV_JOBS is red.
+      prevent_destroy, and a missing import block; a ruleset whose include adds refs/heads/agent/*. A no-env job NOT in
+      TEMP_NO_ENV_JOBS is red.
   - file: scripts/checks/ci_guards/_manifest.py
     action: Modify
-    purpose: PR 2. Register validate_trusted_plan_environment with the ci_guards domain (pre-tier globs cover the new workflow and terraform/github).
+    purpose: >-
+      PR 2. Register validate_trusted_plan_environment with the ci_guards domain. pre_globs: .github/workflows/**,
+      terraform/github/**, scripts/checks/ci_guards/validate_trusted_plan_environment.py, scripts/verify_ci_workflow/**,
+      scripts/checks/_common.py, scripts/checks/registry.py (predicates a and b police every workflow, so any workflow
+      edit must run it).
   - file: config/ci_rca_taxonomy.yaml
     action: Modify
     purpose: PR 2. Taxonomy row for validate_trusted_plan_environment, same shape as validate_dispatch_gated_apply_topology's.
@@ -118,13 +126,12 @@ scope:
     action: Modify
     purpose: >-  # pragma: allowlist secret -- names secret ARNs and handling, no credential
       PR 2. Insert the new Decision at the top, numbered the next free number at write time (237 on 2026-10-26; Plan D
-      plan 1 also claims next-free), decided_date the landing date. APPROVED TEXT (Benjamin, 2026-10-26,
-      cmsg_01Cqz6E4mzSv6kkGCSCub3WM4c9KchReuUiLHPYjYJePMF item 4); allowed variance: the number, the dates and the
+      plan 1 also claims next-free), decided_date the landing date. APPROVED TEXT (Benjamin, 2026-10-26, cmsg_01Cqz6E4mzSv6kkGCSCub3WM4c9KchReuUiLHPYjYJePMF item 4, with the four critique-round-1 wording fixes approved on card cmsg_01Cqz6E4mzSv6kkGCSCub3WMMqQLo1rdhEVThGHN4qUZCr, 2026-10-26 21:58Z; exact text in the shared wording-fixes-r1.md); allowed variance: the number, the dates and the
       "Decision 237" self-references only. Title: "No agent-controlled identity reads Terraform state or saved plans --
       the speculative plan runs from main's workflow on pull_request_target under a dedicated environment- and
       workflow-bound role and shows names only (amends Decisions 92 and 144)". Envelope: number; status Decided;
       decided_date; amends [92, 144]; significance {value: numbered_decision, justification: "Replaces the planner
-      trust model Decision 92 pt 3 ratified, splits Decision 144's T2.49 c2 plan-plus-drift role and retires a
+      trust model Decision 92 pt 3 ratified, splits the plan-plus-drift role from Decision 144 clause 7's T2.49 consolidation and retires a
       terraform-cc-web-operations.yaml row; a note in that contract (considered) cannot amend Decision clauses."}.
       Problem: "PR-run speculative plans assume the planner's PR-sub session, which reads Terraform state and saved
       plans, while the PR's own code runs in the same job. Unreviewed agent code can therefore open state. N1 removed the
@@ -133,7 +140,7 @@ scope:
       or agent/* subjects, and PlatformDev) reads or writes Terraform state, saved plans or plan-review transcripts. A
       static check over every role's trust and policy, with iam simulate rows, enforces it. 2. Trusted identity. The
       speculative plan runs under agent-platform-github-ci-trusted-plan. It carries the mandatory boundary (Decision 144
-      cl.3) and trusts one subject: the GitHub Environment tf-trusted-plan (protected-branch deployment policy, no
+      cl.3) and trusts one subject form: the GitHub Environment tf-trusted-plan (protected-branch deployment policy, no
       reviewers, no admin bypass, never destroyed) and a job_workflow_ref naming a trusted workflow file at
       refs/heads/main, exact match. No reviewer gates this subject, unlike Decision 94's. Its safety rests on the
       workflow binding, the branch policy and a repo check: only the named files reference the environment or combine
@@ -147,12 +154,9 @@ scope:
       Accepted residual: PR HCL is still evaluated with the job's credentials, so the shape of a plan (counts, success,
       timing) can carry a few bits; catalog passwords stay in state (accepted 2026-10-26). 5. Unchanged. Decision 77's
       same-artifact apply: plan.bin and its digest are keyed by the PR head SHA. Decision 154's PR-time Lambda artifact
-      production moves out of the plan job with the cutover; it is not retired. 6. Amends Decision 92 pt 3: the
-      speculative plan no longer runs under a PR-sub session, and the planner keeps its main-sub drift session only.
-      Amends Decision 144 (T2.49 c2): the plan half leaves the merged planner role. terraform-cc-web-operations.yaml's
+      production moves out of the plan job with the cutover; it is not retired. 6. Amends Decision 92's ratified Wave 2 direction: the speculative plan no longer runs under a PR-sub session, and the planner keeps its main-sub drift session only. Amends Decision 144 clause 7's T2.49 consolidation: the plan half leaves the merged planner role. terraform-cc-web-operations.yaml's
       PR-run speculative_plan_job row retires at the cutover. Later trust edits on the new role are admin split-applies
-      (Decision 223 cl.4). A rename or transfer pre-stages the new job_workflow_ref values additively, as Decision 172
-      cl.2 does for subjects." Rationale: "The root cause is identity, not any one secret: a job that runs PR code cannot
+      (Decision 223 cl.4). A rename or transfer pre-stages the new job_workflow_ref values additively, as Decision 172 cl.2 does for subjects. This Decision records the target; it takes effect as rec-4632, rec-4635, rec-4636, rec-4637, rec-4638 and rec-4640 land, and until rec-4640 the planner's PR-sub session still reads state (accepted interim risk)." Rationale: "The root cause is identity, not any one secret: a job that runs PR code cannot
       also hold state read. pull_request_target runs main's definition, so the PR supplies data, never steps. Names-only
       output is the only rule that survives nonsensitive() and arbitrary string attributes. Rejected: a third trust
       statement on the planner (over the 2048-character trust limit, and it widens the session-name partition); masking
@@ -164,11 +168,7 @@ scope:
       and the trusted-environment ci_guards check; cl.3 and cl.4, test_terraform_plan_trusted (rec-4637) and the
       values-stripped review fixture (rec-4639); cl.5, the existing saved-plan fetch and digest tests." Plus **Status:**,
       **Date:** and **Warehouse ID:** markers in the house style. Dated amendment annotations (body unedited, Decision
-      177), directly under the existing annotations of each: Decision 92: "> **Amended by Decision 237 (2026-10-26):**
-      point 3's planner trust no longer admits a PR-sub session for the speculative plan; the plan runs under an
-      environment- and workflow-bound role. This body is otherwise unedited; see Decision 237." Decision 144: ">
-      **Amended by Decision 237 (2026-10-26):** the T2.49 c2 merged planner loses its plan half to a dedicated
-      trusted-plan role; drift stays on the planner. This body is otherwise unedited; see Decision 237." The decisions
+      177), directly under the existing annotations of each: Decision 92: "> **Amended by Decision 237 (2026-10-26):** the Wave 2 speculative plan ratified here as direction no longer runs under a PR-sub planner session; it runs under an environment- and workflow-bound role. This body is otherwise unedited; see Decision 237." Decision 144: "> **Amended by Decision 237 (2026-10-26):** the T2.49 consolidation its clause 7 sequenced loses its plan half to a dedicated trusted-plan role; drift stays on the planner. This body is otherwise unedited; see Decision 237." The decisions
       cache and ops_decisions follow the repo's standing post-merge backfill (Decision 84); never edit
       logs/.decisions-index.jsonl.
   - file: docs/contracts/github-org-transfer.yaml
@@ -176,15 +176,30 @@ scope:
     purpose: >-
       PR 2. APPROVED TEXT (same message, item 4). breakage_map.environment_fail_open: binding becomes "GitHub
       Environments tf-gated-apply and tf-trusted-plan (Terraform-managed) and pypi (not Terraform-managed)"; locations
-      gain .github/workflows/terraform-plan-trusted.yml. New breakage_map row after oidc_trust_segment: id
-      trusted_plan_workflow_ref; binding "job_workflow_ref values in the trusted-plan role's trust"; locations
+      gain .github/workflows/terraform-plan-trusted.yml (PR 2, with an amendment_log row naming this plan). PR 3 (the
+      row's location file exists only then, and validate_github_org_transfer fails any static row it neither evaluates
+      nor names as pending): new breakage_map row after oidc_trust_segment: id trusted_plan_workflow_ref; binding "job_workflow_ref values in the trusted-plan role's trust"; locations
       [terraform/personal/oidc_trusted_plan_role.tf]; changes_on [owner, name]; timing at_transfer; failure_mode "The
       values name the repository, not its ids, so a rename or transfer makes the trusted plan unassumable: PR plans stop,
       nothing else breaks (fails closed)."; fix "Add the target name's values additively before the move by an admin
       split-apply (Decision 223 cl.4); exact match only (Decision 172 cl.3); remove the old values after live proof.";
-      fix_phase pre_staged; actor HUMAN; rec rec-4636; detection static. Allowed variance: a field the contract's
-      evaluator requires that the approved text omits, filled from rec-4636; plus an amendment_log row (field_add) naming
-      this plan. If validate_github_org_transfer rejects a new row id, stop and return to the planner.
+      fix_phase pre_staged; actor HUMAN; rec rec-4636; detection static; plus a second amendment_log row. Allowed
+      variance: a field the contract's evaluator requires that the approved text omits, filled from rec-4636.
+  - file: scripts/checks/contracts/validate_github_org_transfer.py
+    action: Modify
+    purpose: >-
+      PR 3. Add ROW_EVALUATORS["trusted_plan_workflow_ref"]: parse local.trusted_plan_workflow_refs from
+      terraform/personal/oidc_trusted_plan_role.tf and require it to equal, exactly and in any order, one
+      "<owner>/<name>/.github/workflows/<file>@refs/heads/main" value per file in
+      validate_trusted_plan_environment.TRUSTED_WORKFLOWS for each identity the governing phase requires (the same
+      phase logic _evaluate_oidc_trust_segment uses: identity.current, plus identity.target while pre_staged); no
+      wildcard character; a missing file or unparseable local fails. Unless VP step 10 measured another claim form, in
+      which case the evaluator encodes the measured form.
+  - file: tests/checks/contracts/test_validate_github_org_transfer.py
+    action: Modify
+    purpose: >-
+      PR 3. Real tree green with the new row; red cases: the row present with no evaluator; a value naming the wrong
+      owner; a missing trusted file's value; a "*" in a value; the local absent.
   - file: terraform/personal/oidc_trusted_plan_role.tf
     action: Create
     purpose: >-
@@ -235,6 +250,9 @@ scope:
   - file: config/agent/verification_registry/entries/trusted-plan-identity.yaml
     action: Create
     purpose: PR 3. Registry row (test_selector) for VP step 1's node, guard_target the new test module.
+  - file: config/agent/verification_registry/entries/trusted-plan-oidc-claims-probe.yaml
+    action: Create
+    purpose: PR 2. Registry row (test_selector) for VP step 3's node, guard_target scripts/ci/oidc_claims_probe.py.
 bundled_recommendations:
   - rec-4636
 followon_recs: []
@@ -278,8 +296,8 @@ verification_plan:
     expected: all pass
     fix_if: any test shows a token segment or a non-allowlisted claim in output -- fix the script
     hermetic: false
-    graduation: waive
-    graduation_waiver_reason: The file is created by this plan and runs in the fast tier's affected-test set and the full tier; a registry row would duplicate that coverage.
+    graduation: graduate
+    graduation_check_id: trusted-plan-oidc-claims-probe
   - step: 4
     phase: pre-deploy
     action: Provider-free formatting on the three touched roots (init, validate and plan are CI's and the gate's job, Decision 119)
@@ -316,7 +334,7 @@ verification_plan:
       sys.exit(0 if out == {"add": 0, "change": 1, "destroy": 0, "types": ["aws_iam_policy"]} else "PRE-MERGE PLAN STOP")
       EOF
     expected: >-
-      one counts-only JSON line {"add": 0, "change": 1, "destroy": 0, "types": ["aws_iam_policy"]}, posted on PR 1 with
+      one counts-only JSON line {"add": 0, "change": 1, "destroy": 0, "types": ["aws_iam_policy"]} (the IAMRolesRead edit only), posted on PR 1 with
       $PR_HEAD_SHA; a new head re-runs it. If the reads document is an inline aws_iam_role_policy rather than a managed
       policy, the type differs: stop and return to the planner rather than editing the expectation alone.
     fix_if: >-
@@ -363,7 +381,8 @@ verification_plan:
     expected: exit 0
     fix_if: diagnose and fix on the branch; never skip or weaken a check
     hermetic: false
-    graduation: not-applicable
+    graduation: waive
+    graduation_waiver_reason: A whole fast-tier run; graduate steps may not invoke scripts.validate (recursion), and steps 1-3 carry the durable regressions.
   - step: 10
     phase: post-deploy
     action: >-
@@ -432,11 +451,19 @@ verification_plan:
           d(t, "secretsmanager:GetSecretValue", sm + "neon-api-key-AbCdEf"),
           d(p, "s3:GetObject", b + "tfplan/personal/1/probe.bin"),
       )
+      doc = iam.get_role(RoleName=t)["Role"]["AssumeRolePolicyDocument"]
+      st = doc["Statement"]
+      keys = sorted({k for x in st for c in x.get("Condition", {}).values() for k in c})
+      print("TRUST", len(st), sorted({op for x in st for op in x.get("Condition", {})}), keys)
+      assert len(st) == 1 and list(st[0]["Condition"]) == ["StringEquals"], st
+      assert keys == ["token.actions.githubusercontent.com:aud", "token.actions.githubusercontent.com:job_workflow_ref", "token.actions.githubusercontent.com:sub"], keys
       print("LIVE", got)
       assert got == ("implicitDeny", "allowed", "allowed", "implicitDeny", "implicitDeny", "implicitDeny", "allowed", "allowed", "implicitDeny"), got
       print("TRUSTED_PLAN_GRANTS_LIVE_OK")
       EOF
-    expected: one LIVE tuple of decisions (no ARNs or account id printed) then TRUSTED_PLAN_GRANTS_LIVE_OK; posted counts-only on PR 3
+    expected: >-
+      a TRUST line (1 statement, StringEquals only, exactly the aud, job_workflow_ref and sub keys), one LIVE tuple of
+      decisions (no ARNs or account id printed), then TRUSTED_PLAN_GRANTS_LIVE_OK; posted on PR 3
     fix_if: >-
       any mismatch -- stop and RCA; an explicitDeny where allowed is expected may be S1/S1b's fence or the boundary:
       show the planner before changing anything; the region is read from config/aws-region if it is not eu-west-2
@@ -445,18 +472,14 @@ verification_plan:
     phase: post-deploy
     action: >-
       LIVE ASSUME -- dispatch the skeleton on main (proves AWS evaluates job_workflow_ref and the trust admits the
-      Environment subject), then dispatch it from a non-main ref (proves the Environment's branch policy refuses it)
+      Environment subject)
     command: >-
-      echo 'VIA MCP: actions_run_trigger run_workflow terraform-plan-trusted.yml ref main; read the live-assume job; then
-      actions_run_trigger the same workflow with ref set to this session branch (which carries the merged file) and read
-      the claims-probe job'
+      echo 'VIA MCP: actions_run_trigger run_workflow terraform-plan-trusted.yml ref main; read the live-assume job'
     expected: >-
-      on main, live-assume succeeds and prints assumed-role/agent-platform-github-ci-trusted-plan/tf-trusted-plan; from
-      the branch ref, the Environment refuses the job ("not allowed to deploy") and no token is minted
+      live-assume succeeds and prints assumed-role/agent-platform-github-ci-trusted-plan/tf-trusted-plan
     fix_if: >-
       main dispatch fails AccessDenied -- compare the step 10 claims with the live trust and RCA (never widen to
-      StringLike); the branch dispatch runs -- the Environment's policy is wrong: stop, tell Benjamin, and treat it as a
-      security finding
+      StringLike)
     hermetic: false
   - step: 15
     phase: post-deploy
@@ -467,6 +490,32 @@ verification_plan:
       print(r[0]['status'] if r else 'MISSING')"
     expected: closed (or resolved, the writer's terminal status)
     fix_if: still open after the closure job ran -- check the trailer on the merge commit; close via update_rec only with evidence
+    hermetic: false
+  - step: 17
+    phase: pre-deploy
+    action: The transfer contract's new row is evaluated against the trust's job_workflow_ref values (PR 3)
+    command: bin/venv-python -m pytest tests/checks/contracts/test_validate_github_org_transfer.py -q
+    expected: all pass, including the new red cases
+    fix_if: the real tree fails -- fix the HCL local or the row, never the evaluator's exact-match rule
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: The test module is already graduated as the org-transfer evaluator's standing guard; this plan only adds cases to it.
+  - step: 18
+    phase: post-deploy
+    action: >-
+      BRANCH-POLICY PROOF, right after PR 2 merges and before PR 3 opens -- dispatch the skeleton from a non-main ref;
+      the Environment must refuse both Environment jobs
+    command: >-
+      echo 'VIA MCP: after rebasing this session branch onto main (so it carries the merged file), actions_run_trigger
+      run_workflow terraform-plan-trusted.yml with ref set to this session branch; read claims-probe and live-assume'
+    expected: >-
+      both jobs are refused by the Environment ("not allowed to deploy" / branch protection rules) before any step
+      runs, so no token is minted
+    fix_if: >-
+      either job runs -- the protected-branches policy admits a non-main ref: stop before PR 3, tell Benjamin it is a
+      security finding, and offer the custom main-only policy (a github_repository_environment_deployment_policy with
+      branch_pattern main) as the fix; if live-assume ran, record whether AWS refused it (that AccessDenied is the
+      negative proof that job_workflow_ref is enforced)
     hermetic: false
   - step: 16
     phase: pre-deploy
@@ -524,10 +573,15 @@ test_obligations:
     test_selector: tests/test_oidc_claims_probe.py
     red_green_expectation: red before (module absent), green after
   - source: docs/contracts/github-org-transfer.yaml
-    behavior: contract rows only; its structure is held by the existing validate_github_org_transfer check
-    verification_step: 9
-    command: bin/venv-python -m scripts.validate --pre
-    waiver_reason: Approved contract text with no behaviour of its own; the existing evaluator check covers its shape in the fast tier.
+    behavior: the trusted_plan_workflow_ref row is evaluated against the trust's job_workflow_ref values
+    verification_step: 17
+    test_selector: tests/checks/contracts/test_validate_github_org_transfer.py
+    red_green_expectation: red before (row present without evaluator, or evaluator absent), green after
+  - source: scripts/checks/contracts/validate_github_org_transfer.py
+    behavior: the new row evaluator fails on a wrong owner, a missing file, a wildcard or a missing local
+    verification_step: 17
+    test_selector: tests/checks/contracts/test_validate_github_org_transfer.py
+    red_green_expectation: red before (evaluator absent), green after
   - source: scripts/checks/ci_guards/_manifest.py
     behavior: registration only
     verification_step: 9
@@ -540,6 +594,11 @@ test_obligations:
     waiver_reason: Registration data; validate_ci_rca_taxonomy in --pre already fails a registered check that lacks its row.
   - source: config/agent/verification_registry/entries/trusted-plan-environment-fence.yaml
     behavior: registry row for VP step 2
+    verification_step: 9
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: Registration data; validate_verification_registry and validate_graduation_completeness check the row in --pre.
+  - source: config/agent/verification_registry/entries/trusted-plan-oidc-claims-probe.yaml
+    behavior: registry row for VP step 3
     verification_step: 9
     command: bin/venv-python -m scripts.validate --pre
     waiver_reason: Registration data; validate_verification_registry and validate_graduation_completeness check the row in --pre.
@@ -565,7 +624,7 @@ constraints:
 context:
   - "Approvals (Benjamin, 2026-10-26): cmsg_01Cqz6E4mzSv6kkGCSCub3WM4c9KchReuUiLHPYjYJePMF (job_workflow_ref now; Environment created by him at build time when told when and how; Decision and contract text approved) and cmsg_01Cqz6E4mzSv6kkGCSCub3WMVdkmcu9DRL9jEEsvr5YAJx (dedicated role, write the plan)."
   - "Evidence: role trust policy quota L-C07B4B0D = 2048 (read-only probe 2026-10-26); live planner trust 1255 minified; a planner statement with both workflow refs renders ~2031, the dedicated role ~830."
-  - "Slice map: rec-4632 S1, rec-4635 S1b, rec-4636 S2 (this), rec-4637 S3, rec-4638 S5, rec-4640 S4, rec-4639 S6. S3 deletes claims-probe-no-env and its TEMP_NO_ENV_JOBS entry and owns Decision 154's re-homing; S4 deletes the planner PR-sub statement (an admin split-apply, Decision 223 cl.4)."
+  - "Slice map: rec-4632 S1, rec-4635 S1b, rec-4636 S2 (this), rec-4637 S3, rec-4638 S5, rec-4640 S4, rec-4639 S6. S3 deletes claims-probe-no-env and its TEMP_NO_ENV_JOBS entry and owns Decision 154's re-homing and registering the trusted role as plan-capable in scripts/checks/iam_tf/_read_coverage.py; S4 deletes the planner PR-sub statement (an admin split-apply, Decision 223 cl.4)."
   - "Plan D: if secrets-to-ssm-expand (plan 2) merges before PR 3, stop for an amendment; otherwise D's plans 2-4 add the trusted role (N3 planner told the D side)."
   - "Shelved fallback (not used): /mnt/project-files/owner-password-out-of-state/SHELVED-forget-fallback.md."
   - "Gotcha: imports.tf keys on var.repository_name (default still theseus until rec-4355); the CloudShell adoption uses rec-4355's re-key or -var repository_name=ontheloop."
@@ -583,9 +642,10 @@ pre_implementation_checklist:
   - Acceptance criteria understood and verifiable
   - S1 (rec-4632) merged and applied; Plan D secrets-to-ssm-expand not merged (else stop for an amendment)
 execution_steps:
-  - "PR 1: edit terraform/bootstrap/github_ci_apply_reads.tf; VP 4, 9; open PR; at CI-green run VP 5-6 and post the counts line; merge on review PROCEED + green + code-owner review; then VP 7 on Benjamin's word."
+  - "PR 1: edit terraform/bootstrap/github_ci_apply_reads.tf; VP 4, 9; open PR; at CI-green run VP 5-6 and post the counts line; MERGE GATE: no other terraform/bootstrap change is merged but unapplied (S1b, rec-4635, goes first in the default order; Benjamin chose separate sittings) -- check S1b's PR state and its applied-sha comment; merge on review PROCEED + green + code-owner review; then VP 7 on Benjamin's word. A combined sitting with S1b happens only if Benjamin names both changes himself (offer it as an option, never the plan)."
   - "PR 2 (parallel with PR 1): environments.tf, imports.tf, the skeleton workflow, oidc_claims_probe.py and its test, validate_trusted_plan_environment and its test and registrations, the Decision and annotations, the contract rows; VP 2-4, 9; open PR; VP 8 (ask Benjamin to create the Environment, then re-run the GitHub-root plan); merge on review PROCEED + green + code-owner review."
-  - "PR 3 (after S1 applied, PR 1 applied, PR 2 merged): oidc_trusted_plan_role.tf, oidc_pipeline_roles.tf, oidc.tf, test_trusted_plan_identity.py and its registry row; VP 1, 4, 9; open PR (this triggers the probe); VP 10 (adjust only job_workflow_ref's form if measured differently), VP 11; merge with the Resolves: rec-4636 trailer on review PROCEED + green + code-owner review."
+  - "PR 3 (after S1 applied, PR 1 applied, PR 2 merged): oidc_trusted_plan_role.tf, oidc_pipeline_roles.tf, oidc.tf, test_trusted_plan_identity.py and its registry row, the trusted_plan_workflow_ref contract row with its evaluator and tests; VP 1, 4, 9, 17; open PR (this triggers the probe); VP 10 (adjust only job_workflow_ref's form if measured differently), VP 11; merge with the Resolves: rec-4636 trailer on review PROCEED + green + code-owner review."
+  - "Right after PR 2 merges, before PR 3 opens: VP 18 (branch-policy proof)."
   - "Post-merge PR 3: VP 12 (Benjamin approves the gated apply), VP 13, VP 14, VP 15; post counts-only evidence on PR 3."
   - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
   - "Report: what was implemented, verification results, the no-env probe's sub value (for S3 and the Decision 172 transfer contract)"
