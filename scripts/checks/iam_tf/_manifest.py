@@ -70,6 +70,13 @@ ENTRIES: tuple[Entry, ...] = (
         full_segment="full_after_lint",
     ),
     Entry(
+        name="validate_planner_secret_value_reads",
+        module="scripts.checks.iam_tf.validate_planner_secret_value_reads",
+        attr="validate_planner_secret_value_reads",
+        pre=True,
+        full_segment="full_after_lint",
+    ),
+    Entry(
         name="validate_terraform_try",
         module="scripts.checks.iam_tf.validate_terraform_try",
         attr="validate_terraform_try",

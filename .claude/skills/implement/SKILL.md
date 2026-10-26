@@ -169,13 +169,13 @@ are a subagent (`SUBAGENT CONTEXT` header, no `Agent` tool, or a nesting error),
 below; gate-request (`gate: code-review`, inputs branch+plan_path) and resume via `SendMessage` on
 verdict. Schema: `docs/contracts/overseer-dispatch.yaml#gate_request_trampoline`.
 
-Dispatch via the `Agent` tool with `subagent_type: "general-purpose"`, instructing the subagent to invoke the `code-review` skill via the Skill tool and return its structured output verbatim (the same idiom the plan.md decision-scout / plan-critique gates use) -- NOT via `bin/venv-python -m scripts.agent_development.run_skill --skill code-review`. The subagent runs in a fresh context window (anti-bias) and has full tool access (read, grep, glob, bash) to inspect the entire branch diff.
+Dispatch via the `Agent` tool with `subagent_type: "general-purpose"`, instructing the subagent to invoke the `code-review` skill via the Skill tool and return its structured output verbatim (the plan.md gates' idiom) -- NOT via `bin/venv-python -m scripts.agent_development.run_skill --skill code-review`. The subagent runs in a fresh context window (anti-bias) and has full tool access (read, grep, glob, bash) to inspect the entire branch diff.
 
 Agent prompt template:
 - Pre-instruct: "Run `git fetch origin main` before any analysis so the diff base is current. The branch may have been open for hours; the local `origin/main` ref may be stale."
 - Identify the branch under review (the diff `git diff origin/main...HEAD` is the artefact under critique). Use `origin/main` (not the local `main` ref, which is only updated by an explicit pull).
 - Identify the plan file (`docs/plans/PLAN-{slug}.yaml`) so the subagent knows the acceptance criteria and intent.
-- Instruction: "Invoke the `code-review` skill via the Skill tool against this branch. Survey the diff, read the plan to understand intent, then return its structured findings report (including the final Verdict line) verbatim. Do not edit files."
+- Instruction: "Invoke the `code-review` skill (`ontheloop:code-review` where listed) via the Skill tool against this branch. Survey the diff, read the plan to understand intent, then return its structured findings report (including the final Verdict line) verbatim. Do not edit files."
 - Forbid file edits.
 - Require structured output: findings grouped by severity (Critical / High / Medium / Low) with file:line references and a one-line rationale per finding.
 - Cap response length (~800-900 words) to keep the report focused.
