@@ -35,7 +35,8 @@ scope:
     writes the transcripts reads plan JSON with values (.github/actions/subagent-plan-review), and only CI writes that
     prefix; convergence/ and the rest of ci-rca-evidence/ are deliberately NOT fenced (agents read
     convergence/personal/sandbox.json and file ci-rca-evidence/<sha>.json); the bootstrap root's own state is in
-    another bucket on which PlatformDev holds no Allow. No Sid name starts with "DenyState" (the graduated
+    another bucket on which PlatformDev holds no Allow. The comments contain no [, ], { or } characters (the
+    brace-balanced statement splitters in scripts/checks/iam_tf do not skip comments). No Sid name starts with "DenyState" (the graduated
     platformdev-state-convergence-denies-intact check counts exactly four). No other statement, verb or resource
     changes. The minified document grows by about 1,070 B (4,853 of 10,240 B measured live 2026-10-26; Decision 156
     precondition unchanged).
@@ -50,7 +51,8 @@ scope:
     Condition, Action set exactly as scoped, Resource set exactly as scoped. It also asserts: no Deny statement in the
     file names a Resource of "${local.data_lake_bucket_arn}/*", ".../convergence/*" or ".../ci-rca-evidence/*" (the
     agent-read paths stay open); exactly four Sids start with "DenyState" (the DEP-13 set is untouched). Tests:
-    the good fixture passes; the real tree passes; and one red case each, every one driving the real validator --
+    the good fixture passes; test_real_tree_passes (exactly this name: the three bundled recs' acceptance is its
+    ::node_id) runs the validator on the real file; and one red case each, every one driving the real validator --
     a Sid dropped, a Resource narrowed to tfstate/personal/*, s3:GetObject dropped from the read set,
     s3:DeleteObjectVersion dropped from the write set, Effect flipped to Allow, a Condition added, a new
     "DenyStateX" Sid name, and a Deny on ci-rca-evidence/*. The "no Condition" and "no Deny on convergence/ or
@@ -115,8 +117,7 @@ verification_plan:
   command: bin/venv-python -m pytest tests/checks/iam_tf/test_platform_dev_plan_and_state_fence.py -q
   expected: all tests pass, including the eight red cases and the real-tree case
   fix_if: a red case not detected means validate_plan_state_fence is too weak -- strengthen it, never drop the red case
-  hermetic: true
-  expected_literals: []
+  hermetic: false
   graduation: graduate
   graduation_check_id: platformdev-plan-state-fence-shape
 - step: 2
@@ -159,8 +160,7 @@ verification_plan:
   command: bin/venv-python -m pytest tests/checks/iam_tf -q
   expected: all pass
   fix_if: a read-coverage or write-companion check flags a Deny -- read its rule; never weaken it, return to the planner if it needs a change
-  hermetic: true
-  expected_literals: []
+  hermetic: false
   graduation: waive
   graduation_waiver_reason: Existing suites already run in the fast and full tiers; steps 1-3 carry this plan's assertions.
 - step: 5
@@ -373,10 +373,13 @@ verification_plan:
   command: >-
     bin/venv-python -c "from src.common.ducklake_reader_client import fetch_recs_by_ids, make_reader; rows, _ =
     fetch_recs_by_ids(make_reader(profile='agent_platform'), ['rec-2768', 'rec-4353', 'rec-4635']); want='pytest
-    tests/checks/iam_tf/test_platform_dev_plan_and_state_fence.py'; got={r['id']: want in (r.get('acceptance') or '')
-    for r in rows}; print(got); assert got == {'rec-2768': True, 'rec-4353': True, 'rec-4635': True}, got" && bin/venv-python -m pytest
-    tests/checks/iam_tf/test_platform_dev_plan_and_state_fence.py -q && echo "BUNDLED ACCEPTANCE HOLDS"
-  expected: all three ids map to True, the test passes, then the marker
+    tests/checks/iam_tf/test_platform_dev_plan_and_state_fence.py::test_real_tree_passes'; from
+    scripts.executor.acceptance_lint import lint_acceptance_command as lint; got={r['id']: want in (r.get('acceptance')
+    or '') and lint(r['acceptance'], require_decidable=True)[0] for r in rows}; print(got); assert got == {'rec-2768':
+    True, 'rec-4353': True, 'rec-4635': True}, got" && bin/venv-python -m pytest
+    tests/checks/iam_tf/test_platform_dev_plan_and_state_fence.py::test_real_tree_passes -q && echo "BUNDLED ACCEPTANCE
+    HOLDS"
+  expected: all three ids map to True (the node-id acceptance is present and lint_acceptance_command(require_decidable=True) accepts it), the node passes, then the marker
   fix_if: a rec still carries its old grep -- rewrite it through the portal (execution step 2); never close it by hand
   hermetic: false
   graduation: not-applicable
@@ -519,6 +522,7 @@ context:
 - "Correction after step 6b: 6b settled-item S7 said the recs close after the live checks, not by merge trailer. docs/contracts/git-ops.yaml resolves_trailer sanctions a manual close only after a transport failure or merge-leg refusal, so the recs close through the build merge's Resolves trailer (precedent PLAN-secrets-to-ssm-grants rec-4626). The handoff asks Benjamin to approve the merge and the apply together so the closed-before-live window stays short."
 - "Slice map and edges: /mnt/project-files/trusted-plan-executor/SPLIT.md. Owns PlatformDev only; S1 rec-4632 owns the CI branch role; S4 rec-4640 owns the standing multi-principal simulate fixture, the principle check over live inline policies, and the AgentPlatformRuntime decision. Shelved fallback for the wider N3 work: /mnt/project-files/owner-password-out-of-state/SHELVED-forget-fallback.md."
 - "Plan-time live evidence (2026-10-26, read-only): VP step 12's command as PlatformDev returned 200 on a real tfplan, tfstate/github and transcript object and on the three controls; step 17's command (live mode) showed read-tfplan, read-tfstate-github, read-transcript and the three write rows allowed today, read-tfstate-personal explicitDeny (DEP-13), read-bootstrap-state implicitDeny."
+- "Acceptance form: the three bundled recs carry the single-node acceptance test_platform_dev_plan_and_state_fence.py::test_real_tree_passes, which lint_acceptance_command(require_decidable=True) accepts and the trailer census routes to junit (measured at planning, 2026-10-26); a bare-file pytest acceptance is out_of_grammar and would leave the recs open."
 - "Non-use evidence: grep of scripts/, src/, bin/, .claude/, .github/, config/ (2026-10-26) finds no PlatformDev reader of tfplan/, tfstate/github or review-transcripts; drain_glue_orphan reads state under the admin profile; DEV validation runs init -backend=false (scripts/checks/_terraform.py:171-173). CloudTrail has no S3 data events, so steps 12 and 16 are the live proof."
 - "Gotchas: an explicit Deny in DailyOps beats the unmanaged AgentPlatformRuntime inline policy's bucket-wide Allow (terraform/CLAUDE.md:53-56); agents read convergence/personal/sandbox.json (scripts/ci/reconcile_target.py:28) and write ci-rca-evidence/<sha>.json, so neither parent prefix may be fenced; a DEV terraform/github plan as PlatformDev now fails at init (intended, rec-4353)."
 - "terraform/github hand apply after the fence: it already runs from AWS CloudShell under an operator identity, and cloud sessions cannot apply it (terraform/github/CLAUDE.md:18-24); the open org-rekey amendment (#1653) reads that state through the ADMIN profile. The fence removes only PlatformDev, so the runbook and environment-taxonomy.yaml axis_a.github stay true and no follow-on rec is needed. S5 (rec-4638) moves the GitHub-root plan to the trusted executor."
@@ -539,8 +543,10 @@ execution_steps:
   Rec acceptance rewrites, before the PR merges (Decision 201: the closing commit's verdict is keyed to the rec's
   current acceptance): call get_rec_write_guidance(), then update_rec on rec-2768 and rec-4353 setting file to
   terraform/bootstrap/platform_dev_policies.tf and acceptance to "bin/venv-python -m pytest
-  tests/checks/iam_tf/test_platform_dev_plan_and_state_fence.py -q", with a context note naming this plan. rec-4635
-  already carries that acceptance.
+  tests/checks/iam_tf/test_platform_dev_plan_and_state_fence.py::test_real_tree_passes -q", with a context note naming
+  this plan. Rewrite rec-4635's acceptance to the same string: its current bare-file form has no ::node_id, so
+  lint_acceptance_command(require_decidable=True) refuses it and the trailer census classifies it out_of_grammar, which
+  would leave all three recs open with no sanctioned manual close.
 - >-
   tests/checks/iam_tf/test_platform_dev_plan_and_state_fence.py -- write it first, as scoped; run VP step 2 and see it
   red on origin/main.
