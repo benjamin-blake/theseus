@@ -76,10 +76,12 @@ scope:
       github.sha) and persist-credentials false, never the PR head or merge ref, and no github.event.pull_request.*
       or github.head_ref expression inside any run: body:
       (1) claims-probe: environment tf-trusted-plan; job-level if (github.event_name == 'workflow_dispatch' ||
-      github.event.pull_request.head.repo.full_name == github.repository); one-line run delegate to
-      scripts/ci/oidc_claims_probe.py --audience sts.amazonaws.com --require job_workflow_ref.
+      github.event.pull_request.head.repo.full_name == github.repository); one-line run delegate python3 -I
+      scripts/ci/oidc_claims_probe.py --audience sts.amazonaws.com --require job_workflow_ref (-I, isolated mode: neither
+      scripts/ci/ nor the cwd joins sys.path, so an unreviewed scripts/ci/json.py cannot shadow a stdlib import while the
+      token-request variables are in the environment; the runner's python3 is 3.12).
       (2) claims-probe-no-env: TEMPORARY (S3 deletes it); no environment; if github.event_name == 'pull_request_target'
-      && the same-repo condition; same delegate without --require. Answers whether a bare pull_request_target token
+      && the same-repo condition; same isolated delegate without --require. Answers whether a bare pull_request_target token
       carries ref:refs/heads/main.
       (3) live-assume: environment tf-trusted-plan; if github.event_name == 'workflow_dispatch'; after the checkout, the
       ./.github/actions/aws-region step (validate_project_region R4); aws-actions/
@@ -119,8 +121,9 @@ scope:
       ENV (string or {name:} form, any job); (b) only TRUSTED_WORKFLOWS combine a pull_request_target trigger with
       id-token: write at workflow or job level; (c) no TRUSTED_WORKFLOWS file declares workflow_call, and
       every TRUSTED_WORKFLOWS file exists; (d) in TRUSTED_WORKFLOWS, every job holding id-token: write that can run on
-      pull_request_target declares environment ENV (except TEMP_NO_ENV_JOBS) and a job-level if containing
-      github.event.pull_request.head.repo.full_name == github.repository. A job "can run on pull_request_target" when
+      pull_request_target declares environment ENV (except TEMP_NO_ENV_JOBS) and a job-level if in which
+      github.event.pull_request.head.repo.full_name == github.repository is a top-level && conjunct (same parsing as
+      below; a substring match would pass "... == github.repository || true"). A job "can run on pull_request_target" when
       its workflow has that trigger and its job-level if does not have github.event_name == 'workflow_dispatch' as a
       top-level && conjunct (the if text with ${{ }} stripped, split on && outside parentheses); so live-assume
       (if: github.event_name == 'workflow_dispatch') is dispatch-only and excluded, and an if such as
@@ -132,8 +135,11 @@ scope:
       in TRUSTED_WORKFLOWS has no ref or repository input and sets persist-credentials false; (h) every local path a
       token-minting job in TRUSTED_WORKFLOWS executes (each uses: ./... action directory and each scripts/... path a run
       body names) matches a .github/CODEOWNERS pattern (leading-slash anchored; a trailing slash matches the subtree;
-      otherwise exact or fnmatch), so cl.2's code-owner premise is checked, not hand-kept. (g) and (h) apply only to
-      jobs (d) governs or that declare ENV, so terraform-github-plan.yml (its checkout has no persist-credentials false
+      otherwise exact or fnmatch), so cl.2's code-owner premise is checked, not hand-kept; and every python or python3
+      invocation in such a job's run bodies carries -I (a bare python3 scripts/... or python3 -m scripts... is red,
+      because the script directory or cwd would join sys.path and an un-owned sibling module could shadow an import).
+      (g) and (h) apply to every id-token job (d) governs, including TEMP_NO_ENV_JOBS, and to every job that declares
+      ENV, so terraform-github-plan.yml (its checkout has no persist-credentials false
       today) stays vacuous until S5 moves it. S3 amends (g) when it adds the PR-HCL overlay and inherits (h) for its
       scripts. terraform-github-plan.yml (pull_request today) passes every predicate vacuously
       until S5. Each predicate takes parsed data so red cases run on synthetic input.
@@ -149,7 +155,10 @@ scope:
       ${{ github.event.pull_request.head.sha }}, one with repository:, and one without persist-credentials false; an
       id-token job whose if is github.event_name == 'workflow_dispatch' || true without the same-repo clause; a missing
       TRUSTED_WORKFLOWS file; a token-minting job running scripts/ci/unowned.py with no CODEOWNERS match, and one using
-      ./.github/actions/unowned. A no-env job NOT in TEMP_NO_ENV_JOBS is red. Real-tree green covers the dispatch-only
+      ./.github/actions/unowned; a token-minting job running python3 scripts/ci/oidc_claims_probe.py without -I, and
+      one running python3 -m scripts.ci.oidc_claims_probe; an id-token job whose if is
+      github.event.pull_request.head.repo.full_name == github.repository || true. A no-env job NOT in TEMP_NO_ENV_JOBS
+      is red. Real-tree green covers the dispatch-only
       live-assume job.
   - file: scripts/checks/ci_guards/_manifest.py
     action: Modify
@@ -226,7 +235,9 @@ scope:
       and the trusted-environment ci_guards check; cl.3 and cl.4, test_terraform_plan_trusted (rec-4637) and the
       values-stripped review fixture (rec-4639); cl.5, the existing saved-plan fetch and digest tests." Plus **Status:**,
       **Date:** and **Warehouse ID:** markers in the house style. Dated amendment annotations (body unedited, Decision
-      177), directly under the existing annotations of each: Decision 92: "> **Amended by Decision 237 (2026-10-26):** the Wave 2 speculative plan ratified here as direction no longer runs under a PR-sub planner session; it runs under an environment- and workflow-bound role. This body is otherwise unedited; see Decision 237." Decision 144: "> **Amended by Decision 237 (2026-10-26):** the T2.49 consolidation its clause 7 sequenced loses its plan half to a dedicated trusted-plan role; drift stays on the planner. This body is otherwise unedited; see Decision 237." The decisions
+      177), directly under the existing annotations of each (Decision 92's sit under its header; Decision 144's only
+      annotation, from Decision 202, sits at the end of its body just before the --- separator, so the new one goes
+      after it there): Decision 92: "> **Amended by Decision 237 (2026-10-26):** the Wave 2 speculative plan ratified here as direction no longer runs under a PR-sub planner session; it runs under an environment- and workflow-bound role. This body is otherwise unedited; see Decision 237." Decision 144: "> **Amended by Decision 237 (2026-10-26):** the T2.49 consolidation its clause 7 sequenced loses its plan half to a dedicated trusted-plan role; drift stays on the planner. This body is otherwise unedited; see Decision 237." The decisions
       cache and ops_decisions follow the repo's standing post-merge backfill (Decision 84); never edit
       logs/.decisions-index.jsonl. Size: the rendered entry must stay under validate_decisions_size's 6,144 B per-entry
       cap (about 5.9 KB measured with the round-3/4 text, about 240 B of headroom; use the short Warehouse ID form
