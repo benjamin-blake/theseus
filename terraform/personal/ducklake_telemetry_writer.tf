@@ -172,6 +172,17 @@ resource "aws_ssm_parameter" "ducklake_telemetry_writer_url" {
   }
 }
 
+resource "aws_ssm_parameter" "ducklake_telemetry_catalog" {
+  name  = "/agent-platform/ducklake/telemetry_catalog"
+  type  = "String"
+  value = local.ducklake_telemetry_meta_schema
+
+  tags = {
+    Name    = "DuckLake Telemetry Catalog"
+    Purpose = "T2.36 read routing"
+  }
+}
+
 resource "aws_cloudwatch_metric_alarm" "ducklake_telemetry_writer_errors" {
   alarm_name          = "ducklake-telemetry-writer-errors"
   alarm_description   = "DuckLake telemetry writer: AWS/Lambda Errors plus Url5xxCount > 0 over 15m (loud-fail posture, Decision 55; PLAN-ducklake-typed-unmapped-errors: a typed 5xx answer is a handled return, so Errors alone no longer pages). An operator-run gate that elicits a typed 5xx on purpose pages too."
