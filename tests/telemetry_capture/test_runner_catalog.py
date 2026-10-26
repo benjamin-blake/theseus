@@ -189,6 +189,24 @@ def test_a_catalog_reset_under_a_detach_budget_detaches(tmp_path: Path) -> None:
     assert resent.outcome == "sent" and resent.diag["diag"]["catalog_reset"] == 1 and _envelope(tmp_path)["catalog"] == PROD
 
 
+def test_a_due_confirm_under_a_detach_budget_detaches(tmp_path: Path) -> None:
+    _smoke_tree(tmp_path)
+    prod = _prod()
+    assert run(tmp_path, prod).diag["diag"]["catalog_reset"] == 1
+    st = state(tmp_path)
+    st.state_file.write_text(
+        json.dumps({**_envelope(tmp_path), "reset_at": time.time() - runner.RESET_CONFIRM_AFTER_S - 1}), encoding="utf-8"
+    )
+    write(tmp_path, make_files(records(4)))
+    before, sent = st.state_file.read_bytes(), len(_sent(prod))
+    detached = run(tmp_path, prod, final=True, detach_below=1.0)
+    assert detached.outcome == "short_budget" and detached.diag["diag"]["catalog_reset_detached"] == 1
+    assert len(_sent(prod)) == sent and st.state_file.read_bytes() == before
+    confirm = run(tmp_path, prod, final=True)
+    assert confirm.outcome == "sent" and confirm.diag["diag"]["catalog_reset_confirm"] == 1
+    assert "reset_at" not in _envelope(tmp_path)
+
+
 def test_a_reset_is_confirmed_by_one_whole_tree_resend_after_the_window(tmp_path: Path) -> None:
     _smoke_tree(tmp_path)
     prod = _prod()

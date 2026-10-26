@@ -5,6 +5,9 @@ boto3 is faked at its Session, so every SSM and Lambda API call the module makes
 
 from __future__ import annotations
 
+import subprocess
+import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -244,3 +247,17 @@ def test_event_verb_set_equals_the_registry() -> None:
 def test_known_catalogs_are_one_tuple_shared_with_capture() -> None:
     assert read_route.KNOWN_CATALOGS is runner.KNOWN_CATALOGS is state.KNOWN_CATALOGS
     assert state.KNOWN_CATALOGS == (SMOKE, PROD) and read_route.DEFAULT_CATALOG is state.DEFAULT_CATALOG == SMOKE
+
+
+def test_the_read_clients_import_where_fcntl_is_absent() -> None:
+    code = (
+        "import sys; sys.modules['fcntl'] = None\n"
+        "import scripts.agent_sdk.mcp_server, scripts.telemetry_verify.__main__\n"
+        "from scripts.telemetry_capture import read_route\n"
+        "print(read_route.DEFAULT_CATALOG)\n"
+    )
+    root = Path(__file__).resolve().parents[2]
+    done = subprocess.run(
+        [sys.executable, "-c", code], cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False
+    )
+    assert (done.returncode, done.stdout.strip()) == (0, SMOKE), done.stderr[-2000:]

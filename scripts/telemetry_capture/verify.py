@@ -261,9 +261,11 @@ class _Check:
     def _load(self) -> None:
         loaded = self.state.load_cursor(FsTree(self.path).read(ROOT) or b"")
         held = self.state.verify_state()
-        self.vstate = state.verify_view(held, loaded.catalog)
+        # A lost envelope names no catalog, so the check neither re-keys the verify state nor records a catalog for it.
+        lost = loaded.status == state.LOST
+        self.vstate = dict(held) if lost else state.verify_view(held, loaded.catalog)
         self.view_dropped = tuple(name for name in state.CATALOG_KEYED if name in held and name not in self.vstate)
-        self.tree_catalog = loaded.catalog
+        self.tree_catalog = None if lost else loaded.catalog
         self.seen_pass = _last_pass(self.state.diagnostics())
         token = None
         if self.state.halt() is not None:

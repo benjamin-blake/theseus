@@ -97,6 +97,15 @@ def test_a_catalog_reset_never_reads_a_cached_session_from_the_old_catalog(tmp_p
     assert "verify_catalog" not in held and held["root_session_id"] == ROOT_ID
 
 
+def test_a_lost_cursor_keeps_the_verify_state_of_the_catalog_it_was_recorded_under(tmp_path: Path) -> None:
+    tree = _served(corpus(tmp_path / "lost"), PROD)
+    tree.state.save_verify_state({**OLD_FLOORS, "verify_catalog": PROD})
+    tree.state.state_file.unlink()
+    assert tree.run().status == "no_cursor"
+    held = tree.state.verify_state()
+    assert held["verify_catalog"] == PROD and {name: held[name] for name in OLD_FLOORS} == OLD_FLOORS
+
+
 def test_the_catalog_resolves_before_the_lock_and_only_with_credentials(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

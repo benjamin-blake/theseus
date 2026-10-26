@@ -9,7 +9,6 @@ verify_view (ST-6).
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import tempfile
@@ -109,6 +108,8 @@ class Lock:
         self._handle = handle
 
     def release(self) -> None:
+        import fcntl  # noqa: PLC0415 -- POSIX-only; the read clients import this module's catalog constants on any host
+
         try:
             fcntl.flock(self._handle, fcntl.LOCK_UN)
         finally:
@@ -140,6 +141,8 @@ class CaptureState:
         self, wait_s: float, *, sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic
     ) -> Lock | None:
         """flock the tree's lock, polling up to wait_s; None when another pass holds it."""
+        import fcntl  # noqa: PLC0415 -- POSIX-only, as in Lock.release
+
         self.dir.mkdir(parents=True, exist_ok=True)
         handle = (self.dir / "lock").open("a")
         end = clock() + max(0.0, wait_s)
