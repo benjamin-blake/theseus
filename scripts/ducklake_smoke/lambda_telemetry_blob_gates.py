@@ -1,6 +1,6 @@
-"""Claim-check (blob) live vectors for the --lambda-telemetry gate (T2.36, slice 2a-2, plan 4).
+"""Claim-check (blob) live vectors for the --lambda-telemetry-smoke gate, run against the smoke twin (T2.36, Decision 236).
 
-Called by lambda_telemetry after part 2's append vectors with part 1's registered synthetic project_ref. The delivery
+Called by lambda_telemetry_smoke after part 2's append vectors with part 1's registered synthetic project_ref. The delivery
 vectors run the producer helper (src.telemetry_client.blob_delivery) over the gate's own SigV4 transport, so the helper is
 proven by its first user; the S3 reject vectors PUT directly under a real grant. Each vector is a loud SmokeTestFailure
 (Decision 55).

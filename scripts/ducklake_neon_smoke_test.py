@@ -115,7 +115,7 @@ from scripts.ducklake_smoke.lambda_ops_gates import (  # noqa: F401 -- re-export
     ops_read_your_write,
 )
 from scripts.ducklake_smoke.lambda_telemetry_gates import (  # noqa: F401 -- re-exported package surface
-    lambda_telemetry,
+    lambda_telemetry_production,
     lambda_telemetry_smoke,
 )
 from scripts.ducklake_smoke.lambda_telemetry_reader_gates import (  # noqa: F401 -- re-exported package surface
@@ -151,7 +151,7 @@ _LAMBDA_GATES: dict[str, Callable[..., None]] = {
     "lambda_maintenance_create_telemetry": lambda_maintenance_create_telemetry,
     "connect_probe": connect_probe,
     "lambda_append_only": lambda_append_only,
-    "lambda_telemetry": lambda_telemetry,
+    "lambda_telemetry_production": lambda_telemetry_production,
     "lambda_telemetry_smoke": lambda_telemetry_smoke,
     "lambda_telemetry_reader": lambda_telemetry_reader,
 }
@@ -266,9 +266,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         "assert 1 history row + no current projection",
     )
     group.add_argument(
-        "--lambda-telemetry",
+        "--lambda-telemetry-production",
         action="store_true",
-        help="[post-deploy] telemetry writer URL-only proof",
+        help="[post-deploy] production telemetry writer light gate: URL-only, production-bound, writes no test rows",
     )
     group.add_argument(
         "--lambda-telemetry-smoke",

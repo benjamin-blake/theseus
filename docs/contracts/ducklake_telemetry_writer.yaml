@@ -1,8 +1,9 @@
 ---
 # Class B Lambda verb contract for the agent-platform-ducklake-telemetry-writer function (T2.36, slice 2a-2, plan 3 part 1).
 # The function exists so telemetry identities never reach ops verbs (Decision 143 cl.3, Decision 213): its own role, its own
-# scoped catalog login, env-pinned to the isolated ducklake_smoke catalog. This contract documents the PRODUCTION verb surface
-# only; attach_check and telemetry_probe are gate instrumentation, NOT agent surfaces, and are out of contract scope.
+# scoped catalog login, env-pinned to the production telemetry catalog ducklake_telemetry (Decision 230); its smoke twin runs the
+# same code on ducklake_smoke (Decision 236). This contract documents the PRODUCTION verb surface only; attach_check and
+# telemetry_probe are gate instrumentation, NOT agent surfaces, and are out of contract scope.
 contract:
   id: ducklake_telemetry_writer
   class: B
@@ -10,8 +11,10 @@ contract:
   status: provisional_v0
   description: >-
     Telemetry-scoped DuckLake runtime Lambda invoked over an AWS_IAM (SigV4) Function URL, URL-only (direct invoke is denied
-    in the permissions boundary, Decision 213). Env-pinned to the isolated ducklake_smoke catalog on a scoped catalog login;
-    it takes no catalog selector and never reaches the ops verbs or the production ducklake_ops catalog. Its first verbs
+    in the permissions boundary, Decision 213). Env-pinned to the production telemetry catalog ducklake_telemetry (Decision
+    230) on the production scoped login ducklake_telemetry_writer_prod; the smoke twin
+    (agent-platform-ducklake-telemetry-writer-smoke, Decision 236) holds the ducklake_smoke binding and the disposable
+    deploy proofs. It takes no catalog selector and never reaches the ops verbs or the ducklake_ops catalog. Its first verbs
     verify and seed the telemetry tables (which the catalog owner creates, Decision 216) and register tenants and projects (Decision 200): tenant and project ids are ULIDs minted
     once per request, and the ops_entity_counters row is a lock only. The verbs cover provisioning, registration and
     append_telemetry (slice 2a-2 plan 3 part 2): rows for one project in one transaction, plus begin_blobs (plan 4), the
@@ -25,11 +28,12 @@ contract:
       - PlatformDev
     admin_only_features: []
     write_path: >-
-      ducklake_telemetry_writer Lambda -> run_telemetry_txn (one transaction, bounded OCC retry that also covers the masked commit-cleanup failure) -> the isolated
-      ducklake_smoke catalog: provision_telemetry (verify the nine owner-created tables and seed the two counter rows; no DDL), register_tenant and
+      ducklake_telemetry_writer Lambda -> run_telemetry_txn (one transaction, bounded OCC retry that also covers the masked commit-cleanup failure) -> the production
+      ducklake_telemetry catalog on the ducklake_telemetry_writer_prod login (the smoke twin runs the same path on ducklake_smoke): provision_telemetry (verify the nine owner-created tables and seed the two counter rows; no DDL), register_tenant and
       register_project (SCD2 history MERGE plus current MERGE under a lock-only counter UPDATE); begin_blobs issues grants and
-      writes only a first-sight project registration. The telemetry tables are
-      created under the catalog owner by ducklake_maintenance_smoke's create_telemetry_tables (Decision 216). The function has no
+      writes only a first-sight project registration. The telemetry tables are created under the catalog's owner role:
+      on ducklake_telemetry by the operator-invoked provision_telemetry_catalog (Decision 230 cl.4), on ducklake_smoke by
+      ducklake_maintenance_smoke's create_telemetry_tables (Decision 216). The function has no
       destructive verb by design and holds no CREATE; dropping a table stays on the admin maintenance function.
     id_allocator: >-
       ULIDs (tenant_id, project_id and the write ulid), minted once per request outside the retry loop; the
@@ -40,10 +44,14 @@ contract:
     authored_via: PLAN-telemetry-registration-verbs (T2.36 slice 2a-2 plan 3 part 1)
     rationale: >-
       Class B contracts start provisional_v0: the verb set, error taxonomy and payload shapes are validated against real
-      traffic before ratification. The function has served no production traffic yet (the smoke catalog only).
+      traffic before ratification. Production traffic starts at PLAN-telemetry-production-flip's flip, when the writer binds
+      ducklake_telemetry; before it the function served the smoke catalog only.
     surfacing_note: >-
-      Only the production_invocations condition applies: there is no first production invocation date because the function
-      writes nothing to the production ops catalog. check_re_ratification_trigger schema-validates this block in CI.
+      Only the production_invocations condition applies, counted from the flip's convergence: production_invocations is
+      AWS/Lambda Invocations with FunctionName agent-platform-ducklake-telemetry-writer since the flip (the writer's EMF
+      RequestCount carries only the Verb dimension, so it cannot tell catalogs apart). The telemetry project's coordinator
+      surfaces the re-ratification to Benjamin when it reaches 500. check_re_ratification_trigger schema-validates this
+      block in CI.
     re_ratification_trigger:
       first_of:
         - "production_invocations >= 500"
@@ -200,9 +208,11 @@ audit_invariants:
   - "Within a request the data batches precede the telemetry_sessions marker batch. Inside one transaction the order has no visibility effect, so this is a producer tripwire for the cross-request order the producer owns (telemetry-event-envelope.yaml R7)."
   - "The size cap is len(json.dumps(S)), S the request body string as delivered: ASCII-escaped, so it equals the measure Lambda's 6 MiB event limit applies to for an ASCII body and is an upper bound when the body carries non-ASCII (measured 2026-10-09)."
   - "No append_telemetry response or log line carries a caller value (a row value, an undeclared name, principal.ref): errors locate by table, row index, column and reason only."
-  - "Claim-check rule (T2.36 c2/c4, Decision 199 cl.5): a producer PUTs payload bytes only under a begin_blobs grant (single object, content-addressed, SHA-256- and length-bound, at most 15 minutes), issued after the writer resolved the tenant and project and derived the key; append_telemetry verifies the object by HEAD and writes content_uri, so every write stays writer-authorised and writer-committed (Decision 81 cl.7 as read by Decision 213 cl.2) through the content_blobs port (Decision 212 cl.4). The writer never reads, puts or deletes object bytes; a failed append fails loudly and nothing is queued or replayed (Decision 84 I-4); no process ever ingests an object into the catalog; an unreferenced object is deleted by the maintenance sweep (rec-4033), never ingested. Enforced by the writer-bundle S3-surface test (head_object, presigned put_object and list_objects_v2 only); the CI role's bucket-wide S3 write is a named residual owned by rec-4292."
+  - "Claim-check rule (T2.36 c2/c4, Decision 199 cl.5): a producer PUTs payload bytes only under a begin_blobs grant (single object, content-addressed, SHA-256- and length-bound, at most 15 minutes), issued after the writer resolved the tenant and project and derived the key; append_telemetry verifies the object by HEAD and writes content_uri, so every write stays writer-authorised and writer-committed (Decision 81 cl.7 as read by Decision 213 cl.2) through the content_blobs port (Decision 212 cl.4). The writer never reads, puts or deletes object bytes; a failed append fails loudly and nothing is queued or replayed (Decision 84 I-4); no process ever ingests an object into the catalog; an unreferenced object is deleted by the maintenance sweep (rec-4033), never ingested. Enforced by the writer-bundle S3-surface test (head_object, presigned put_object and list_objects_v2 only). The blob-root write fence is Decision 230 cl.5's permissions-boundary deny: only the telemetry writer roles put to the blob root, only the admin maintenance role deletes under it and never by version (DeleteObjectVersion is denied to every bounded principal), and PlatformAdmin stays the unbounded break-glass operator (Decision 144 cl.3)."
   - "A blob row whose object is missing or older than 7 days commits only as the no-op of an identical stored row for a missing or stale object (else 422 blob_not_verified, nothing written), so an identical re-send inserts nothing whatever the object's age or presence; begin_blobs re-grants any missing or stale object and never an integrity fault. The 7 days is a writer mechanism constant cross-pinned to the code by a test; the stored-row check is a commit precondition for an unverifiable blob, not a data rule (Decision 210 cl.2(a))."
   - "Every blob row this writer commits from 2026-10-15 on has content_bytes equal to its object's length: each row is either HEAD-verified on its own declared size or declares the same size as the verified first row of its content_uri, and no earlier row can differ, because the producer helper checks each payload's length before any call and no vector sends a same-object pair with two sizes. An identical re-send therefore never reaches size_mismatch. size_mismatch is decided before the transaction, so it precedes the stored-row grain check: a re-send under a stored grain key with a different content_bytes answers 422 size_mismatch, not 409 grain_conflict. Two rows under one grain key in one request remain the in-batch 409 (Decision 207)."
+  - "Operator writes: an operator object write under the blob prefix must be a checksum-signed PUT under a begin_blobs grant, or it pages: an object stored without its SHA-256 checksum, or with one that differs from its key, answers blob_integrity (500) on its next verify and pages through Url5xxCount."
+  - "Integrity repair: a blob_integrity fault is repaired by a PlatformAdmin inspection that deletes the faulty object version; the producer's next begin_blobs then finds the object missing and grants a fresh upload, which the following append verifies."
   - "begin_blobs touches the catalog only on a binding-cache miss and writes only a first-sight registration. No presigned URL, X-Amz-* credential value, key or digest is ever logged or returned beyond begin_blobs' own response. Blob integrity, grant self-check and blob-store access faults log the C6 line with status 500 and answer a typed 500, which pages through Url5xxCount."
   - "A COMMIT whose error is masked by the no-delete file cleanup (duckdb's TransactionException 'Failed to commit: Could not remove file') is retried within the same bounded attempt budget as an OCC collision, because every telemetry body is idempotent (insert-only MERGE, lookup-first registration, caches written after commit). Only a COMMIT-raised failure with that exact signature is retried; the same text from a body statement, or any other TransactionException, propagates. The count is logged apart as masked_commit_retries (a log field only: no metric, no EMF member); the masked message names the bucket and is never logged or returned; exhaustion answers 503 occ_exhausted. The role keeps no s3:DeleteObject (Decision 216 cl.4); orphan files are the maintenance role's to delete."
   - "Every answered request emits exactly one C6 log line (verb, component, status, error_type, per-table counts, request and invoke bytes, tenant_id, project_id, occ_retries, commit_ms, masked_commit_retries, caller_role), never an account id, an ARN or a hash of either; the six data verbs' lines carry an Embedded Metric Format block (namespace DuckLakeTelemetryWriter, RequestCount by Verb; an append_telemetry line also carries OccRetryCount and CommitLatencyMs under the empty set and under [MetaSchema], the member read from the function's own TELEMETRY_META_SCHEMA env, never a caller value; ducklake-telemetry-writer-occ and ducklake-telemetry-writer-commit-latency read only the MetaSchema=ducklake_telemetry series)."
@@ -219,6 +229,19 @@ governance_notes: >-
   with the production column set beside it in tables.telemetry_tables.production_column_set. This contract holds only the pointer;
   contract.governance.principal_classes is unchanged.
 amendment_log:
+  - date: "2026-10-26"
+    semantic_break: true
+    change_class: governance_note_add
+    summary: >-
+      PLAN-telemetry-production-flip (T2.36 c2, Decision 230, Decision 236): the function binds the production telemetry
+      catalog ducklake_telemetry on the ducklake_telemetry_writer_prod login (header, description, write_path), with the
+      smoke twin holding the smoke binding; the claim-check invariant's CI-write residual is closed by Decision 230 cl.5's
+      blob-root write fence; two operator audit invariants (checksum-signed operator writes or a page; the PlatformAdmin
+      integrity repair path); provisional_v0 counts production_invocations from the flip as AWS/Lambda Invocations.
+    migration_story: >-
+      No verb, request, response or error changes. The bound catalog changes: rows written after the flip land in
+      ducklake_telemetry (it starts empty, Decision 230 cl.1) and the smoke catalog keeps its earlier rows; capture re-sends
+      each in-flight tree whole to the new catalog (PLAN-telemetry-catalog-aware-capture).
   - date: "2026-10-25"
     semantic_break: false
     change_class: governance_note_add

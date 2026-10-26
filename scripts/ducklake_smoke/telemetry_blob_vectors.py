@@ -1,4 +1,4 @@
-"""Vector data for the --lambda-telemetry blob gate (T2.36, slice 2a-2, plan 4). Data and pure builders only: it does no I/O
+"""Vector data for the --lambda-telemetry-smoke blob gate (the twin; T2.36, slice 2a-2). Data and pure builders only: no I/O
 and imports nothing from src.telemetry beyond the shared blob protocol constants and the identity derivation: the read-back
 gate derives the grain key of a row it wrote through src.telemetry.identity, the derivation the writer uses. That derivation
 is proven independently by the identity golden vectors, so reusing it proves the read path, not the derivation.

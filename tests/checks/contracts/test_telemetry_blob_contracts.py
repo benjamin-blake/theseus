@@ -67,7 +67,7 @@ def test_writer_contract_carries_begin_blobs_and_the_claim_check() -> None:
         assert needle in invariants, needle
     for needle in (
         "rec-4033",
-        "rec-4292",
+        "only the telemetry writer roles put to the blob root",
         "Decision 81 cl.7",
         "Decision 213 cl.2",
         "Decision 212 cl.4",
