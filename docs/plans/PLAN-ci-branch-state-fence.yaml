@@ -44,7 +44,9 @@ scope:
     action: Create
     purpose: >-
       Mirror test of the new check (plan_obligations naming), which rec-4632's acceptance names (amended 2026-10-26). Live tree passes; red on synthetic HCL for each dropped verb, each dropped prefix, effect
-      Allow, an added condition block, the statement absent, and an unresolvable source document.
+      Allow, an added condition block, the statement absent, and an unresolvable source document. test_registered_pre_and_full
+      asserts validate_ci_branch_state_fence is in {s.name for s in registry.pre_sequence() if s.kind == "check"} and its
+      Entry has full_segment "full_after_lint" (precedent: test__manifest.py TestEnvironmentTaxonomyPromotedUngated).
   - file: config/agent/verification_registry/entries/ci-branch-state-fence.yaml
     action: Create
     purpose: Graduation shard for VP step 1 (check_id ci-branch-state-fence), shaped like planner-secret-value-reads.yaml.
@@ -91,16 +93,22 @@ verification_plan:
   - step: 3
     phase: pre-deploy
     action: >-
-      Stale-use sweep: no workflow, composite action or script that can run under the branch role references the fenced
-      prefixes (the only tfstate reader outside apply/planner jobs is the local admin runbook drain_glue_orphan).
+      Stale-use sweep over the workflows that assume the branch role: no non-comment line references the fenced prefixes,
+      and the only code naming review-transcripts is its writer (archive_transcripts.sh, run inside apply-role jobs) and
+      the new check. Composite actions that touch the prefixes (fetch-saved-plan, subagent-plan-review) run only in
+      apply-role jobs (verified at planning; the only tfstate reader outside apply/planner jobs is the local admin runbook
+      drain_glue_orphan).
     command: >-
-      ! grep -rlE 'tfstate/|tfplan/|review-transcripts' $(grep -lr 'agent-platform-github-ci-branch' .github/workflows)
-      && test "$(grep -rlE 'review-transcripts' .github scripts src | sort | tr '\n' ' ')" = ".github/actions/subagent-plan-review/archive_transcripts.sh "
+      ! grep -rnE 'tfstate/|tfplan/|review-transcripts' $(grep -lr 'agent-platform-github-ci-branch' .github/workflows)
+      | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#'
+      && test "$(grep -rlE 'review-transcripts' .github scripts src | grep -v __pycache__ | sort | tr '\n' ' ')"
+      = ".github/actions/subagent-plan-review/archive_transcripts.sh scripts/checks/iam_tf/validate_ci_branch_state_fence.py "
       && echo SWEEP_OK
     expected: Prints SWEEP_OK.
     fix_if: >-
-      A branch-role workflow matches -- read it; if it really reads or writes a fenced prefix, stop and report (the fence
-      would break it); if it is a comment, record that on the PR.
+      A branch-role workflow line matches -- read it; if it really reads or writes a fenced prefix, stop and report (the
+      fence would break it). Another file names review-transcripts -- read it; a new reader under the branch role is a
+      stop-and-report.
     hermetic: true
     expected_literals: []
     graduation: waive
@@ -112,7 +120,7 @@ verification_plan:
     action: >-
       Read-only admin simulate of the CANDIDATE policy: the live inline policy plus the fence statement built from the
       HCL constants, under the live permissions boundary. Prints decisions only, never an ARN or account id.
-    command: >-
+    command: |-
       bin/venv-python - <<'PY'
       import boto3, json
       from scripts.checks.iam_tf.validate_ci_branch_state_fence import FENCE_ACTIONS, FENCE_PREFIXES
@@ -132,9 +140,10 @@ verification_plan:
       for verb, key, want in [("s3:GetObject", "convergence/personal/sandbox.json", "allowed"), ("s3:PutObject", "ci-rca-evidence/simulate-probe.json", "allowed"), ("s3:GetObject", "deploy-records/ducklake/simulate-probe.json", "allowed"), ("s3:PutObject", "convergence/personal/sandbox.json", "explicitDeny")]:
           d = iam.simulate_custom_policy(PolicyInputList=[json.dumps(doc)], PermissionsBoundaryPolicyInputList=[json.dumps(bdoc)], ActionNames=[verb], ResourceArns=[f"{b}/{key}"])["EvaluationResults"][0]["EvalDecision"]
           bad += d != want; print(verb, key, d, "want", want)
-      print("CANDIDATE_MINIFIED_BYTES", len(json.dumps(doc, separators=(",", ":")))); print("SIMULATE_MISMATCHES", bad); raise SystemExit(1 if bad else 0)
+      size = len(json.dumps(doc, separators=(",", ":"))); bad += size >= 10240; print("CANDIDATE_MINIFIED_BYTES", size)
+      print("SIMULATE_MISMATCHES", bad); raise SystemExit(1 if bad else 0)
       PY
-    expected: 20 fenced lines explicitDeny, 4 anchor lines as wanted, CANDIDATE_MINIFIED_BYTES under 10240 (validate_iam_policy_size covers only terraform/bootstrap), SIMULATE_MISMATCHES 0, exit 0.
+    expected: 20 fenced lines explicitDeny, 4 anchor lines as wanted, CANDIDATE_MINIFIED_BYTES under 10240 (counted as a mismatch otherwise; validate_iam_policy_size covers only terraform/bootstrap), SIMULATE_MISMATCHES 0, exit 0.
     fix_if: >-
       A fenced cell is not explicitDeny -- the constants and the HCL disagree, or a verb is missing; fix and re-run. An
       anchor is not allowed -- the fence is too wide; stop and report. AccessDenied on the admin profile -- report; never
@@ -143,13 +152,13 @@ verification_plan:
     graduation: not-applicable
   - step: 5
     phase: pre-deploy
-    action: Policy size and SLOC budgets hold with no raise.
+    action: SLOC budgets hold with no raise (the inline-policy byte limit is asserted in step 4).
     command: >-
-      bin/venv-python -c "from scripts.checks.sloc.sloc_limits import validate_sloc_limits as c; f=[]; c(f); print('SIZE_FAILS', len(f)); assert not f, f"
-    expected: SIZE_FAILS 0; exit 0. (The live inline policy is 4,748 of 10,240 minified bytes; the fence adds about 300.)
+      bin/venv-python -c "from scripts.checks.sloc.sloc_limits import validate_sloc_limits as c; f=[]; c(f); print('SLOC_FAILS', len(f)); assert not f, f"
+    expected: SLOC_FAILS 0; exit 0.
     fix_if: A file is over budget -- decompose (Decision 128); never raise.
     hermetic: true
-    expected_literals: ["SIZE_FAILS 0"]
+    expected_literals: ["SLOC_FAILS 0"]
     graduation: waive
     graduation_waiver_reason: Replays the registered SLOC check that runs in every tier.
   - step: 6
@@ -192,15 +201,28 @@ verification_plan:
   - step: 9
     phase: post-deploy
     action: >-
-      The merge-time apply-sandbox run applied the saved plan (convergence record green), then a read-only admin simulate
-      of the LIVE role returns the same matrix as step 4.
-    command: >-
-      mcp__github__actions_list(method="list_workflow_runs", owner="otl-labs", repo="ontheloop",
-      resource_id="terraform-apply-sandbox.yml", workflow_runs_filter={"event": "push", "branch": "main"}) -> the run whose
-      head_sha is the squash-merge sha -> job "apply-sandbox" conclusion; then step 4's command with the candidate lines
-      replaced by simulate_principal_policy(PolicySourceArn=iam.get_role(RoleName=role)["Role"]["Arn"], ActionNames=[verb],
-      ResourceArns=[...]) for every cell (no PolicyInputList), printing decisions only.
-    expected: apply-sandbox success; SIMULATE_MISMATCHES 0.
+      The merge-time apply-sandbox run applied the saved plan (convergence record green); then a read-only admin simulate
+      of the LIVE role (identity policies plus its boundary) returns the same matrix as step 4. Prints decisions only,
+      never an ARN or account id. First clause via the GitHub MCP tools: mcp__github__actions_list(method="list_workflow_runs",
+      owner="otl-labs", repo="ontheloop", resource_id="terraform-apply-sandbox.yml", workflow_runs_filter={"event": "push",
+      "branch": "main"}) -> the run whose head_sha is the squash-merge sha -> job "apply-sandbox" conclusion success.
+    command: |-
+      bin/venv-python - <<'PY'
+      import boto3
+      from scripts.checks.iam_tf.validate_ci_branch_state_fence import FENCE_ACTIONS
+      iam = boto3.Session(profile_name="agent_platform_admin", region_name="eu-west-2").client("iam")
+      role, b = "agent-platform-github-ci-branch", "arn:aws:s3:::agent-platform-data-lake"
+      src = iam.get_role(RoleName=role)["Role"]["Arn"]
+      fenced = ["tfstate/personal/sandbox/terraform.tfstate", "tfstate/github/terraform.tfstate", "tfplan/personal/1/simulate-probe.bin", "ci-rca-evidence/review-transcripts/1/review.json"]
+      cells = [(verb, key, "explicitDeny") for key in fenced for verb in sorted(FENCE_ACTIONS)]
+      cells += [("s3:GetObject", "convergence/personal/sandbox.json", "allowed"), ("s3:PutObject", "ci-rca-evidence/simulate-probe.json", "allowed"), ("s3:GetObject", "deploy-records/ducklake/simulate-probe.json", "allowed"), ("s3:PutObject", "convergence/personal/sandbox.json", "explicitDeny")]
+      bad = 0
+      for verb, key, want in cells:
+          d = iam.simulate_principal_policy(PolicySourceArn=src, ActionNames=[verb], ResourceArns=[f"{b}/{key}"])["EvaluationResults"][0]["EvalDecision"]
+          bad += d != want; print(verb, key, d, "want", want)
+      print("SIMULATE_MISMATCHES", bad); raise SystemExit(1 if bad else 0)
+      PY
+    expected: apply-sandbox success; 24 lines each matching its want; SIMULATE_MISMATCHES 0; exit 0.
     fix_if: >-
       The apply did not run or routed to gated-apply -- stop and report. A fenced cell is allowed or implicitDeny on the
       live role -- the apply did not take; stop and report. Never fix live state by hand.
@@ -243,10 +265,10 @@ test_obligations:
     test_selector: tests/checks/iam_tf/test_validate_ci_branch_state_fence.py::test_live_tree_passes
     red_green_expectation: red before (no fence statement), green after.
   - source: scripts/checks/iam_tf/_manifest.py
-    behavior: The check is registered for --pre and full.
+    behavior: The check is registered in the pre sequence with full_segment full_after_lint.
     verification_step: 1
-    test_selector: tests/checks/iam_tf/test__manifest.py
-    red_green_expectation: red before if the manifest mirror lists the new module, green after.
+    test_selector: tests/checks/iam_tf/test_validate_ci_branch_state_fence.py::test_registered_pre_and_full
+    red_green_expectation: red before (entry absent), green after.
   - source: config/ci_rca_taxonomy.yaml
     behavior: The new check maps to iam_gap.
     verification_step: 7
@@ -275,7 +297,7 @@ context:
   - "Gotcha: the update auto-applies at merge, so a later PR removing the Deny would too; the registered check is the control."
   - "Gotcha: a sibling PR touching terraform/personal that merges first makes this PR's saved plan stale; rebase and re-plan before merge (Decision 77 refuse-on-red)."
   - "Benjamin 2026-10-26 21:23Z (cmsg_01Cqz6E4mzSv6kkGCSCub3WMCbgBMurTPB1U5wGXavjFFs): write the plan, all 6b recommendations (1A inline now + boundary copy as rec-4645; 2A five verbs on three prefixes; 3A admin simulate pre and post). Build merge NOT approved: ask him in the build thread. 6b: /mnt/project-files/trusted-plan-executor/s1-branch-role-fence/step6b-presentation.md."
-  - "Decision 143 cl.1 WARN (scout): the inline Deny is removable by a later in-budget PR; accepted for S1 with the registered check (Decision 235 makes weakening it human-gated) and Benjamin's IAM always-ask rule; rec-4645 hoists the same Deny into the admin-applied boundary."
+  - "Decision 143 cl.1 WARN (scout): the inline Deny is removable by a later in-budget PR; accepted for S1. Removing the check's Entry is mechanically blocked (validate_tier_demotion_markers); loosening its predicate is review-gated only (Decision 235 coverage: none), plus Benjamin's IAM always-ask rule, until rec-4645 hoists the same Deny into the admin-applied boundary."
   - "Decision-scout verdict FLAGS_FOUND (WARN 143, deferred to rec-4645); CITE: Decision 92, Decision 144, Decision 77, Decision 126, Decision 101, Decision 169, Decision 170. Decisions triaged: 188 of 188. Roadmap items intersected: 3; CONFLICT: 0; RELATED: 3 (T2.48, T2.54, T4.23)."
   - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
 pre_implementation_checklist:
