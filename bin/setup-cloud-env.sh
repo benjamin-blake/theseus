@@ -7,45 +7,63 @@
 # credential block below (the env-var field is "visible to anyone using this
 # environment" -- never put credentials there).
 #
-# DEV environment (PlatformDev) -- paste into the "Setup script" field, filling
-# the <PLACEHOLDER> values from your local ~/.aws/credentials and ~/.aws/config:
+# AWS credentials (rec-4510, Decision 113 Update): the agent_static key never sits in a container. Each
+# environment (DEV, ADMIN) has two parts:
+#
+# (1) An AWS (SigV4) network secret in the environment settings holding the agent_static access key, with the
+#     allowed host sts.eu-west-2.amazonaws.com ONLY. The agent proxy signs STS calls to that host as the IAM user;
+#     the container never sees the key. Network secrets apply to NEW sessions only.
+#
+# (2) A private "Setup script" field block that writes ~/.aws/config only (placeholder credentials come from
+#     bin/aws-proxy-placeholder-credentials, installed to ~/.local/bin by step 2b below) and removes any stale
+#     ~/.aws/credentials. botocore does not expand $HOME or ~ in credential_process, so the block writes that
+#     section with printf and an expanded path. Fill the <PLACEHOLDER> values (account id, ExternalIds) from your
+#     local ~/.aws/config.
+#
+# DEV environment (PlatformDev) -- paste into the "Setup script" field:
 #
 #     set -euo pipefail
-#     mkdir -p "$HOME/.aws" && chmod 700 "$HOME/.aws"
+#     mkdir -p "$HOME/.aws" "$HOME/.local/bin" && chmod 700 "$HOME/.aws"
+#     rm -f "$HOME/.aws/credentials"
 #
-#     cat > "$HOME/.aws/credentials" <<'EOF'
-#     [agent_static]
-#     aws_access_key_id = <PLACEHOLDER>
-#     aws_secret_access_key = <PLACEHOLDER>
-#     EOF
-#     chmod 600 "$HOME/.aws/credentials"
-#
-#     cat > "$HOME/.aws/config" <<'EOF'
-#     [profile agent_static]
-#     region = eu-west-2
-#     output = json
-#
+#     printf '[profile agent_static]\nregion = eu-west-2\noutput = json\ncredential_process = %s\n\n' \
+#         "$HOME/.local/bin/aws-proxy-placeholder-credentials" > "$HOME/.aws/config"
+#     cat >> "$HOME/.aws/config" <<'EOF'
 #     [profile agent_platform]
 #     role_arn = arn:aws:iam::<ACCOUNT_ID>:role/PlatformDev
 #     source_profile = agent_static
 #     external_id = <PLACEHOLDER>
 #     duration_seconds = 36000
 #     region = eu-west-2
+#     sts_regional_endpoints = regional
 #     output = json
 #     EOF
 #     chmod 600 "$HOME/.aws/config"
 #
-#     cd /home/user/agent-platform && bash bin/setup-cloud-env.sh
+#     cd /home/user/ontheloop && bash bin/setup-cloud-env.sh
 #
-# boto3 then resolves the agent_platform profile and assumes PlatformDev,
-# auto-refreshing the STS session from the agent_static key with no re-paste.
-# Leave the env-var field EMPTY for the dev environment.
+# boto3 then resolves the agent_platform profile: the placeholder key is only the source credential, the proxy
+# re-signs the AssumeRole call, and the STS session auto-refreshes with no re-paste. Leave the env-var field EMPTY
+# for the dev environment.
 #
-# ADMIN environment (PlatformAdmin, used rarely for infra) -- same block but the
-# config profile is [profile agent_platform_admin] (role PlatformAdmin, its own
-# external_id), and set these in the (non-secret) env-var field:
+# ADMIN environment (PlatformAdmin, used rarely for infra) -- same block, plus a second role profile appended to
+# the heredoc (ADMIN keeps BOTH profiles):
+#
+#     [profile agent_platform_admin]
+#     role_arn = arn:aws:iam::<ACCOUNT_ID>:role/PlatformAdmin
+#     source_profile = agent_static
+#     external_id = <PLACEHOLDER>
+#     duration_seconds = 36000
+#     region = eu-west-2
+#     sts_regional_endpoints = regional
+#     output = json
+#
+# and set these in the (non-secret) env-var field:
 #     AWS_PROFILE=agent_platform_admin
 #     INSTALL_TERRAFORM=1
+#
+# Identity checks: an unpinned `aws sts get-caller-identity` returns the IAM user under the proxy. Use
+# `bin/venv-python -m scripts.aws_identity caller-arn --profile <p>` (reads the identity from a second region).
 #
 # IMPORTANT: the "Setup script" field must include the `cd` prefix above, because
 # the field runs bash from a working directory that is NOT the repo root.
@@ -69,7 +87,7 @@
 #
 # Responsibility split (post T0.2 refactor):
 #   setup-cloud-env.sh -- snapshot-cached installs plus Codex bootstrap parity for Claude's SessionStart checks.
-#   .claude/hooks/session_start_aws.sh -- verifies the static-key assume-role chain (every session).
+#   .claude/hooks/session_start_aws.sh -- reports the assumed-role identity via scripts.aws_identity (every session).
 #   .claude/hooks/session_start_ensure_github_mcp.sh -- self-heals github-mcp-server on stale snapshots (every session).
 #   .claude/hooks/session_start_sync_deps.sh -- self-heals requirements.txt/requirements-dev.txt (and terraform binary) drift on stale snapshots (every session).
 #   .claude/hooks/session_start_precommit.sh -- re-wires the pre-commit .git hook (every session; .git/hooks does not survive a fresh clone).
@@ -77,6 +95,7 @@
 # What it does:
 #   1. Creates .venv with python3.12.
 #   2. Installs uv (fast pip replacement); falls back to pip if install fails.
+#   2b. Installs bin/aws-proxy-placeholder-credentials to ~/.local/bin (credential_process target).
 #   3. Installs AWS CLI v2.
 #   4. Installs runtime + dev requirements, and (opt-in, INSTALL_TERRAFORM=1)
 #      Terraform, via bin/sync-deps.sh -- also establishes the build-time
@@ -91,8 +110,8 @@
 #      then runs the remaining checkout-local SessionStart checks used by Claude.
 #
 # What it does NOT do:
-#   - Materialise ~/.aws/{credentials,config} or ~/.config/gh-mcp/token (done by
-#     the private "Setup script" field block above; this script only consumes them).
+#   - Materialise ~/.aws/config or ~/.config/gh-mcp/token (done by the private "Setup script" field
+#     block above; this script only consumes them).
 #   - Install gh CLI (GitHub access is via MCP -- see github-mcp-server, step 6 -- not gh).
 #   - Install terraform unless INSTALL_TERRAFORM=1 (set only in the admin env).
 
@@ -124,6 +143,15 @@ if ! command -v uv >/dev/null 2>&1; then
     t0=$SECONDS
     curl -LsSf https://astral.sh/uv/install.sh | sh || true
     log "uv-install: $((SECONDS - t0))s"
+fi
+
+# 2b. credential_process placeholder (before the first AWS call below) ---------
+PLACEHOLDER_SRC="$REPO_ROOT/bin/aws-proxy-placeholder-credentials"
+PLACEHOLDER_DST="$HOME/.local/bin/aws-proxy-placeholder-credentials"
+mkdir -p "$HOME/.local/bin"
+if ! cmp -s "$PLACEHOLDER_SRC" "$PLACEHOLDER_DST"; then
+    install -m 0755 "$PLACEHOLDER_SRC" "$PLACEHOLDER_DST"
+    log "Installed $PLACEHOLDER_DST"
 fi
 
 # 3. AWS CLI v2 (background) --------------------------------------------------
