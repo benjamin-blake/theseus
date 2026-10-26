@@ -122,10 +122,6 @@ def test_real_tree_passes() -> None:
     assert validate_plan_state_fence(_tree()) == []
 
 
-def test_good_fixture_passes() -> None:
-    assert validate_plan_state_fence(_tree()) == []
-
-
 def test_missing_policy_is_reported() -> None:
     assert validate_plan_state_fence("") == ["platform_dev_runtime statements not found"]
 
