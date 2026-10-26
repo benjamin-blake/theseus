@@ -61,7 +61,7 @@ scope:
   - file: .github/CODEOWNERS
     action: Modify
     purpose: >-
-      PR 2 (round-3 change 6, card cmsg_01Cqz6E4mzSv6kkGCSCub3WM42TyWKtJdsyFwSCQ52rhFX). Add /scripts/ci/oidc_claims_probe.py and /.github/actions/aws-region/
+      PR 2 (round-3 change 6, card cmsg_01Cqz6E4mzSv6kkGCSCub3WMPdJJ3n9ohju3GensFpnkmv). Add /scripts/ci/oidc_claims_probe.py and /.github/actions/aws-region/
       owned by @benjamin-blake, beside the existing entries: every main path a token-minting trusted job executes is
       code-owned (the workflow file already is, via terraform-*.yml). S3 adds its own scripts the same way.
   - file: .github/workflows/terraform-plan-trusted.yml
@@ -117,16 +117,25 @@ scope:
       {("terraform-plan-trusted.yml", "claims-probe-no-env")} with a comment that S3 (rec-4637) removes the entry.
       Over .github/workflows/*.yml (parse via scripts.verify_ci_workflow's loader): (a) only TRUSTED_WORKFLOWS reference
       ENV (string or {name:} form, any job); (b) only TRUSTED_WORKFLOWS combine a pull_request_target trigger with
-      id-token: write at workflow or job level; (c) no TRUSTED_WORKFLOWS file declares workflow_call; (d) in
-      TRUSTED_WORKFLOWS, every job holding id-token: write that can run on pull_request_target declares environment ENV
-      (except TEMP_NO_ENV_JOBS) and a job-level if containing github.event.pull_request.head.repo.full_name ==
-      github.repository; (e) in TRUSTED_WORKFLOWS no run: body contains "github.event.pull_request." or "github.head_ref"
+      id-token: write at workflow or job level; (c) no TRUSTED_WORKFLOWS file declares workflow_call, and
+      every TRUSTED_WORKFLOWS file exists; (d) in TRUSTED_WORKFLOWS, every job holding id-token: write that can run on
+      pull_request_target declares environment ENV (except TEMP_NO_ENV_JOBS) and a job-level if containing
+      github.event.pull_request.head.repo.full_name == github.repository. A job "can run on pull_request_target" when
+      its workflow has that trigger and its job-level if does not have github.event_name == 'workflow_dispatch' as a
+      top-level && conjunct (the if text with ${{ }} stripped, split on && outside parentheses); so live-assume
+      (if: github.event_name == 'workflow_dispatch') is dispatch-only and excluded, and an if such as
+      github.event_name == 'workflow_dispatch' || true is not; (e) in TRUSTED_WORKFLOWS no run: body contains "github.event.pull_request." or "github.head_ref"
       inside a ${{ }} expression; (f) terraform/github declares github_repository_environment with environment = ENV,
       can_admins_bypass = false, no reviewers block, protected_branches = false, custom_branch_policies = true and
       prevent_destroy = true, exactly one github_repository_environment_deployment_policy for ENV with branch_pattern =
       "main" (no tag_pattern, no other policy for ENV), plus an import block for each; (g) every actions/checkout step
-      in TRUSTED_WORKFLOWS has no ref or repository input and sets persist-credentials false (S3 amends this predicate
-      when it adds the PR-HCL overlay). terraform-github-plan.yml (pull_request today) passes every predicate vacuously
+      in TRUSTED_WORKFLOWS has no ref or repository input and sets persist-credentials false; (h) every local path a
+      token-minting job in TRUSTED_WORKFLOWS executes (each uses: ./... action directory and each scripts/... path a run
+      body names) matches a .github/CODEOWNERS pattern (leading-slash anchored; a trailing slash matches the subtree;
+      otherwise exact or fnmatch), so cl.2's code-owner premise is checked, not hand-kept. (g) and (h) apply only to
+      jobs (d) governs or that declare ENV, so terraform-github-plan.yml (its checkout has no persist-credentials false
+      today) stays vacuous until S5 moves it. S3 amends (g) when it adds the PR-HCL overlay and inherits (h) for its
+      scripts. terraform-github-plan.yml (pull_request today) passes every predicate vacuously
       until S5. Each predicate takes parsed data so red cases run on synthetic input.
   - file: tests/checks/ci_guards/test_validate_trusted_plan_environment.py
     action: Create
@@ -137,8 +146,11 @@ scope:
       github.event.pull_request.head.ref, and one interpolating github.head_ref; the Environment resource with
       can_admins_bypass true, a reviewers block, protected_branches true, or no prevent_destroy; a deployment policy
       with branch_pattern "*" or a second policy; a missing import block; a checkout with ref:
-      ${{ github.event.pull_request.head.sha }}, one with repository:, and one without persist-credentials false. A
-      no-env job NOT in TEMP_NO_ENV_JOBS is red.
+      ${{ github.event.pull_request.head.sha }}, one with repository:, and one without persist-credentials false; an
+      id-token job whose if is github.event_name == 'workflow_dispatch' || true without the same-repo clause; a missing
+      TRUSTED_WORKFLOWS file; a token-minting job running scripts/ci/unowned.py with no CODEOWNERS match, and one using
+      ./.github/actions/unowned. A no-env job NOT in TEMP_NO_ENV_JOBS is red. Real-tree green covers the dispatch-only
+      live-assume job.
   - file: scripts/checks/ci_guards/_manifest.py
     action: Modify
     purpose: >-
@@ -164,14 +176,15 @@ scope:
   - file: docs/DECISIONS.md
     action: Modify
     purpose: >-  # pragma: allowlist secret -- names secret ARNs and handling, no credential
-      PR 3 (not PR 2: VP 10, 18 and 19 prove cl.2's premises first, and the body is append-only once landed, Decision
+      PR 3 (not PR 2: VP 10 and 18 prove cl.2's claim and branch-policy premises first and VP 19 its trust grammar; only
+      VP 14, after merge, proves STS evaluation; and the body is append-only once landed, Decision
       177). Insert the new Decision at the top, numbered the next free number at write time (237 on 2026-10-26; Plan D
-      plan 1 also claims next-free), decided_date the landing date. APPROVED TEXT (Benjamin, 2026-10-26, cmsg_01Cqz6E4mzSv6kkGCSCub3WM4c9KchReuUiLHPYjYJePMF item 4, with the four critique-round-1 wording fixes approved on card cmsg_01Cqz6E4mzSv6kkGCSCub3WMMqQLo1rdhEVThGHN4qUZCr, 2026-10-26 21:58Z, and the six round-3 changes on card cmsg_01Cqz6E4mzSv6kkGCSCub3WM42TyWKtJdsyFwSCQ52rhFX; exact text in the shared wording-fixes-r1.md and wording-fixes-r3.md); allowed variance: the number, the dates and the
+      plan 1 also claims next-free), decided_date the landing date. APPROVED TEXT (Benjamin, 2026-10-26, cmsg_01Cqz6E4mzSv6kkGCSCub3WM4c9KchReuUiLHPYjYJePMF item 4, with the four critique-round-1 wording fixes approved on card cmsg_01Cqz6E4mzSv6kkGCSCub3WMMqQLo1rdhEVThGHN4qUZCr, 2026-10-26 21:58Z, and the seven round-3/4 changes on card cmsg_01Cqz6E4mzSv6kkGCSCub3WMPdJJ3n9ohju3GensFpnkmv; exact text in the shared wording-fixes-r1.md and wording-fixes-r3.md); allowed variance: the number, the dates and the
       "Decision 237" self-references only. Title: "No agent-controlled identity reads Terraform state or saved plans --
       the speculative plan runs from main's workflow on pull_request_target under a dedicated environment- and
       workflow-bound role and shows names only (amends Decisions 92 and 144)". Envelope: number; status Decided;
       decided_date; amends [92, 144]; significance {value: numbered_decision, justification: "Replaces the PR-sub
-      planner session Decision 92's Wave 2 direction ratified, splits the plan-plus-drift role from Decision 144 clause 7's T2.49 consolidation and retires a
+      planner session T2.49 built on Decision 92's Wave 2 direction, splits the plan-plus-drift role from Decision 144 clause 7's T2.49 consolidation and retires a
       terraform-cc-web-operations.yaml row; a note in that contract (considered) cannot amend Decision clauses."}.
       Problem: "PR-run speculative plans assume the planner's PR-sub session, which reads Terraform state and saved
       plans, while the PR's own code runs in the same job. Unreviewed agent code can therefore open state. N1 removed the
@@ -183,8 +196,8 @@ scope:
       cl.3) and trusts one subject form: the GitHub Environment tf-trusted-plan (a deployment branch policy naming only
       main, no reviewers, no admin bypass, never destroyed) and a job_workflow_ref naming a trusted workflow file at
       refs/heads/main, exact match. No reviewer gates this subject, unlike Decision 94's. Its safety rests on the
-      workflow binding, the main-only branch policy, code-owner review of every main path the job executes, and a repo
-      check: only the named files reference the environment or combine
+      workflow binding, the main-only branch policy, code-owner review of every main path the job executes (procedural
+      until rec-2827's non-bypass merge identity), and a repo check: only the named files reference the environment or combine
       pull_request_target with id-token write, and none declares workflow_call. 3. The PR is data. The job runs main's
       workflow on pull_request_target, after a same-repo head check and before any checkout. Only the root's Terraform
       files come from the PR. Every script, action, provider and backend block and the lockfile come from main. Init is
@@ -222,7 +235,11 @@ scope:
     action: Modify
     purpose: >-
       PR 2. APPROVED TEXT (same message, item 4). breakage_map.environment_fail_open: binding becomes "GitHub
-      Environments tf-gated-apply and tf-trusted-plan (Terraform-managed) and pypi (not Terraform-managed)"; locations
+      Environments tf-gated-apply and tf-trusted-plan (Terraform-managed) and pypi (not Terraform-managed)";
+      failure_mode appends "tf-trusted-plan would admit any branch, though its role's job_workflow_ref binding still
+      refuses a non-main token."; fix reads "The operator reads all three environments, their reviewers and branch
+      policies in Settings on the new path ..." and "recreate them from terraform/github (tf-gated-apply,
+      tf-trusted-plan) or the console (pypi)", the rest unchanged (round-3 change 7); locations
       gain .github/workflows/terraform-plan-trusted.yml (PR 2, with an amendment_log row naming this plan). PR 3 (the
       row's location file exists only then, and validate_github_org_transfer fails any static row it neither evaluates
       nor names as pending): new breakage_map row after oidc_trust_segment: id trusted_plan_workflow_ref; binding "job_workflow_ref values in the trusted-plan role's trust"; locations
@@ -239,7 +256,7 @@ scope:
       terraform/personal/oidc_trusted_plan_role.tf and require it to equal, exactly and in any order, one
       "<owner>/<name>/.github/workflows/<file>@refs/heads/main" value per file in
       validate_trusted_plan_environment.TRUSTED_WORKFLOWS for the identity GitHub mints job_workflow_ref under in the
-      contract's identity.phase: identity.current's owner/name while phase is pre_transfer, both identities while
+      governing phase (reuse _governing_phase, so staged_phase is honoured): identity.current's owner/name while phase is pre_transfer, both identities while
       pre_staged, identity.target's from transferred on (today: otl-labs/ontheloop only; the retired name never appears,
       so _retired_identity's evaluators stay green). This is deliberately NOT _evaluate_oidc_trust_segment's
       trusted_segments logic: the sub segments are id-based and survive, job_workflow_ref is name-based and does not. No
@@ -543,7 +560,10 @@ verification_plan:
     expected: >-
       live-assume succeeds and prints assumed-role/agent-platform-github-ci-trusted-plan/tf-trusted-plan
     fix_if: >-
-      main dispatch fails AccessDenied -- compare the step 10 claims with the live trust and RCA (never widen to
+      main dispatch fails AccessDenied while the step 10 claims match the live trust exactly -- STS does not evaluate the
+      binding as documented: stop, return to the planner (the binding fork reopens), and correct the landed Decision
+      only by a dated annotation (Decision 177, the Decision 94 precedent); otherwise main dispatch fails AccessDenied
+      -- compare the step 10 claims with the live trust and RCA (never widen to
       StringLike)
     hermetic: false
   - step: 15
@@ -664,7 +684,7 @@ test_obligations:
     behavior: claims-only skeleton satisfies the fence (same-repo gate, Environment, no workflow_call, no payload interpolation, main-only checkout)
     verification_step: 2
     test_selector: tests/checks/ci_guards/test_validate_trusted_plan_environment.py
-    red_green_expectation: red before (predicate f and the TRUSTED_WORKFLOWS presence fail), green after
+    red_green_expectation: red before (predicate c's file-exists leg and predicate f fail), green after
   - source: scripts/checks/ci_guards/validate_trusted_plan_environment.py
     behavior: each predicate (a)-(g) reddens on its synthetic breach
     verification_step: 2
@@ -681,10 +701,10 @@ test_obligations:
     test_selector: tests/checks/iam_tf/test_terraform_github_import_blocks.py
     red_green_expectation: red before (no expected id for the new type), green after
   - source: .github/CODEOWNERS
-    behavior: ownership lines for the trusted job's executed main paths
-    verification_step: 9
-    command: bin/venv-python -m scripts.validate --pre
-    waiver_reason: Ownership data; GitHub enforces it at review time and no repo check reads CODEOWNERS entries.
+    behavior: every main path a token-minting trusted job executes is code-owned (predicate h)
+    verification_step: 2
+    test_selector: tests/checks/ci_guards/test_validate_trusted_plan_environment.py
+    red_green_expectation: red before (the probe script and aws-region are not code-owned), green after
   - source: scripts/ci/oidc_claims_probe.py
     behavior: prints only allowlisted claims, never the token; --require fails closed
     verification_step: 3
@@ -740,7 +760,7 @@ constraints:
   - The Decision and contract text are the approved wording; only the stated variance is allowed
   - No rescue agents or workaround loops (Decision 55); out-of-scope bugs become recs via scripts.ops_data_portal
 context:
-  - "Approvals (Benjamin, 2026-10-26): cmsg_01Cqz6E4mzSv6kkGCSCub3WM4c9KchReuUiLHPYjYJePMF (job_workflow_ref now; Environment created by him at build time when told when and how; Decision and contract text approved) and cmsg_01Cqz6E4mzSv6kkGCSCub3WMVdkmcu9DRL9jEEsvr5YAJx (dedicated role, write the plan); four round-1 wording fixes on card cmsg_01Cqz6E4mzSv6kkGCSCub3WMMqQLo1rdhEVThGHN4qUZCr; six round-3 changes on card cmsg_01Cqz6E4mzSv6kkGCSCub3WM42TyWKtJdsyFwSCQ52rhFX."
+  - "Approvals (Benjamin, 2026-10-26): cmsg_01Cqz6E4mzSv6kkGCSCub3WM4c9KchReuUiLHPYjYJePMF (job_workflow_ref now; Environment created by him at build time when told when and how; Decision and contract text approved) and cmsg_01Cqz6E4mzSv6kkGCSCub3WMVdkmcu9DRL9jEEsvr5YAJx (dedicated role, write the plan); four round-1 wording fixes on card cmsg_01Cqz6E4mzSv6kkGCSCub3WMMqQLo1rdhEVThGHN4qUZCr; seven round-3/4 changes on card cmsg_01Cqz6E4mzSv6kkGCSCub3WMPdJJ3n9ohju3GensFpnkmv."
   - "Evidence: role trust policy quota L-C07B4B0D = 2048 (read-only probe 2026-10-26); live planner trust 1255 minified; a planner statement with both workflow refs renders ~2031, the dedicated role ~830."
   - "Slice map: rec-4632 S1, rec-4635 S1b, rec-4636 S2 (this), rec-4637 S3, rec-4638 S5, rec-4640 S4, rec-4639 S6. S3 deletes claims-probe-no-env and its TEMP_NO_ENV_JOBS entry and owns Decision 154's re-homing and registering the trusted role as plan-capable in scripts/checks/iam_tf/_read_coverage.py; S4 deletes the planner PR-sub statement (an admin split-apply, Decision 223 cl.4)."
   - "Plan D: if secrets-to-ssm-expand (plan 2) merges before PR 3, stop for an amendment; otherwise D's plans 2-4 add the trusted role (N3 planner told the D side)."
@@ -766,7 +786,7 @@ pre_implementation_checklist:
 execution_steps:
   - "PR 1: edit terraform/bootstrap/github_ci_apply_reads.tf; create tests/checks/iam_tf/test_trusted_plan_identity.py with the bootstrap assertion and its registry row; VP 1, 4, 9; open PR; at CI-green run VP 5-6 and post the counts line; MERGE GATE: no other terraform/bootstrap change is merged but unapplied (S1b, rec-4635, goes first in the default order; Benjamin chose separate sittings) -- check S1b's PR state and its applied-sha comment; merge on review PROCEED + green + code-owner review; then VP 7 on Benjamin's word. A combined sitting with S1b happens only if Benjamin names both changes himself (offer it as an option, never the plan)."
   - "PR 2 (parallel with PR 1): environments.tf, imports.tf, variables.tf, the import-block test, CODEOWNERS, the skeleton workflow, oidc_claims_probe.py and its test, validate_trusted_plan_environment and its test and registrations, the environment_fail_open contract edit; VP 2-4, 9, 20; open PR; VP 8 (ask Benjamin to create the Environment, then re-run the GitHub-root plan); merge on review PROCEED + green + code-owner review."
-  - "PR 3 (after S1 applied, PR 1 applied, PR 2 merged): oidc_trusted_plan_role.tf, oidc_pipeline_roles.tf, oidc.tf, the rest of test_trusted_plan_identity.py, the Decision and its annotations on 92 and 144, the trusted_plan_workflow_ref contract row with its evaluator and tests; VP 1, 4, 9, 17, 19; open PR (this triggers the probe); VP 10 (adjust only job_workflow_ref's form if measured differently), VP 11; merge with the Resolves: rec-4636 trailer on review PROCEED + green + code-owner review."
+  - "PR 3 (after S1 applied, PR 1 applied, PR 2 merged): oidc_trusted_plan_role.tf, oidc_pipeline_roles.tf, oidc.tf, the rest of test_trusted_plan_identity.py, the Decision and its annotations on 92 and 144, the trusted_plan_workflow_ref contract row with its evaluator and tests; VP 1, 4, 9, 17, 19; open PR (this triggers the probe); VP 10 (adjust only job_workflow_ref's form if measured differently), VP 11; merge with the Resolves: rec-4636 trailer on review PROCEED + green CI + Benjamin's word on the final diff, with VP 10, 11, 18 and 19 evidence on the PRs (terraform/personal is not code-owned)."
   - "Right after PR 2 merges, before PR 3 opens: VP 18 (branch-policy proof)."
   - "Post-merge PR 3: VP 12 (Benjamin approves the gated apply), VP 13, VP 14, VP 15; post counts-only evidence on PR 3."
   - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
