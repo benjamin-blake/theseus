@@ -12,6 +12,9 @@
 # `aws sts get-caller-identity` returns the IAM user under the proxy), turning a
 # silent AccessDenied into an obvious session-start message. Advisory only: always
 # exits 0 so a missing or expired credential never blocks the session.
+#
+# Output carries the role name only, never the ARN, account ID or session name (rec-4656): the
+# raw helper output is never echoed.
 
 set -uo pipefail
 
@@ -35,13 +38,23 @@ if [ ! -x "$REPO_ROOT/bin/venv-python" ] || ! "$REPO_ROOT/bin/venv-python" -c "i
 fi
 
 log "Verifying AWS profile '$PROFILE' (assume-role chain)..."
-if arn="$(cd "$REPO_ROOT" && "$REPO_ROOT/bin/venv-python" -m scripts.aws_identity caller-arn --profile "$PROFILE" 2>&1)"; then
-    log "OK: assumed $arn"
-    log "  Note: if ops calls still fail with AccessDenied, the role's runtime grant is missing --"
-    log "  see terraform/bootstrap/platform_dev_policies.tf."
+if out="$(cd "$REPO_ROOT" && "$REPO_ROOT/bin/venv-python" -m scripts.aws_identity caller-arn --profile "$PROFILE" 2>&1)"; then
+    role="$(printf '%s\n' "$out" | grep -m1 ':assumed-role/' | sed -n 's|.*assumed-role/\([^/]*\)/.*|\1|p')"
+    if [[ "$role" =~ ^[A-Za-z0-9+=,.@_-]+$ ]]; then
+        log "OK: assumed-role/$role"
+        log "  Note: if ops calls still fail with AccessDenied, the role's runtime grant is missing --"
+        log "  see terraform/bootstrap/platform_dev_policies.tf."
+    else
+        log "WARNING: '$PROFILE' did not resolve to an assumed role -- see bin/setup-cloud-env.sh header (proxy and profile chain)."
+    fi
 else
+    diag="$(printf '%s\n' "$out" | grep -m1 '^caller-arn failed:')"
     log "WARNING: could not assume '$PROFILE':"
-    log "  $arn"
+    if [ -n "$diag" ]; then
+        log "  $diag"
+    else
+        log "  helper exited with no diagnostic line; rerun: bin/venv-python -m scripts.aws_identity caller-arn --profile $PROFILE"
+    fi
     log "  Check the environment's AWS network secret (agent_static key, host sts.eu-west-2.amazonaws.com)"
     log "  and the external_id in ~/.aws/config."
 fi
