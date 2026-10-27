@@ -35,8 +35,8 @@ _PRT = "pull_request_target"
 _DISPATCH = "github.event_name == 'workflow_dispatch'"
 _SAME_REPO = "github.event.pull_request.head.repo.full_name == github.repository"
 _PR_EXPR_RE = re.compile(r"\$\{\{[^}]*(?:github\.event\.pull_request\.|github\.head_ref)[^}]*\}\}")
-_SCRIPT_PATH_RE = re.compile(r"(?<![\w./-])(scripts/[\w./-]+)")
-_PYTHON_RE = re.compile(r"(?<![\w./-])python3?(?=\s)(\s+\S+)?")
+_SCRIPT_PATH_RE = re.compile(r"(?<![\w./-])(?:\./|\$\{?GITHUB_WORKSPACE\}?/)?(scripts/[\w./-]+)")
+_PYTHON_RE = re.compile(r"(?<![\w.-])(?:[\w./$-]*/)?(?:[\w-]*-)?python[\d.]*(?=\s)(\s+\S+)?")
 _ISOLATED_FLAG_RE = re.compile(r"-[A-Za-z]*I[A-Za-z]*")
 
 
@@ -330,12 +330,13 @@ def validate_trusted_plan_environment(failed: list[str]) -> None:
         codeowners = (_common.ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
     except (OSError, yaml.YAMLError) as exc:
         print(f"  FAIL: could not load the inputs: {exc}")
-        registry.skipped(f"trusted-plan fence inputs unreadable: {exc}")
+        failed.append("trusted-plan-environment: inputs unreadable, so no predicate ran")
+        registry.examined(0, unit="fence_predicates")
         return
-    for violations in run_all(workflows, terraform, codeowners):
-        for violation in violations:
-            print(f"  FAIL: {violation}")
-            failed.append(f"trusted-plan-environment: {violation}")
+    violations = [x for group in run_all(workflows, terraform, codeowners) for x in group]
+    for violation in violations:
+        print(f"  FAIL: {violation}")
+        failed.append(f"trusted-plan-environment: {violation}")
     registry.examined(8, unit="fence_predicates")
-    if not any(failed):
+    if not violations:
         print("  PASS: predicates (a)-(h)")

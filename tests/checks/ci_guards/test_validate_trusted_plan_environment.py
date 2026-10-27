@@ -209,3 +209,25 @@ def test_codeowners_matching_forms() -> None:
     assert v._owned("scripts/ci/a.py", text)
     assert v._owned(".github/actions/x", text)
     assert not v._owned("scripts/ci/b.py", text)
+
+
+@pytest.mark.parametrize("body", ["python3 -I ./scripts/ci/unowned.py", "python3 -I $GITHUB_WORKSPACE/scripts/ci/unowned.py"])
+def test_unowned_script_in_dotted_forms(wfs, real_codeowners, body) -> None:
+    _job(wfs, "claims-probe")["steps"].append({"run": body})
+    assert any("scripts/ci/unowned.py" in x for x in v.check_owned_and_isolated(wfs, real_codeowners))
+
+
+@pytest.mark.parametrize("body", ["/usr/bin/python3 x.py", "python3.12 x.py", "env python3 x.py", "bin/venv-python x.py"])
+def test_python_invocation_forms_without_isolated_mode(wfs, real_codeowners, body) -> None:
+    _job(wfs, "claims-probe")["steps"].append({"run": body})
+    assert any("without -I" in x for x in v.check_owned_and_isolated(wfs, real_codeowners))
+
+
+def test_unreadable_input_fails_instead_of_skipping(monkeypatch) -> None:
+    def boom(_path: str) -> dict[str, Any]:
+        raise OSError("unreadable")
+
+    monkeypatch.setattr(v, "_load", boom)
+    failed: list[str] = []
+    v.validate_trusted_plan_environment(failed)
+    assert any("unreadable" in x for x in failed)

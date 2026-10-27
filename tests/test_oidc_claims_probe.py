@@ -108,3 +108,10 @@ def test_fetch_error_has_fixed_message_without_url(monkeypatch) -> None:
 def test_missing_request_environment_is_an_error() -> None:
     with pytest.raises(probe.ProbeError):
         probe.fetch_token("a", {})
+
+
+def test_control_characters_in_a_claim_value_cannot_inject_a_runner_command(monkeypatch, capsys) -> None:
+    claims = {"head_ref": "branch\n::add-mask::x", "sub": "s"}
+    _, out, _ = _run(monkeypatch, capsys, _token(claims))
+    assert len(out.splitlines()) == 2
+    assert "\n::" not in out

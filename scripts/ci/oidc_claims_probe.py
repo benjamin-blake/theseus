@@ -51,8 +51,12 @@ def decode_payload(token: str) -> dict[str, object]:
     return payload
 
 
+def _printable(value: str) -> str:
+    return "".join(ch if ch.isprintable() else "?" for ch in value)
+
+
 def select_claims(payload: Mapping[str, object]) -> list[tuple[str, str]]:
-    return [(name, str(payload[name])) for name in ALLOWED_CLAIMS if name in payload]
+    return [(name, _printable(str(payload[name]))) for name in ALLOWED_CLAIMS if name in payload]
 
 
 def check_required(selected: Sequence[tuple[str, str]], required: Sequence[str]) -> list[str]:
