@@ -25,7 +25,8 @@ scope:
       from terraform/personal resolves `scripts` (module-level, like scripts/roadmap/plan_audit.py:29-31) while a package
       import (scripts.ci.terraform_plan_digest, a namespace package like scripts.ci.plan_digest) is unaffected; nothing
       raises at import. Carries the preamble and truncation marker moved from
-      the guard. CLI: python3 scripts/ci/terraform_plan_digest.py [--literals-from PATH ...] <plan.json>; exit 0 digest
+      the guard. CLI: python3 scripts/ci/terraform_plan_digest.py [--literals-from PATH]... <plan.json> (argparse action="append", one
+      PATH per flag, so a following plan.json is never swallowed); exit 0 digest
       printed, 1 unreadable or non-object plan. build_digest(plan, literals=frozenset(), size_cap=8000) -> str. Iterates
       changes ONLY through terraform_apply_guard.iter_resource_changes (the verdict's traversal, so the digest can never list
       a different resource set). Output: the data-not-instructions preamble (extended to say the digest is names-only and
@@ -43,7 +44,8 @@ scope:
       authorization_type. Resources, conditions, Sids, tags, descriptions, names and output values never print. Literal set:
       every double-quoted string in the given .tf files (a directory means its *.tf, non-recursive) that contains no ${
       interpolation, unescaped; no --literals-from means an empty set (everything gated prints <non-literal>). _redact
-      (imported from the guard) runs on every line; size cap and truncation marker as before (preamble carved out).
+      (imported from the guard) runs on every line; size cap as before (preamble carved out); the truncation marker is reworded to
+      "... [DIGEST TRUNCATED: size cap reached -- judge only what is shown] ..." (the old text pointed at plan.json).
   - file: scripts/terraform_apply_guard.py
     action: Modify
     purpose: >-
@@ -51,7 +53,7 @@ scope:
       _RESOURCE_POLICY_FORCED_FIELDS, _forced_resource_policy_attrs, _summarise_value, _changed_top_level_attrs,
       _digest_entries, the duplicate _ARN_PATTERN/_ACCOUNT_ID_PATTERN pair in the digest block). Add
       iter_resource_changes(plan) -> list[dict] (plan.get("resource_changes") or []) and make evaluate_plan use it. The
-      verdict, exit codes and BLOCK messages are unchanged; usage becomes "terraform_apply_guard.py <plan.json>".
+      verdict, exit codes and BLOCK messages are unchanged; the redaction comment at :158-159 stops naming --digest mode; usage becomes "terraform_apply_guard.py <plan.json>".
   - file: .github/actions/subagent-plan-review/review.sh
     action: Modify
     purpose: >-
@@ -177,7 +179,7 @@ scope:
     action: Delete
     purpose: >-
       ONLY if plan D2 (PLAN-secrets-to-ssm-expand) built and merged first and created it: it asserts on the guard's deleted
-      build_digest. Its after_sensitive cases move, inverted to "no value at all", into tests/test_terraform_plan_digest.py
+      build_digest (retirement disposition, Decision 235 cl.1, citing scripts/terraform_apply_guard.py::build_digest). Its after_sensitive cases move, inverted to "no value at all", into tests/test_terraform_plan_digest.py
       (the fixture's SENTINEL-SENSITIVE case already covers them). If the file does not exist at build time, this row is a
       no-op.
   - file: tests/test_subagent_review_wiring.py
@@ -243,7 +245,7 @@ verification_plan:
     phase: pre-deploy
     action: Stale-reference sweep for the retired surfaces (guard --digest, Read-allowed reviewer, plan.json prompt sentence).
     command: >-
-      ! grep -rnE 'terraform_apply_guard\.py"? --digest|allowedTools( to)? "?Read|guard --digest|plan\.json \(Read tool\)|via the Read tool|build_digest' .github scripts tests/test_terraform_apply_guard.py
+      ! grep -rnE 'terraform_apply_guard\.py"? --digest|allowedTools( to)? "?Read|guard --digest|--digest mode|plan\.json \(Read tool\)|via the Read tool|build_digest' .github scripts tests/test_terraform_apply_guard.py
       tests/test_subagent_review_wiring.py docs/contracts --include=*.sh --include=*.yml --include=*.yaml --include=*.py | grep -vE 'scripts/ci/terraform_plan_digest\.py|ci-rca\.yml'
       && echo SWEEP_OK
     expected: Prints SWEEP_OK (ci-rca.yml's own --allowedTools is a different agent and stays).
@@ -417,7 +419,7 @@ context:
   - "Why a new module: the guard is 433 SLOC unregistered; renderers would pass 500 (Decision 128 decompose). The shared iter_resource_changes keeps the digest-equals-verdict-set property (guard docstring :25-26)."
   - "Pinned CLI 2.1.148 --help (native binary, 2026-10-26): --tools \"\" disables all tools; --strict-mcp-config exists; --bare forces API-key auth. Running inside the checkout would load CLAUDE.md, .claude/settings.json hooks and .mcp.json servers."
   - "Residual (accepted): reconcile.yml resolves the review action and guard from the RED_SHA checkout (reconcile.yml:11-23), so replaying a red commit older than this merge runs the old reviewer. The window closes once no pre-merge commit can be the red target."
-  - "Decision 205 clause 2 deferral: the reviewer prompt stays in a composite action until T4.26 (clause 4); T4.26 c3/c5 must carry the no-tools, values-free input and the argv test forward."
+  - "Decision 205 clause 2 deferral: the reviewer prompt stays in a composite action until T4.26 (clause 4); T4.26 c3/c5 must carry the no-tools, values-free input and the argv test forward, and c2/c4 must migrate or delete the new subagent-review-smoke.yml token consumer."
   - "Decision 77 spirit: the review half now judges shape plus literal-gated IAM actions, principals and auth type; resource-policy shapes stay deterministically classified by the guard (T2.45)."
   - "Decision 143 spirit: the no-tools flags live inside the agent merge loop; values-free input by construction plus the S1/S1b fences are the durable controls."
   - "Not in scope (critique advisory): CODEOWNERS has /scripts/terraform_apply_guard.py but neither the digest module nor .github/actions/subagent-plan-review/; the build files a rec for that if it agrees."
@@ -425,7 +427,7 @@ context:
   - "Cross-plan: D2 (PLAN-secrets-to-ssm-expand) masks after_sensitive in the same digest code; whichever lands second amends (execution_steps). Reported to the coordinator at plan merge."
   - "Gotcha: env -i strips the test shims' env; bake shim paths into the shim files."
   - "Decision-scout verdict FLAGS_FOUND (NOTE 205; SPIRIT 77, 143); CITE: Decision 77, Decision 55, Decision 92, Decision 158, Decision 162, Decision 181, Decision 101, Decision 48. Decisions triaged: 188 of 188. Roadmap items intersected: 3; CONFLICT: 0; RELATED: 2 (T4.26 CITE, T2.47, T4.23)."
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING after 0 round(s)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 4 round(s); round 4 autonomous"
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -450,7 +452,8 @@ execution_steps:
     after_sensitive values and creates tests/test_terraform_apply_guard_sensitive.py. Whichever lands second amends: if
     D2's build merged first, take the Delete row above and remove its masking code with the rest of the digest code; if
     this plan merges first, message the coordinator that D2's scripts/terraform_apply_guard.py and
-    tests/test_terraform_apply_guard_sensitive.py rows are superseded (the names-only digest already keeps the DSN out of
+    tests/test_terraform_apply_guard_sensitive.py scope rows, its acceptance criterion naming that test, its VP 2 pytest
+    selector and its test_obligations entry are superseded (the names-only digest already keeps the DSN out of
     the reviewer's input) so D2 drops them before building.
   - >-
     Ordering with the next terraform/personal merge (its apply runs this reviewer; S1, rec-4632, already merged as #1667
