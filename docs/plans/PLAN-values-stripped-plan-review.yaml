@@ -20,9 +20,11 @@ scope:
     purpose: >-
       The reviewer digest, moved out of the guard (Decision 128: the guard would pass 500 SLOC with the renderers) and made
       values-free. Stdlib only (review.sh runs it with the runner's system python3). Imports the guard as
-      `from scripts.terraform_apply_guard import ...`; for CLI runs (invoked by path from terraform/personal) it inserts the
-      repo root (Path(__file__).resolve().parents[2]) on sys.path inside the `if __name__ == "__main__":` block only, as
-      scripts/roadmap/plan_audit.py:31 does, with no import-time raise. Carries the preamble and truncation marker moved from
+      `from scripts.terraform_apply_guard import ...  # noqa: E402`, preceded at module level by
+      `if __package__ in (None, ""): sys.path.insert(0, str(Path(__file__).resolve().parents[2]))` so a by-path CLI run
+      from terraform/personal resolves `scripts` (module-level, like scripts/roadmap/plan_audit.py:29-31) while a package
+      import (scripts.ci.terraform_plan_digest, a namespace package like scripts.ci.plan_digest) is unaffected; nothing
+      raises at import. Carries the preamble and truncation marker moved from
       the guard. CLI: python3 scripts/ci/terraform_plan_digest.py [--literals-from PATH ...] <plan.json>; exit 0 digest
       printed, 1 unreadable or non-object plan. build_digest(plan, literals=frozenset(), size_cap=8000) -> str. Iterates
       changes ONLY through terraform_apply_guard.iter_resource_changes (the verdict's traversal, so the digest can never list
@@ -122,6 +124,11 @@ scope:
     purpose: >-
       Workflows map row "subagent-review-smoke" (tier not_a_gate, ci_rca excluded, owner platform): a maintainer-dispatched
       smoke whose red run is read by the dispatcher in the build thread, never a gate on main.
+  - file: docs/contracts/composite-action-shape.yaml
+    action: Modify
+    purpose: >-
+      Text-only, the review.sh agent_loop_caps rationale (:247-250): "read a pre-guarded plan digest (optionally the full
+      plan via the Read tool)" becomes "read a pre-guarded, names-only plan digest on stdin with no tools". No other change.
   - file: tests/fixtures/subagent_plan_review/plan.json
     action: Create
     purpose: >-
@@ -162,17 +169,19 @@ scope:
     action: Modify
     purpose: >-
       Planned change (Decision 181): delete the digest tests (they move, inverted, to tests/test_terraform_plan_digest.py);
-      the "--digest" CLI case becomes a usage-error case; add a test that evaluate_plan's findings are unchanged across the
+      the "--digest" CLI case becomes a usage-error case; test_digest_resource_policy_reason_redacts_external_principal is
+      an evaluate_plan verdict test despite its name and stays; add a test that evaluate_plan's findings are unchanged across the
       existing fixtures via iter_resource_changes. No verdict assertion is loosened.
   - file: tests/test_subagent_review_wiring.py
     action: Modify
     purpose: >-
       Keep every errexit/STARVED/retry/archival case green under the new invocation: the python3 shim keys on
       terraform_plan_digest.py instead of terraform_apply_guard.py, the claude shim's log path is baked into the shim (env
-      -i strips CLAUDE_INVOCATION_LOG), and any assertion on the old argv is updated. No case is removed.
+      -i strips CLAUDE_INVOCATION_LOG), the python3 shim passes any other invocation (the stats line's python3 -c) through to
+      the real interpreter, and any assertion on the old argv is updated. No case is removed.
   - file: config/agent/verification_registry/entries/subagent-plan-review-values-stripped.yaml
     action: Create
-    purpose: Graduation shard for VP step 1 (check_id subagent-plan-review-values-stripped), node_id tests/test_subagent_plan_review_values_stripped.py, guard_target review.sh.
+    purpose: Graduation shard for VP step 1 (check_id subagent-plan-review-values-stripped), node_id tests/test_subagent_plan_review_values_stripped.py, guard_target .github/actions/subagent-plan-review/review.sh.
 bundled_recommendations:
   - rec-4639
 followon_recs: []
@@ -225,8 +234,8 @@ verification_plan:
     phase: pre-deploy
     action: Stale-reference sweep for the retired surfaces (guard --digest, Read-allowed reviewer, plan.json prompt sentence).
     command: >-
-      ! grep -rnE 'terraform_apply_guard\.py"? --digest|allowedTools( to)? "?Read|plan\.json \(Read tool\)|build_digest' .github scripts tests/test_terraform_apply_guard.py
-      tests/test_subagent_review_wiring.py --include=*.sh --include=*.yml --include=*.py | grep -vE 'scripts/ci/terraform_plan_digest\.py|ci-rca\.yml'
+      ! grep -rnE 'terraform_apply_guard\.py"? --digest|allowedTools( to)? "?Read|plan\.json \(Read tool\)|via the Read tool|build_digest' .github scripts tests/test_terraform_apply_guard.py
+      tests/test_subagent_review_wiring.py docs/contracts --include=*.sh --include=*.yml --include=*.yaml --include=*.py | grep -vE 'scripts/ci/terraform_plan_digest\.py|ci-rca\.yml'
       && echo SWEEP_OK
     expected: Prints SWEEP_OK (ci-rca.yml's own --allowedTools is a different agent and stays).
     fix_if: A hit -- update or remove that reference; a live caller of the old --digest mode is a stop-and-report.
@@ -363,6 +372,11 @@ test_obligations:
     waiver_reason: >-
       A one-row mapping; the registered taxonomy-coverage check in every tier fails on an unmapped workflow, which is the
       red-green proof.
+  - source: docs/contracts/composite-action-shape.yaml
+    behavior: Rationale text only.
+    verification_step: 6
+    command: bin/venv-python -m scripts.validate
+    waiver_reason: Text-only; step 4's sweep (now over docs/contracts) proves the stale Read-tool wording is gone.
   - source: tests/fixtures/subagent_plan_review/plan.json
     behavior: Carries every sentinel class the tests assert against.
     verification_step: 1
