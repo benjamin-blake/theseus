@@ -46,7 +46,7 @@ def _jobs(wf: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def _triggers(wf: dict[str, Any]) -> set[str]:
-    on = wf.get("on", wf.get(True))
+    on = wf.get("on")
     if isinstance(on, str):
         return {on}
     if isinstance(on, list):
@@ -260,7 +260,8 @@ def check_checkouts(workflows: dict[str, dict[str, Any]]) -> list[str]:
             for step in _steps(job):
                 if not str(step.get("uses", "")).startswith("actions/checkout@"):
                     continue
-                with_ = step.get("with") if isinstance(step.get("with"), dict) else {}
+                raw = step.get("with")
+                with_: dict[str, Any] = raw if isinstance(raw, dict) else {}
                 if "ref" in with_ or "repository" in with_:
                     out.append(f"g: {name}:{jid} checkout sets ref or repository")
                 if str(with_.get("persist-credentials")).lower() != "false":
