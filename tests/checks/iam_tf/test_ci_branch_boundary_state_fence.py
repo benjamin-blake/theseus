@@ -76,15 +76,17 @@ def boundary_fence_problems(text: str) -> list[str]:
     if [(op, key, sorted(vals)) for op, key, vals in stmt["conditions"]] != [("ArnLike", "aws:PrincipalArn", sorted(_ROLES))]:
         problems.append(f"{_SID}: condition differs")
     for other in stmts:
-        if other is not stmt and other["effect"] == "Deny" and "tfstate/*" in other["resources"]:
-            problems.append(f"{other['sid']}: second statement names tfstate")
+        if other is not stmt and any(r in other["resources"] for r in _RESOURCES):
+            problems.append(f"{other['sid']}: second statement names a fenced resource")
     return problems
 
 
 def _hcl(
     *, effect: str = "Deny", drop: str = "", op: str = "ArnLike", cond: bool = True, add: str = "", extra: str = ""
 ) -> str:
-    quote = lambda items: ", ".join(f'"{i}"' for i in items if i != drop)  # noqa: E731
+    def quote(items: tuple[str, ...]) -> str:
+        return ", ".join(f'"{i}"' for i in items if i != drop)
+
     roles = quote(_ROLES + ((add,) if add else ()))
     condition = f'Condition = {{ {op} = {{ "aws:PrincipalArn" = [{roles}] }} }}' if cond else ""
     return (
@@ -129,4 +131,9 @@ def test_widened_role_list_is_red(added: str) -> None:
 
 def test_second_statement_naming_tfstate_is_red() -> None:
     extra = f', {{ Sid = "Other", Effect = "Deny", Action = ["s3:GetObject"], Resource = ["{_RESOURCES[0]}"] }}'
+    assert boundary_fence_problems(_hcl(extra=extra))
+
+
+def test_allow_statement_naming_a_fenced_prefix_is_red() -> None:
+    extra = f', {{ Sid = "Other", Effect = "Allow", Action = ["s3:GetObject"], Resource = ["{_RESOURCES[1]}"] }}'
     assert boundary_fence_problems(_hcl(extra=extra))
