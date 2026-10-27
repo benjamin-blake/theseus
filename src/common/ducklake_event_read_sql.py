@@ -242,15 +242,18 @@ AGENT_RUN_TOKEN_ROLLUP_SQL = compose(
     + " ORDER BY ids.session_id",
 )
 
-# Reported cost only (rec-4291 / rec-4031): an allowance-billed call is NULL by contract (Decision 206), a call with no
-# reported cost is unpriced, never 0. The price table is rec-4031's and lands behind this same verb signature.
+# Reported cost only (rec-4291 / rec-4031): an allowance-billed or local call (Decision 206, Decision 234 clause 4) is NULL
+# by contract whatever cost it stores, a call with no reported cost is unpriced, never 0.
+# The price table is rec-4031's and lands behind this same verb signature.
 MODEL_CALL_COST_SQL = compose(
     (SESSIONS, OBSERVATIONS),
     "SELECT o.session_id AS session_id, o.observation_id AS observation_id, o.event_timestamp AS event_timestamp, "
     "o.model AS model, o.provider AS provider, o.billing_shape AS billing_shape, o.tokens_input AS tokens_input, "
     "o.tokens_output AS tokens_output, "
-    "CASE WHEN o.billing_shape = 'fixed_non_rollover_allowance' THEN NULL ELSE o.cost_usd_reported END AS cost_usd, "
+    "CASE WHEN o.billing_shape IN ('fixed_non_rollover_allowance', 'local') THEN NULL "
+    "ELSE o.cost_usd_reported END AS cost_usd, "
     "CASE WHEN o.billing_shape = 'fixed_non_rollover_allowance' THEN 'allowance' "
+    "WHEN o.billing_shape = 'local' THEN 'local' "
     "WHEN o.cost_usd_reported IS NOT NULL THEN 'reported' ELSE 'unpriced' END AS cost_source, "
     + STAMPS_SELECT
     + " FROM o "

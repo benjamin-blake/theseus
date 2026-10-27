@@ -127,7 +127,8 @@ EVENT_READS: dict[str, EventRead] = {
             binding="session",
             paginable=True,
             description=_derived_rows_note(
-                "Reported cost of each model call of one session with its cost_source (reported, allowance or unpriced); "
+                "Reported cost of each model call of one session with its cost_source "
+                "(reported, allowance, local or unpriced); "
                 "never a 0 standing in for an unknown."
             ),
         ),
