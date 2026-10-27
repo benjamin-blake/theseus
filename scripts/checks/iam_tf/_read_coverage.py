@@ -15,6 +15,7 @@ import re
 from pathlib import Path
 
 from scripts.checks.iam_tf import validate_invoke_implies_resolve as _vir
+from scripts.checks.iam_tf._secure_string_coverage import secure_string_findings, type_attr
 
 # ---------------------------------------------------------------------------
 # Coverage map (rec-2702 anti-recurrence, PLAN-ci-apply-grant-coupling).
@@ -341,6 +342,7 @@ def _scan_resources(personal_dir: Path):
                 am = re.search(_ATTR_VALUE_RE_TMPL.format(attr=attr), body)
                 if am:
                     attrs[attr] = am.group(1)
+            attrs.update(type_attr(rtype, body))
             attr_index[(rtype, rname)] = attrs
         for m in _DATA_SECRET_VERSION_RE.finditer(text):
             rname = m.group(1)
@@ -568,8 +570,9 @@ def _check_resource(
     required_actions = all_of_actions or spec["read_actions"]
     quantifier = "ALL of" if all_of_actions else "one of"
 
-    findings = []
-    for role_key, statements in role_statements.items():
+    secure = secure_string_findings(rtype, rname, fname, resolved_name, attr_index.get((rtype, rname)), role_statements, key)
+    findings = list(secure or [])
+    for role_key, statements in ({} if secure is not None else role_statements).items():
         if not _resource_covered(
             rtype,
             rname,

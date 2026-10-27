@@ -2,6 +2,86 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 237: Secrets live as SSM SecureString parameters under a separate /secret/ root -- value verbs enumerated per parameter, out-of-band values outside Terraform, no secret read by a data source (amends Decision 101 point (b), Decision 213 clause 5 and Decision 230 clause 4) (Decided)
+
+```yaml
+number: 237
+status: Decided
+decided_date: "2026-10-27"
+amends: [101, 213, 230]
+significance:
+  value: numbered_decision
+  justification: >-
+    A name family outside the frozen /agent-platform/* SSM paths (Decision 101 point (b), re-affirmed by 171), a
+    standing IAM verb rule for a second secret store, and amended carve-outs in Decisions 213 and 230.
+    secret-material-handling.yaml (considered) governs value material only and cannot authorise a name family or
+    amend a ratified clause; amending Decision 157 in place would stretch a Secrets Manager rule over another store.
+```
+
+**Status:** Decided
+**Date:** 2026-10-27
+**Warehouse ID:** dec-237 (per Decision 84 backfill)
+
+**Problem:** Nine Secrets Manager secrets cost about USD 4 a month for values SSM Parameter Store holds at no
+charge. SSM has no value-free refresh: the AWS provider decrypts every Terraform-managed SecureString on each
+plan. The branch, PR and planner CI roles, which run PR-branch code, hold ssm:Get* on parameter/agent-platform/*,
+and an IAM wildcard crosses `/`.
+
+**Decision:**
+1. Name family. Secret values live as SSM SecureString parameters named /secret/<name>, where <name> is the
+   secret's Secrets Manager name. /secret/ is authorised as a deliberate exclusion from the frozen /agent-platform/*
+   SSM paths (Decision 101 point (b), re-affirmed by 171), so no grant on that family reaches a secret. A new
+   secret's name carries no environment; existing names are kept.
+2. Value verbs. ssm:GetParameter, GetParameters, GetParametersByPath, GetParameterHistory and PutParameter, and
+   any wildcard covering one, are granted on a /secret/ parameter only by its ARN to a declared consumer, never on
+   a pattern covering /secret/. Exceptions: the permissions boundary (a ceiling, not a grant) and PlatformAdmin's
+   SecretParameterAdmin statement, the operator's counterpart of its Secrets Manager admin grant (Decision 144
+   cl.3). ssm:DescribeParameters and ssm:ListTagsForResource are metadata. On the PR-trusted planner role a value
+   read is conditioned on the drift session, except the terraform-personal tfvars every plan reads.
+3. Values. A secret's value is set out of band by the operator; Terraform holds its name and the ARN it builds for
+   grants. A SecureString is Terraform-managed only as a declared value exception in secret-material-handling.yaml
+   (the Neon catalog DSN, whose password Terraform creates). No Terraform data source reads a secret; a provider
+   credential held in this family reaches Terraform only as an ephemeral input variable.
+4. Key. Parameters use the aws/ssm managed key, the posture of today's aws/secretsmanager key: the parameter grant
+   is the only gate.
+5. Rotation is deferred. No secret here rotates automatically today; the DSNs may return to Secrets Manager if
+   managed rotation is wanted.
+6. Amends Decision 213 cl.5 and Decision 230 cl.4: the scoped-login value an ADMIN-container agent may write under
+   human direction is the login's /secret/ parameter, and the password is never displayed or stored outside it
+   (or, until secrets-to-ssm-retire retires them, the Secrets Manager secret it was copied from).
+
+**Rationale:** A separate root keeps every /agent-platform/* grant away from secrets without re-narrowing five
+statements, and a future broad grant there stays harmless. Out-of-band values stay out of state, plan files and the
+decrypting refresh PR-reachable roles run. Rejected: value_wo (Terraform 1.11, and refresh still decrypts); a
+customer-managed key (about USD 1 a month for a gate the grant already gives); /agent-platform/secret/ (one broad
+grant reopens it).
+
+**Coverage (Decision 181 cl.2):** cl.1 -- tests/test_secret_parameters_expand.py pins the nine names to
+/secret/<Secrets Manager name> (it lands with secrets-to-ssm-expand); the no-environment rule for a new name is an
+unenforced residual; cl.2 -- validate_secret_parameter_grants, validate_planner_secret_value_reads and the post-apply
+simulate rows; cl.3 -- validate_secret_material_handling and the SecureString read and write coverage rules; cl.4 and cl.5 --
+non-features, held by their reversal conditions; cl.6 -- deploy-paths.yaml's scoped-login procedure, unenforced.
+
+```yaml reversal-conditions
+decision: 237
+review_by: 2027-04-30
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: managed-rotation-wanted
+    kind: manual
+    description: "A secret needs managed rotation: re-decide clause 5 (return it to Secrets Manager or add rotation)."
+  - id: pattern-grant-needed
+    kind: manual
+    description: "A consumer needs a value verb on a pattern under /secret/: re-decide clause 2."
+  - id: second-gate-wanted
+    kind: manual
+    description: "A second gate on a secret is wanted, such as a customer-managed key policy: re-decide clause 4."
+```
+
+**Related:** Decisions 157, 175, 101, 171, 202, 213, 230, 144, 156, 223.
+
+---
+
 ## Decision 236: Production telemetry is proved by a smoke canary and read through its own reader -- disposable proofs stay on smoke, production serves no transcript content, read-side tenancy is the function boundary, and maintenance covers the catalog from its first write (amends Decisions 81, 91, 199 and 200) (Decided)
 
 ```yaml
@@ -440,6 +520,8 @@ conditions:
 ```
 
 **Related:** Decision 216, 213, 81, 214, 222, 204, 143, 144, 202, 126, 88, 181.
+
+[Amendment 2026-10-27, Decision 237: cl.4 logins live in /secret/.]
 
 ---
 
@@ -1550,6 +1632,8 @@ conditions:
 [Amendment 2026-10-14, Decision 216: cl.3's admin step is carved out for the disposable smoke catalog; the reversal condition scoped-login-blocks-verbs fired and was resolved without widening the grant set.]
 
 [Amendment 2026-10-20, Decision 230: cl.1's denies name the telemetry functions by one pattern, cl.3's logins are one per catalog binding from a closed table, cl.5's carve-out covers the two catalog verbs and the four logins, and rec-4205 and rec-4206 concern the shared ops writer and stay with the CI write narrowing plan.]
+
+[Amendment 2026-10-27, Decision 237: cl.5's scoped-login value lives in its /secret/ SecureString parameter; the password is never displayed or stored outside it.]
 
 ---
 
@@ -8753,6 +8837,8 @@ is explicitly deferred. This session's only artefacts are this decision and `doc
 
 **Affected files:**
 `docs/DECISIONS.md` (this decision), `docs/ROADMAP-SEMANTO.yaml` (new third sibling roadmap).
+
+[Amendment 2026-10-27, Decision 237: point (b) gains the /secret/ SSM name family for secret values, a deliberate exclusion from /agent-platform/*.]
 
 ---
 

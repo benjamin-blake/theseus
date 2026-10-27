@@ -89,6 +89,13 @@ ENTRIES: tuple[Entry, ...] = (
         attr="validate_terraform_try",
     ),
     Entry(
+        name="validate_secret_parameter_grants",
+        module="scripts.checks.iam_tf.validate_secret_parameter_grants",
+        attr="validate_secret_parameter_grants",
+        pre=True,
+        full_segment="full_after_lint",
+    ),
+    Entry(
         name="validate_secret_material_handling",
         module="scripts.checks.iam_tf.validate_secret_material_handling",
         attr="validate_secret_material_handling",

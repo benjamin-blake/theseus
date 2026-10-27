@@ -32,11 +32,16 @@ import yaml
 
 from scripts.checks import _common, registry
 from scripts.checks.iam_tf import validate_invoke_implies_resolve as _vir
+from scripts.checks.iam_tf import validate_secret_parameter_grants as _spg
 
 # Only Benjamin can add to this list (plan neon-key-out-of-pr-plans). The tfvars secret stays unconditioned
 # until plan C.
 ALLOWED_UNCONDITIONED = frozenset(
-    {"arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:agent-platform-terraform-personal-tfvars-*"}
+    {
+        "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:agent-platform-terraform-personal-tfvars-*",
+        # Decision 237 cl.2: the terraform-personal tfvars parameter every plan reads.
+        "arn:aws:ssm:${var.aws_region}:${var.account_id}:parameter/secret/agent-platform-terraform-personal-tfvars",
+    }
 )
 _NEON_KEY_ARN = "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:neon-api-key-*"
 _DSN_ARN = "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:ducklake-neon-catalog-dsn-*"
@@ -59,6 +64,7 @@ _TF_CMD_RE = re.compile(
 )
 _EFFECT_RE = re.compile(r'\beffect\s*=\s*"([^"]*)"')
 _NOT_ACTIONS_RE = re.compile(r"\bnot_actions\s*=")
+_NOT_RESOURCES_RE = re.compile(r"\bnot_resources\s*=")
 _CONDITION_BLOCK_RE = re.compile(r"condition\s*\{")
 _TEST_RE = re.compile(r'\btest\s*=\s*"([^"]*)"')
 _VARIABLE_RE = re.compile(r'\bvariable\s*=\s*"([^"]*)"')
@@ -96,6 +102,8 @@ def _find_statements(body: str) -> list[dict]:
                 "effect": effect_m.group(1) if effect_m else "Allow",
                 "actions": _vir._QUOTED_RE.findall(actions_m.group("body")) if actions_m else [],
                 "has_not_actions": bool(_NOT_ACTIONS_RE.search(stmt_body)),
+                "has_not_resources": bool(_NOT_RESOURCES_RE.search(stmt_body)),
+                "resources_raw": resources_m.group("body") if resources_m else None,
                 "resources": _vir._QUOTED_RE.findall(resources_m.group("body")) if resources_m else [],
                 "conditions": conditions,
             }
@@ -128,6 +136,23 @@ def _has_reserved_condition(stmt: dict) -> bool:
         c["test"] == "StringLike" and c["variable"] == "aws:userid" and _RESERVED_LOCAL_MARKER in c["values_raw"]
         for c in stmt["conditions"]
     )
+
+
+def _ssm_unconditioned_reads(allows: list[dict]) -> list[str]:
+    """Sids of Allow statements with an SSM value verb reaching /secret/ (or unresolvable) without the drift condition."""
+    bad: list[str] = []
+    for s in allows:
+        if not (s["has_not_actions"] or _spg.covers_value_verb(s["actions"])):
+            continue
+        listed = None if s["resources_raw"] is None else _spg.string_list(s["resources_raw"])
+        if s["has_not_resources"] or listed is None:
+            bad.append(f"{s['sid'] or '<no-sid>'} (resource expression is not a list of string literals)")
+            continue
+        by_path = s["has_not_actions"] or _spg.covers_by_path(s["actions"])
+        reaching = [r for r in listed if _spg.reaches_secret(r, by_path)]
+        if reaching and not _has_reserved_condition(s) and not set(reaching) <= ALLOWED_UNCONDITIONED:
+            bad.append(s["sid"] or "<no-sid>")
+    return bad
 
 
 def _sids(statements: list[dict]) -> str:
@@ -163,6 +188,14 @@ def _check_policy(text: str, key: str, failed: list[str]) -> None:
             f"{key} {_PLANNER} has unconditioned Secrets Manager value read(s) outside the tfvars secret "
             f"(sid(s): {_sids(bad)}) -- PR sessions must not read the Neon key, DSN, PAT or inference keys; "
             "condition them on the reserved drift session (never widen ALLOWED_UNCONDITIONED)"
+        )
+
+    ssm_bad = _ssm_unconditioned_reads(allows)
+    if ssm_bad:
+        failed.append(
+            f"{key} {_PLANNER} has unconditioned SSM value read(s) reaching parameter/secret/ outside the tfvars "
+            f"parameter (sid(s): {', '.join(ssm_bad)}) -- condition them on the reserved drift session "
+            "(Decision 237 cl.2; never widen ALLOWED_UNCONDITIONED)"
         )
 
     drift_reads = [
