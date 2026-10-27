@@ -58,9 +58,10 @@ scope:
   - file: tests/telemetry/fixtures/derivation_cases.yaml
     action: Modify
     purpose: >-
-      New case c15b_local_cost_is_null_whatever_is_reported: three model_call rows, local with cost_usd_reported 0.0,
-      local with 0.42, local with none, each expected cost_usd null and cost_source local; one metered row with 0.5
-      expected reported. Drives both the SQL verb test and the derive.py oracle test.
+      New case c15b_local_cost_is_null_whatever_is_reported, shaped as c15 (one session named root, which
+      test_cost_source_never_a_false_zero reads): three model_call rows, local with cost_usd_reported 0.0, local with
+      0.42, local with none, each expected cost_usd null and cost_source local; one metered row with 0.5 expected
+      reported. Drives both the SQL verb test and the derive.py oracle test.
   - file: tests/provider_agnostic_tier_model/test_role_based_tier_model.py
     action: Modify
     purpose: >-
@@ -89,6 +90,12 @@ scope:
   - file: docs/PROJECT_CONTEXT.md
     action: Modify
     purpose: The Persona execution paragraph drops "(vocabulary pending, rec-4561)".
+  - file: docs/DECISIONS.md
+    action: Modify
+    purpose: >-
+      One dated blockquote_update annotation after Decision 234's Related line (Decision 177 dialect; the body stays
+      unedited), re-pointing its Coverage line's "billing_shape local -- rec-4561" to the three graduated checks, so the
+      coverage map names no closed rec. Text in execution step 8.
   - file: config/agent/verification_registry/entries/inference-local-server-credential-holder.yaml
     action: Create
     purpose: Registry row for VP 1 (graduate), check_spec from the step's command; guard_target docs/contracts/inference-provider.yaml.
@@ -105,7 +112,8 @@ infrastructure_dependencies: []
 acceptance_criteria:
   - inference-provider.yaml's billing_shape_vocabulary is [metered_marginal, fixed_non_rollover_allowance, local], no tier row carries local, and the axis, credential_holder and row texts are execution step 2's verbatim.
   - telemetry_observations.yaml billing_shape admits local and cost_usd's formula derives NULL for it, with execution step 3's verbatim text, and the file is at or under 500 effective lines.
-  - field_semantics.yaml is the generator's output (schema_to_field_semantics --check exits 0) and its only diff is billing_shape's accepted_values gaining local.
+  - field_semantics.yaml is the generator's output (schema_to_field_semantics --check exits 0) and its only diff is billing_shape's accepted_values gaining local, one added line (VP 4).
+  - Decision 234 carries a dated Update annotation re-pointing its billing_shape local coverage to the three graduated checks, and its body is unedited (VP 4, VP 8).
   - A model_call row carrying billing_shape local passes the writer's gate built from the bundled projection; an unknown value is refused (VP 3).
   - model_call_cost_estimate (SQL verb and derive.py oracle) gives every local row cost_usd NULL and cost_source local, whatever cost_usd_reported it stores, and never a 0 (VP 5, VP 6).
   - record_turn.py is unchanged (BILLING_SHAPES stays the claude_code producer's one value, rec-4147).
@@ -150,30 +158,39 @@ verification_plan:
     graduation_check_id: telemetry-writer-admits-billing-shape-local
   - step: 4
     phase: pre-deploy
-    action: Contract pins and the projection drift gate.
+    action: >-
+      Contract pins, the projection drift gate, the projection's one-line diff, and the Decision 234 coverage
+      annotation.
     command: >-
       bin/venv-python -m pytest
       tests/checks/contracts/test_telemetry_event_journal_contracts.py::TestObservationsPersonaBackend
       tests/telemetry/test_contract_amendments.py::test_claude_code_capture_billing_shape_source_declared -q &&
-      bin/venv-python -m scripts.schema_to_field_semantics --check && echo PROJECTION_OK
+      bin/venv-python -m scripts.schema_to_field_semantics --check &&
+      test "$(git diff --numstat origin/main -- config/lambda/ducklake/field_semantics.yaml | cut -f1,2)" = "$(printf '1\t0')" &&
+      grep -qF 'enforced by the graduated checks inference-local-server-credential-holder' docs/DECISIONS.md &&
+      echo PROJECTION_OK
     expected: Exit 0, every node passes, then PROJECTION_OK.
     fix_if: >-
-      The rec-4147 populated_by sentence changed (restore it verbatim), or the committed projection drifts from the
-      contract (regenerate).
+      The rec-4147 populated_by sentence changed (restore it verbatim); the committed projection drifts from the
+      contract (regenerate); the projection diff is more than local's one line (an unrelated contract edit leaked in);
+      or the Decision 234 annotation is missing.
     hermetic: true
     expected_literals: [PROJECTION_OK]
     graduation: waive
     graduation_waiver_reason: >-
-      Existing tests edited in place (green on the plan tree), and the drift gate already runs as
-      validate_field_semantics_drift in both tiers.
+      Existing tests edited in place (green on the plan tree); the drift gate already runs as
+      validate_field_semantics_drift in both tiers; the diff leg is PR-relative (against origin/main), so it means
+      nothing once merged.
   - step: 5
     phase: pre-deploy
     action: The shadow oracle derives local cost as NULL with cost_source local.
     command: >-
       bin/venv-python -m pytest
       "tests/telemetry_verify/test_derive.py::test_oracle_matches_every_committed_derivation_case[c15b_local_cost_is_null_whatever_is_reported-model_call_cost_estimate-0]"
-      tests/telemetry_verify/test_derive.py -q
-    expected: Exit 0, every node passes. Red before because the case is absent (and the oracle reports a stored 0.0).
+      -q
+    expected: >-
+      Exit 0, one test passes. Red before because the node is absent (pytest exit 4), and without the derive.py branch
+      the oracle reports a stored 0.0 as reported.
     fix_if: A local row reads reported; the local branch must precede the reported branch.
     hermetic: true
     graduation: graduate
@@ -190,8 +207,9 @@ verification_plan:
     hermetic: false
     graduation: waive
     graduation_waiver_reason: >-
-      Needs duckdb, absent from requirements-fast.txt (vp-red-before.yaml hermetic_authoring (iii)); the file already
-      runs in the full tier on every PR and on main, and VP 5 graduates the same case through the oracle.
+      Needs duckdb, absent from requirements-fast.txt (vp-red-before.yaml hermetic_authoring (iii)). PR CI runs only
+      --pre, where the file skips itself (importorskip duckdb); it runs in VP 8's blocking pre-handoff full tier and in
+      main's full tier (ci.yml main-validate, push-only). VP 5 graduates the same case through the oracle.
   - step: 7
     phase: pre-deploy
     action: rec-4561's own acceptance command.
@@ -329,7 +347,7 @@ constraints:
   - No rescue agents or workaround loops (Decision 55).
 context:
   - "Decision-scout: FLAGS_FOUND, dispositioned (/mnt/project-files/billing-shape-local/decision-scout-report.md). CITE 234, 199, 206, 173, 210, 79, 126, 236, 166. Decisions triaged: 188 of 188. Roadmap items intersected: 8; CONFLICT: 0; RELATED: 8."
-  - "gates: decision-scout=FLAGS_FOUND (dispositioned); plan-critique=PENDING"
+  - "gates: decision-scout=FLAGS_FOUND (dispositioned); plan-critique=REVISE round 1 of 3 (F1 closure facts, F2 VP 6 waiver premise, advisories A1-A5 folded in)"
   - 'ci_rca red_overlap (2026-10-27): {"verdict": "clear", "slo_hours": 4, "reds": []}'
   - >-
     Flag dispositions: 217 cl.4 NOTE -> Benjamin confirms local derives NULL (cost_usd note cites 217 cl.4); 79 NOTE -> VP 9
@@ -341,6 +359,11 @@ context:
     it; rec-4135 and rec-4566 are not bundled (rec-4566 rebases on this, amendment_log rows only).
   - Decision 173 cl.2(c) does not fire (no role's billing shape changes); Decision 210 cl.4 order holds (no producer emits local).
   - >-
+    The vocabulary stays at tier_model.billing_shape_vocabulary (rec-4561's acceptance pins that home), though it now
+    holds a value no tier carries; "no tier carries local" is held by the graduated tier test, not by structure. An
+    axis-level vocabulary with a tier-eligible subset is the structural alternative if a second tier-ineligible value
+    ever arrives.
+  - >-
     Direction: Benjamin's "write the plan" (cmsg_012XgaFy8VaDQbxP5D8nC9585i6UrbzEfM2utnAyBDMwLn) after the exact contract
     text was pasted inline (cmsg_012XgaFy8VaDQbxP5D8nC958WzqA6g14gdRJ1ejRFXsK1k, cmsg_012XgaFy8VaDQbxP5D8nC9581fd27AnXQTTAmFghfnuroN);
     presentation /mnt/project-files/billing-shape-local/step6b-presentation.md. The build merge still needs his word.
@@ -348,7 +371,7 @@ pre_implementation_checklist:
   - Branch confirmed not on main (harness-assigned session branch)
   - docs/PROJECT_CONTEXT.md read
   - Decisions 234 cl.4, 199 cl.1, 206, 173 cl.4, 210 cl.4, 217 cl.4 and 236 cl.1 read (only the cited sections)
-  - All files in scope located and readable; telemetry_observations.yaml effective-line headroom checked (493 of 500)
+  - All files in scope located and readable; telemetry_observations.yaml (493 of 500) and inference-provider.yaml (473 of 500) effective-line headroom checked
   - Acceptance criteria understood and verifiable
 execution_steps:
   - Read the cited Decision sections and the three graduated shards (inference-provider-local-model-servers, inference-provider-backend-vocabulary, inference-tier-rows-role-and-billing-shape).
@@ -417,12 +440,33 @@ execution_steps:
     scripts/telemetry_verify/derive.py mirrors the branch order and its docstring names local and c15b.
   - Add case c15b to tests/telemetry/fixtures/derivation_cases.yaml (scope row) after c15; write the four test edits named in scope.
   - docs/PROJECT_CONTEXT.md drops "(vocabulary pending, rec-4561)".
+  - >-
+    docs/DECISIONS.md, verbatim, as its own paragraph after Decision 234's "**Related:**" line and before the entry's
+    closing rule: "> **Update (<build date>):** the Coverage line's billing_shape local residual (rec-4561) is enforced
+    by the graduated checks inference-local-server-credential-holder, telemetry-writer-admits-billing-shape-local and
+    telemetry-local-cost-derives-null (PLAN-billing-shape-local). No clause changes." Nothing else in the entry changes
+    (Decision 177).
   - Write the three registry rows from VP 1, VP 3 and VP 5's commands (test_selector slot).
   - Execute the pre-deploy Verification Plan (VP 1-8); loop until pass; on unrecoverable failure stop and RCA (Decision 55).
   - >-
-    Open the PR; paste the final contract diff text inline in the thread and get Benjamin's word; squash-merge with
-    "Resolves: rec-4561" in the body. Then run VP 9-11 after the governed deploy.
-  - 'Report: what was implemented, verification results'
+    Closure evidence, recorded as four SEPARATE facts (implement skill Commit Flows): (1) GitHub readiness state from
+    bin/venv-python -m scripts.session.github_readiness (unknown is unproven, never ready); (2) parent validator
+    evidence: VP 8's full tier exits 0 with a final "Validation Summary (scope: all)" PASS, then bin/venv-python -m
+    scripts.checks.validation_result --verify-head exits 0 for the pushed HEAD; (3) structured postflight evidence:
+    write the scripts.session.postflight_evidence.CATEGORIES JSON in the scratchpad, then bin/venv-python -m
+    scripts.session.postflight --evidence <file>; (4) the real outcome: push, PR, CI green by event-driven wake (never
+    polled).
+  - >-
+    Merge gate: paste the final text of both contract diffs and the Decision 234 annotation inline in the thread and get
+    Benjamin's word (Class A, and he reviews every deployment); then squash-merge with "Resolves: rec-4561" in the body.
+  - >-
+    Post-merge: once the deploy-ducklake-lambdas.yml run for the merge commit finishes, run VP 9-11, then post one
+    counts-only comment on the merged PR naming the deploy run URL and the DEPLOY_JOBS_OK, LOCAL_LIVE_OK and REC_CLOSED
+    literals (no ARNs, account ids or row data: the repository is public). This channel deploys only after merge, so the
+    comment is where the V3 proof lives.
+  - >-
+    Report: what was implemented; VP 1-8 results; each of the four closure facts stated separately; the merge commit; VP
+    9-11 results with a link to the evidence comment.
 rollback: >-
   Revert the squash commit; the governed deploy ships the revert. No stored row changes either way, and no producer emits
   local, so a revert strands nothing.
