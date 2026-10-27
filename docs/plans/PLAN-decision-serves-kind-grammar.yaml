@@ -137,7 +137,10 @@ scope:
     reads (north-star ids through scripts/north_star_models.py), and applies every envelope_rules rule -- required
     fields, significance, kind, serves, closed keys, number -- with NNN accepted as the number. A concrete number is a WARN-class finding ("assign at implementation: Decision 217 cl.5"). When kind is
     missing or invalid, the finding quotes decision-kind.yaml's test so the drafter has the definition in hand
-    (Decision 66). Report lines, exactly: "decision_drafts: none" when no drafted Decision is found, otherwise
+    (Decision 66). Public API: findings_for_plan(path) and findings_for_draft(path), each returning findings with
+    number, title (the heading text after "Decision <number>: "), severity (FAIL or WARN), field and detail. A Decision
+    drafted in a plan must sit in a literal (|) block scalar; a heading whose block has no line break after it (a folded
+    scalar) is a FAIL naming that rule. Report lines, exactly: "decision_drafts: none" when no drafted Decision is found, otherwise
     "decision_drafts: <d> drafted, <f> findings" followed by one "  FAIL <number> <field>: <detail>" or
     "  WARN <number> <field>: <detail>" line per finding. Never raises; an unreadable path is a finding.
 - file: scripts/roadmap/plan_obligations.py
@@ -198,7 +201,8 @@ scope:
   purpose: >-
     A plan embedding an NNN Decision with a conforming envelope reports "decision_drafts: 1 drafted, 0 findings";
     missing kind reports a FAIL line quoting the test; a draft missing significance, or claiming a "Never a numbered
-    Decision" routing row, reports a FAIL line; a concrete number reports the WARN line; a draft file via
+    Decision" routing row, reports a FAIL line; a draft inside a folded scalar reports the literal-block FAIL; a
+    concrete number reports the WARN line; findings_for_plan returns title and field on each finding; a draft file via
     --decision-draft; a plan with no drafted Decision reports "decision_drafts: none"; main() exits 0 in every case; an
     unreadable path is a finding, not a raise.
 - file: config/agent/verification_registry/entries/decision-entry-serves-kind-enforced.yaml
@@ -233,7 +237,7 @@ verification_plan:
     Precondition, run once before the first edit -- both prerequisite builds have merged and this branch is rebased:
     the north-star file, its model module, its Decision and an open T4.36 c4 exist; decision-entry.yaml is at or under
     470 effective lines with neither a budgets entry nor a frozen size note; every insertion anchor the VERBATIM entries
-    name is still present.
+    name is still present; both skills still have room for the measured +434 B and +1 B under config/prose_budgets.yaml.
   command: >-
     git fetch origin main --quiet && git merge-base --is-ancestor origin/main HEAD && test -f
     docs/contracts/north-star.yaml && test -f scripts/north_star_models.py && grep -qE "^## Decision [0-9]+: North stars
@@ -251,12 +255,16 @@ verification_plan:
     '   the significance bar on its own terms.'), ('.claude/skills/plan-critique/SKILL.md', 'This is the reviewer-side
     control that does not exist anywhere else in this gate'), ('.claude/skills/plan-critique/SKILL.md', 'A
     claimed-row/body mismatch is REVISE-worthy on its own')]; m=[x for x in a if x[1] not in open(x[0],
-    encoding='utf-8').read()]; assert not m, m" && echo PRECONDITION_OK
+    encoding='utf-8').read()]; assert not m, m; import os; pb=yaml.safe_load(open('config/prose_budgets.yaml', encoding='utf-8')); pin=lambda q:
+    [v[q] for v in pb.values() if isinstance(v, dict) and q in v][0]; h=[(q, n) for q, n in
+    [('.claude/skills/planning/SKILL.md', 434), ('.claude/skills/plan-critique/SKILL.md', 1)] if os.path.getsize(q) + n
+    > pin(q)]; assert not h, ('prose headroom', h)" && echo PRECONDITION_OK
   expected: PRECONDITION_OK.
   fix_if: >-
     A missing north-star file, model module, Decision or open criterion means PLAN-north-star-tier-a's build has not
     merged; an effective-line count over 470, a surviving budgets entry or a surviving frozen note means the compaction
-    build has not merged; a missing anchor means a prerequisite reworded an insertion point. In every case stop and
+    build has not merged; a missing anchor means a prerequisite reworded an insertion point; a prose-headroom failure
+    means a sibling plan grew a skill on main. In every case stop and
     tell the coordinator; never raise the pin and never re-place approved text on a guess.
   hermetic: false
   graduation: waive
@@ -386,7 +394,8 @@ verification_plan:
   fix_if: >-
     Over 500 effective lines means the text grew beyond the approved 30 lines or the compaction left less room -- stop
     and tell the coordinator, never raise. An evaluator finding means the check module lacks the decision-kind.yaml
-    path constant. A prose overrun means a skill edit added text -- trim to the approved text, never raise.
+    path constant. A prose overrun means a skill edit added text beyond VERBATIM S1-S2 or C1-C3 -- remove the extra;
+    if main grew the skill since VP 1, stop and tell the coordinator. Never trim approved text and never raise.
   hermetic: false
   graduation: not-applicable
 - step: 9
@@ -400,6 +409,25 @@ verification_plan:
   graduation: waive
   graduation_waiver_reason: The serves_kind module's rec-3260 node, graduated under VP 5, guards the unit label.
 - step: 10
+  phase: pre-deploy
+  action: >-
+    Before merge -- no unimplemented plan carries a drafted Decision that this build would fail for a missing kind.
+    Known at plan time: PLAN-aws-account-company-assignment and PLAN-work-graph-edge-model, whose approved Decision
+    drafts have no kind.
+  command: >-
+    bin/venv-python -c "import glob; from scripts.roadmap.plan_decision_drafts import findings_for_plan as f;
+    md=''.join(open(p, encoding='utf-8').read() for p in ('docs/DECISIONS.md', 'docs/DECISIONS_ARCHIVE.md'));
+    bad=sorted({(p, x.title) for p in glob.glob('docs/plans/PLAN-*.yaml') for x in f(p) if x.severity == 'FAIL' and
+    x.field == 'kind' and x.title not in md}); print(*bad, sep=chr(10)); raise SystemExit(1 if bad else 0)"
+  expected: Exit 0 with no line printed.
+  fix_if: >-
+    Each printed plan drafts a not-yet-landed Decision without kind. Do not merge: message the coordinator naming each
+    plan, so Benjamin approves a kind line for that draft (its plan is amended in its own thread) or rules that it lands
+    first. A plan whose Decision already landed under a reworded title is a false positive; confirm it by hand and say
+    so in the PR.
+  hermetic: false
+  graduation: not-applicable
+- step: 11
   phase: post-deploy
   action: Confirm rec-3260 is closed (the squash-merge Resolves trailer closes it).
   command: >-
@@ -516,44 +544,30 @@ constraints:
 - No rescue agents or workaround loops (Decision 55).
 context:
 - "Decision-scout verdict FLAGS_FOUND (r2, 2026-10-27). Decisions triaged: 188 of 188. Roadmap items intersected: 5; CONFLICT: 0; RELATED: 5. CITE 167, 217, 84, 150, 105, 128, 66."
-- "gates: decision-scout=FLAGS_FOUND (r1, r2 addressed); plan-critique=REVISE r1 (F1-F13 fixed), REVISE r2 (R2-1..R2-6 fixed), r3 PENDING"
+- "gates: decision-scout=FLAGS_FOUND (r1, r2 addressed); plan-critique=REVISE r1 (F1-F13 fixed), REVISE r2 (R2-1..R2-6 fixed), REVISE r3 (R3-1..R3-4 fixed), r4 PENDING"
 - 'red_overlap (2026-10-27): {"verdict": "clear", "slo_hours": 4, "reds": []}'
+- "Scout flags folded in -- 196 WARN (VP 1); 166 WARN (no raise, compaction precondition: VP 1, VP 8); 134 NOTE (placeholder grammar in decisions_md); 177 SPIRIT (WARN remedies); 128 (split modules); 127 (skill pins); 179 SPIRIT (band-only projection, kind value only in the index)."
 - >-
-  Flags folded in: 196 WARN (plan 1's build is a hard precondition, VP 1); 166 WARN (no raise: the compaction plan is
-  a build precondition, VP 1 and VP 8); 134 NOTE (placeholder heading and envelope grammar live in decisions_md); 177
-  SPIRIT (WARN remedies); 128 (new test modules, envelope_rules split); 127 (skill edits within their pins); 179 SPIRIT
-  r1 (band-only projection, kind value only in the index).
+  Approvals (Benjamin, 2026-10-27). Round 1, cmsg_01PCtd8o8287wUrLv1SCjZEuCPLYkAV7zbCm33vzm9w7xE: serves and
+  closed_key_set text, kind required, rec-3260 bundled, numbers at implementation as MAX + 1, and the planning-script
+  check -- so AC3 and AC4 are operator-ruled scope beyond T4.36 c4's text. Round 2,
+  cmsg_01PCtd8o8287wUrLv1SCjZEuMHBJwTHHqp5wF76Mqh36HG: all round-2 text, kind in its own contract, and compaction
+  instead of a size raise. The VERBATIM execution steps are that approved text (critique-verified against the snapshot).
+- "Measured at plan time on the approved text: decision-entry.yaml +30 effective lines (505 now; the compaction draft leaves 446, so about 476); decision-kind.yaml 55; planning SKILL.md +434 B; plan-critique SKILL.md +1 B; VP 2 passed on scratch copies. Blind classifiers agreed on 15/16 Decisions (94%) given only decision-kind.yaml."
 - >-
-  Approvals (Benjamin's own words): round 1 on 2026-10-27, cmsg_01PCtd8o8287wUrLv1SCjZEuCPLYkAV7zbCm33vzm9w7xE -- the
-  serves and closed_key_set text approved, kind required, rec-3260 bundled, numbers assigned at implementation as
-  MAX + 1. Round 2 on 2026-10-27, cmsg_01PCtd8o8287wUrLv1SCjZEuMHBJwTHHqp5wF76Mqh36HG -- the round-2 text approved
-  (decision-kind.yaml in full; the decision-entry.yaml additions, the plan-obligations sentence and both skill edits),
-  kind's definition in its own contract (home a), and compaction of decision-entry.yaml as a prerequisite instead of a
-  size raise. The VERBATIM execution steps are that approved text; plan-critique r1 verified each against the approved
-  snapshot.
-- Rubric evidence -- two blind classifiers given only decision-kind.yaml agreed on 15/16 Decisions (94%); each earlier disagreement is closed by a rule now in the text.
+  LAMBDA-DEPLOY DEFERRED (CD.16 / Decision 79), data-pipeline: flagged only through docs/ROADMAP-PLATFORM.yaml (a
+  manifest asset, c4 bookkeeping). Its scheduled-agent handler reads the roadmap only as prompt context and
+  deploy-prod-lambdas.yml's path triggers exclude the file, so it refreshes with its next governed deploy
+  (PLAN-telemetry-production-catalog precedent).
 - >-
-  Measured on the approved text at plan time: decision-entry.yaml +30 effective lines (505 today; the compaction
-  planner's draft leaves 446, so this plan lands at about 476); decision-kind.yaml 55 effective lines; planning
-  SKILL.md +434 B; plan-critique SKILL.md +1 B. Every chunk was applied to scratch copies of the five target files,
-  each YAML file parsed, and the VP 2 check passed.
-- >-
-  LAMBDA-DEPLOY DEFERRED (CD.16 / Decision 79), data-pipeline: compute_affected_artifacts flags it through
-  docs/ROADMAP-PLATFORM.yaml, a manifest asset, for the c4 bookkeeping walk. No build, deploy or smoke test is owed:
-  its scheduled-agent handler reads the bundled roadmap only as prompt context, deploy-prod-lambdas.yml's path
-  triggers do not include the file, and the artifact refreshes with its next governed deploy (the
-  PLAN-telemetry-production-catalog precedent). No other scope file is in any Lambda bundle.
-- Decision NNN = the north-star Tier A Decision (PLAN-north-star-tier-a); resolve its number from DECISIONS.md at VP 1. Its clause 8 binds this plan and names docs/contracts/decision-kind.yaml and decision-entry.yaml as the homes of kind and serves.
-- >-
-  Cross-plan dependency on PLAN-north-star-tier-a: the check and the draft report read north-star ids and carried_by
-  through its pinned scripts/north_star_models.py interface (load_north_star(path=None) -> NorthStarDocument with
-  .principles, .ids(), .active_ids(); no I/O at import). That plan adds an optional status active | retired (2026-10-27),
-  which gives the approved WARN remedy its shape; a retired id still resolves here. Refusing new serves claims on a
-  retired id needs new approved wording, so it is rec-4660. rec-4659 points candidate-decision-ratification.yaml's
-  numbering-race notes at number_assignment; rec-4664 names the placeholder grammar in shared_parser_note.
+  Decision NNN is the north-star Decision (PLAN-north-star-tier-a; clause 8 binds this plan). Its pinned
+  scripts/north_star_models.py interface (north-star-tier-a/draft/models-interface.md: load_north_star, .ids(),
+  .active_ids()) is how ids and carried_by are read; its optional status active | retired gives the WARN remedy its
+  shape, and a retired id still resolves here. Follow-ons: rec-4660 (refuse new serves on retired ids), rec-4659
+  (ratification numbering notes), rec-4664 (shared_parser_note).
+- "In-flight drafts without kind (2026-10-27): PLAN-aws-account-company-assignment and PLAN-work-graph-edge-model are approved and unbuilt. VP 10 blocks this merge until each has Benjamin's approved kind line or has landed; the coordinator was told."
 - Index shape is shared with PLAN-scout-north-star-lane and PLAN-emergent-north-star-orient; whichever touches build_index regenerates the index in-PR.
-- Every other in-flight plan that drafts a Decision landing after this one must carry kind.
-- No contract-population.yaml or file-router.yaml edit. validate_contract_drift passes with decision-kind.yaml added (dry-run at plan time) once the check module names its path, and neither registration is part of the approved text.
+- No contract-population.yaml or file-router.yaml edit -- validate_contract_drift passes with decision-kind.yaml once the check names its path (plan-time dry run).
 pre_implementation_checklist:
 - Branch confirmed not on main and rebased on origin/main; VP step 1 passes
 - docs/PROJECT_CONTEXT.md read
@@ -573,13 +587,13 @@ execution_steps:
 - Skills -- apply VERBATIM entries S1-S2 (planning) and C1-C3 (plan-critique); measure bytes against config/prose_budgets.yaml.
 - Registry shards for VP 4, 5 and 6.
 - Bookkeeping -- T4.36 c4 met (met_by decision-serves-kind-grammar).
-- Execute Verification Plan steps 2-9 after the edits -- loop until pass; on unrecoverable failure stop and RCA (Decision 55).
+- Execute Verification Plan steps 2-10 after the edits -- loop until pass; on unrecoverable failure stop and RCA (Decision 55).
 - >-
   Closure evidence recorded as four SEPARATE facts (implement skill Commit Flows): GitHub readiness state; parent
   validator evidence (VP 8 full-tier exit 0 plus bin/venv-python -m scripts.checks.validation_result --verify-head for
   the pushed HEAD); structured postflight evidence (write the scripts.session.postflight_evidence.CATEGORIES JSON in the
   scratchpad, then bin/venv-python -m scripts.session.postflight --evidence <file>); the real outcome -- push, PR, CI
-  green by event-driven wake (never polled), squash-merge, then VP step 10.
+  green by event-driven wake (never polled), squash-merge, then VP step 11.
 - 'Open the PR. Merge needs Benjamin''s word on the final diff in the build thread (governing contract text); then squash-merge on code review PROCEED + green CI with a `Resolves: rec-3260` trailer.'
 - 'Report: what was implemented, verification results, measured SLOC, effective lines and bytes.'
 - |-
