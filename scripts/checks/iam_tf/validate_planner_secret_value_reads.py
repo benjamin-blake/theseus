@@ -138,7 +138,7 @@ def _has_reserved_condition(stmt: dict) -> bool:
     )
 
 
-def _ssm_secret_findings(allows: list[dict]) -> list[str]:
+def _ssm_unconditioned_reads(allows: list[dict]) -> list[str]:
     """Sids of Allow statements with an SSM value verb reaching /secret/ (or unresolvable) without the drift condition."""
     bad: list[str] = []
     for s in allows:
@@ -190,7 +190,7 @@ def _check_policy(text: str, key: str, failed: list[str]) -> None:
             "condition them on the reserved drift session (never widen ALLOWED_UNCONDITIONED)"
         )
 
-    ssm_bad = _ssm_secret_findings(allows)
+    ssm_bad = _ssm_unconditioned_reads(allows)
     if ssm_bad:
         failed.append(
             f"{key} {_PLANNER} has unconditioned SSM value read(s) reaching parameter/secret/ outside the tfvars "
