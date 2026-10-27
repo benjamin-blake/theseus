@@ -461,12 +461,12 @@ def test_blob_vectors_run_after_the_append_vectors(wired, capsys):
     for marker in (
         "TELEMETRY_BLOB_PROTOCOL_OK",
         "TELEMETRY_BLOB_AUTOREGISTER_OK",
-        "TELEMETRY_BLOB_READBACK_OK",
         "blob_grant_ms=",
         "blob_put_ms=",
         "blob_append_ms=",
     ):
         assert marker in out, marker
+    assert "READBACK" not in out and "blob_read_ms" not in out
     assert registered not in out and out.strip().splitlines()[-1] == SUCCESS_LINE
 
 
