@@ -6,7 +6,8 @@ measure; and no live text in .github/workflows/, .github/actions/, scripts/ or d
 heavy --lambda-telemetry flag (each contract's amendment_log and previous_versions blocks are history, so they are
 skipped). After the cleanup PR the shared reader's contract routes the event verbs to the telemetry reader and keeps no
 deadline row, the telemetry reader's contract carries the moved deadline and threads invariants, read-engine and PC-01 name
-the telemetry reader, PC-06 names no content server, and no live code keeps the smoke-pin read surface. Each predicate has
+the telemetry reader, PC-06 names no content server, and no live code keeps the smoke-pin read surface. After the narrow
+PR no live ducklake_reader.yaml or read-engine.yaml text says the shared reader reads telemetry-blobs/. Each predicate has
 red cases on synthetic input.
 """
 
@@ -32,6 +33,7 @@ _TELEMETRY_READER = "agent-platform-ducklake-telemetry-reader"
 _RETIRED_READ_SURFACE = ("require_smoke_pin", "_SMOKE_ONLY", "until slice 2c")
 _SHARED_READER_DEADLINE = re.compile(r"deadline_ms|\b504\b|read_deadline_exceeded|TELEMETRY_META_SCHEMA")
 _SMOKE_DEFERRAL = re.compile(r"smoke catalog only|until slice 2c")
+_SHARED_READER_BLOB = re.compile(r"TelemetryBlobRead|telemetry-blobs/")
 
 
 def writer_contract_problems(doc: dict) -> list[str]:
@@ -280,3 +282,33 @@ def test_pc01_and_pc06_name_the_telemetry_reader_and_no_content_server() -> None
         bad = copy.deepcopy(doc)
         mutate(bad)
         assert ports_problems(bad), mutate
+
+
+def shared_reader_blob_grant_hits(files: dict[str, str]) -> list[str]:
+    return [
+        f"{name}:{number}"
+        for name, text in sorted(files.items())
+        for number, line in live_lines(text, skip_history=True)
+        if _SHARED_READER_BLOB.search(line)
+    ]
+
+
+def test_no_contract_names_the_shared_reader_blob_grant() -> None:
+    files = {name: _load(name)[1] for name in ("ducklake_reader.yaml", "read-engine.yaml")}
+    assert shared_reader_blob_grant_hits(files) == []
+    history = (
+        "contract:\n  id: x\namendment_log:\n  - summary: >-\n      the TelemetryBlobRead grant on telemetry-blobs/ goes\n"
+    )
+    assert shared_reader_blob_grant_hits({"a.yaml": history}) == []
+    restored = files["ducklake_reader.yaml"].replace(
+        "amendment_log:\n",
+        '  - "The reader role\'s TelemetryBlobRead grant is reached only through transcript_content."\namendment_log:\n',
+        1,
+    )
+    red = {
+        "after_history.yaml": history + "notes: the role reads telemetry-blobs/<meta_schema>/*\n",
+        "rationale.yaml": "read_surface:\n  rationale: the S3-read-only role also reads telemetry-blobs/\n",
+        "ducklake_reader.yaml": restored,
+    }
+    hits = shared_reader_blob_grant_hits({"a.yaml": history, **red})
+    assert [h.split(":")[0] for h in hits] == ["after_history.yaml", "ducklake_reader.yaml", "rationale.yaml"], hits

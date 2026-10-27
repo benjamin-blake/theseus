@@ -2,12 +2,13 @@
 
 Pins, over the real terraform/personal tree: the writer's catalog pin on the production telemetry catalog (Decision 230)
 with the production data path, blob root and scoped login; the catalog-scoped blob root on the telemetry writer (never the
-shared writer); the telemetry writer's grants in the flip's expand window (Get/Put on both catalogs' data prefixes and
-fenced blob roots plus prefix-conditioned Lists and both scoped logins, never a delete) until the narrow PR; no delete
-under either blob root for any of the three roles; the untouched ops catalog env on the shared writer and reader; the
-shared writer's lack of any telemetry state; the telemetry writer's distance from the ops ducklake/ prefix; and the
-telemetry-blobs lifecycle rule. The shared reader's telemetry pins live in test_telemetry_shared_reader_pins.py. Every
-predicate is a pure function of HCL text with its own red case on synthetic HCL.
+shared writer); the telemetry writer's production-only grants since the flip's narrow PR (Get/Put on the production data
+prefix and fenced blob root plus prefix-conditioned Lists and the production scoped login, never a delete; the smoke
+binding is the twin's); no delete under either blob root for any of the three roles; the untouched ops catalog env on
+the shared writer and reader; the shared writer's lack of any telemetry state; the telemetry writer's distance from the
+ops ducklake/ prefix; and the telemetry-blobs lifecycle rule. The shared reader's telemetry pins live in
+test_telemetry_shared_reader_pins.py. Every predicate is a pure function of HCL text with its own red case on synthetic
+HCL.
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ _DELETE_ROLES = (*_OPS_FUNCTIONS, _TELEMETRY)
 _PIN_MOVE_HINT = (
     "the telemetry catalog pin is production since Decision 230; moving it is the flip plan's rollback, then edit this guard"
 )
-_EXPAND = "both bindings until PLAN-telemetry-production-flip's narrow PR"
+_PROD_ONLY = "production grants only since PLAN-telemetry-production-flip's narrow PR; the smoke binding is the twin's"
 _FIELD_SEMANTICS = '"/var/task/config/lambda/ducklake/field_semantics.yaml"'
 _RULE_ID = "telemetry-blobs-noncurrent-reclaim"
 
@@ -180,16 +181,18 @@ def assert_writer_blob_grant_shape(text: str) -> None:
     st = _role_statements(text, _TELEMETRY)
     rw = _plain_allow(st, "TelemetryBlobReadWrite", ["s3:GetObject", "s3:PutObject"])
     lst = _plain_allow(st, "TelemetryBlobList", ["s3:ListBucket"])
-    roots = ["telemetry-blobs/ducklake_smoke/*", "telemetry-blobs/ducklake_telemetry/*"]
-    assert rw["resources"] == [f"{_ARN}/{r}" for r in roots], f"TelemetryBlobReadWrite resources {rw['resources']}: {_EXPAND}"
+    roots = ["telemetry-blobs/ducklake_telemetry/*"]
+    assert rw["resources"] == [f"{_ARN}/{r}" for r in roots], (
+        f"TelemetryBlobReadWrite resources {rw['resources']}: {_PROD_ONLY}"
+    )
     assert lst["resources"] == [_ARN], f"TelemetryBlobList resources {lst['resources']}"
-    assert lst["prefixes"] == roots, f"TelemetryBlobList must be fenced to {roots}, got {lst['prefixes']}: {_EXPAND}"
+    assert lst["prefixes"] == roots, f"TelemetryBlobList must be fenced to {roots}, got {lst['prefixes']}: {_PROD_ONLY}"
     data = _plain_allow(st, "TelemetryCatalogDataReadWrite", ["s3:GetObject", "s3:PutObject"])
     data_list = _plain_allow(st, "TelemetryCatalogDataList", ["s3:GetBucketLocation", "s3:ListBucket"])
-    prefixes = ["ducklake-neon-smoke/*", "ducklake-telemetry/*"]
-    assert data["resources"] == [f"{_ARN}/{p}" for p in prefixes], f"catalog data resources {data['resources']}: {_EXPAND}"
+    prefixes = ["ducklake-telemetry/*"]
+    assert data["resources"] == [f"{_ARN}/{p}" for p in prefixes], f"catalog data resources {data['resources']}: {_PROD_ONLY}"
     assert data_list["resources"] == [_ARN] and data_list["prefixes"] == prefixes, (
-        f"catalog data list {data_list['resources']} {data_list['prefixes']}: {_EXPAND}"
+        f"catalog data list {data_list['resources']} {data_list['prefixes']}: {_PROD_ONLY}"
     )
     assert_no_delete_on_prefix(text)
 
@@ -217,8 +220,8 @@ def assert_telemetry_writer_reads_only_its_scoped_login(text: str) -> None:
     )
     dsn = granting["TelemetryDsnRead"]
     assert not dsn["not_action"] and dsn["actions"] == ["secretsmanager:GetSecretValue"], f"DSN actions {dsn['actions']}"
-    assert dsn["resources"] == [f"{_SCOPED_SECRET}.arn", f"{_PROD_SECRET}.arn"], (
-        f"DSN resources {dsn['resources']} must be the two scoped login secrets: {_EXPAND}"
+    assert dsn["resources"] == [f"{_PROD_SECRET}.arn"], (
+        f"DSN resources {dsn['resources']} must be the production scoped login secret only: {_PROD_ONLY}"
     )
     env = _env(text, _TELEMETRY)
     assert env.get("TELEMETRY_DSN_SECRET_ID") == f"{_PROD_SECRET}.name", (
@@ -267,11 +270,10 @@ def assert_ops_catalog_env_untouched(text: str) -> None:
 
 
 _ARN_REF = "${aws_s3_bucket.data_lake.arn}"
-_FENCES = [
-    f"${{local.telemetry_blob_data_prefix}}/${{local.{m}}}/*"
-    for m in ("ducklake_smoke_meta_schema", "ducklake_telemetry_prod_meta_schema")
-]
-_DATA = ["${local.ducklake_smoke_data_prefix}/*", "${local.ducklake_telemetry_data_prefix}/*"]
+_SMOKE_FENCE = "${local.telemetry_blob_data_prefix}/${local.ducklake_smoke_meta_schema}/*"
+_FENCES = ["${local.telemetry_blob_data_prefix}/${local.ducklake_telemetry_prod_meta_schema}/*"]
+_SMOKE_DATA = "${local.ducklake_smoke_data_prefix}/*"
+_DATA = ["${local.ducklake_telemetry_data_prefix}/*"]
 _RW = {
     "Sid": "TelemetryBlobReadWrite",
     "Action": ["s3:GetObject", "s3:PutObject"],
@@ -286,7 +288,7 @@ _LIST = {
 _DSN = {
     "Sid": "TelemetryDsnRead",
     "Action": ["secretsmanager:GetSecretValue"],
-    "Resource": [f"{_SCOPED_SECRET}.arn", f"{_PROD_SECRET}.arn"],
+    "Resource": [f"{_PROD_SECRET}.arn"],
 }
 _CATALOG_LIST = {
     "Sid": "TelemetryCatalogDataList",
@@ -305,8 +307,7 @@ _OPS_RW = {
     "Resource": [f"{_ARN_REF}/${{local.ducklake_prod_data_prefix}}/*"],
 }
 _OPS_RO = {**_OPS_RW, "Sid": "S3DataReadOnly", "Action": ["s3:GetObject"]}
-_READER_BLOB = {"Sid": "TelemetryBlobRead", "Action": ["s3:GetObject"], "Resource": [f"{_ARN_REF}/{_FENCES[0]}"]}
-_READER_STMTS = [_OPS_RO, _READER_BLOB]
+_READER_STMTS = [_OPS_RO]
 _TELEMETRY_STMTS = [_DSN, _CATALOG_RW, _CATALOG_LIST, _RW, _LIST]
 
 
@@ -347,14 +348,9 @@ def _doc(
         "DUCKLAKE_EXTENSION_DIRECTORY": "local.ducklake_extension_dir",
         "DUCKLAKE_FIELD_SEMANTICS_PATH": _FIELD_SEMANTICS,
     }
-    smoke_pins = {
-        "TELEMETRY_META_SCHEMA": "local.ducklake_smoke_meta_schema",
-        "TELEMETRY_DATA_PATH": "local.ducklake_smoke_data_path",
-        "TELEMETRY_BLOB_ROOT": "local.ducklake_telemetry_smoke_blob_root",
-    }
     envs = {
         "ducklake_writer": {**ops, **(writer_env or {})},
-        "ducklake_reader": {**ops, **smoke_pins, **(reader_env or {})},
+        "ducklake_reader": {**ops, **(reader_env or {})},
         _TELEMETRY: {**telemetry_base, **(telemetry_env or {})},
     }
     stmts = {
@@ -467,14 +463,15 @@ def _grant_variants() -> list[str]:
     docs.append(_doc(telemetry_stmts=[{**_RW, "Resource": [f"{arn}/telemetry-blobs/*"]}, _LIST]))
     docs.append(_doc(telemetry_stmts=[{**_RW, "Action": [*_RW["Action"], "s3:AbortMultipartUpload"]}, _LIST]))
     docs.append(_doc(telemetry_stmts=[_LIST]))
-    for one_root in _RW["Resource"]:
-        docs.append(_doc(telemetry_stmts=[_DSN, _CATALOG_RW, _CATALOG_LIST, {**_RW, "Resource": [one_root]}, _LIST]))
-    for one_prefix in _FENCES:
-        docs.append(_doc(telemetry_stmts=[_DSN, _CATALOG_RW, _CATALOG_LIST, _RW, {**_LIST, "prefix": [one_prefix]}]))
-    for one_data in _CATALOG_RW["Resource"]:
-        docs.append(_doc(telemetry_stmts=[_DSN, {**_CATALOG_RW, "Resource": [one_data]}, _CATALOG_LIST, _RW, _LIST]))
-    for one_data in _DATA:
-        docs.append(_doc(telemetry_stmts=[_DSN, _CATALOG_RW, {**_CATALOG_LIST, "prefix": [one_data]}, _RW, _LIST]))
+    smoke_root, smoke_data = f"{arn}/{_SMOKE_FENCE}", f"{arn}/{_SMOKE_DATA}"
+    for roots in ([smoke_root], [smoke_root, *_RW["Resource"]], [*_RW["Resource"], smoke_root]):
+        docs.append(_doc(telemetry_stmts=[_DSN, _CATALOG_RW, _CATALOG_LIST, {**_RW, "Resource": roots}, _LIST]))
+    for fences in ([_SMOKE_FENCE], [_SMOKE_FENCE, *_FENCES], [*_FENCES, _SMOKE_FENCE]):
+        docs.append(_doc(telemetry_stmts=[_DSN, _CATALOG_RW, _CATALOG_LIST, _RW, {**_LIST, "prefix": fences}]))
+    for data in ([smoke_data], [smoke_data, *_CATALOG_RW["Resource"]], [*_CATALOG_RW["Resource"], smoke_data]):
+        docs.append(_doc(telemetry_stmts=[_DSN, {**_CATALOG_RW, "Resource": data}, _CATALOG_LIST, _RW, _LIST]))
+    for data in ([_SMOKE_DATA], [_SMOKE_DATA, *_DATA], [*_DATA, _SMOKE_DATA]):
+        docs.append(_doc(telemetry_stmts=[_DSN, _CATALOG_RW, {**_CATALOG_LIST, "prefix": data}, _RW, _LIST]))
     return docs
 
 
@@ -484,7 +481,7 @@ def test_grant_guard_rejects_delete() -> None:
     for doc in variants:
         with pytest.raises(AssertionError):
             assert_writer_blob_grant_shape(doc)
-    for root in _RW["Resource"]:
+    for root in (f"{_ARN_REF}/{_SMOKE_FENCE}", *_RW["Resource"]):
         reader_delete = _doc(
             reader_stmts=[{**_RW, "Sid": "ReaderDelete", "Action": ["s3:DeleteObjectVersion"], "Resource": [root]}]
         )
@@ -532,7 +529,8 @@ def test_scoped_login_guard_rejects_the_shared_login() -> None:
         _doc(telemetry_stmts=[{**_DSN, "Action": ["secretsmanager:*"]}, *rest]),
         _doc(telemetry_stmts=[{**_DSN, "Resource": [*_DSN["Resource"], f"{shared}.arn"]}, *rest]),
         _doc(telemetry_stmts=[{**_DSN, "Resource": [f"{_SCOPED_SECRET}.arn"]}, *rest]),
-        _doc(telemetry_stmts=[{**_DSN, "Resource": [f"{_PROD_SECRET}.arn"]}, *rest]),
+        _doc(telemetry_stmts=[{**_DSN, "Resource": [f"{_SCOPED_SECRET}.arn", f"{_PROD_SECRET}.arn"]}, *rest]),
+        _doc(telemetry_stmts=[{**_DSN, "Resource": [f"{_PROD_SECRET}.arn", f"{_SCOPED_SECRET}.arn"]}, *rest]),
         _doc(telemetry_stmts=[*_TELEMETRY_STMTS, {"Sid": "Any", "NotAction": ["s3:GetObject"], "Resource": ["*"]}]),
         _doc(telemetry_stmts=rest),
         _doc(telemetry_env={"TELEMETRY_DSN_SECRET_ID": f"{shared}.name"}),
@@ -556,7 +554,7 @@ def test_no_telemetry_state_guard_rejects_a_leaky_writer() -> None:
                 "TELEMETRY_META_SCHEMA": "local.ducklake_telemetry_meta_schema",
             }
         ),
-        _doc(writer_stmts=[_OPS_RW, {"Action": ["s3:GetObject"], "Resource": [_RW["Resource"][1]]}]),
+        _doc(writer_stmts=[_OPS_RW, {"Action": ["s3:GetObject"], "Resource": [_RW["Resource"][0]]}]),
     ]
     for doc in bad:
         with pytest.raises(AssertionError):

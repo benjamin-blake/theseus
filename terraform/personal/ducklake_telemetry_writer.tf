@@ -4,9 +4,9 @@
 # identities never reach ops_* verbs and the shared catalog login. The function binds the production
 # telemetry catalog (ducklake_telemetry, Decision 230) and connects as the production scoped login
 # (aws_secretsmanager_secret.ducklake_telemetry_writer_prod_dsn); the smoke binding belongs to the twin
-# (ducklake_telemetry_writer_smoke.tf, Decision 236). Until PLAN-telemetry-production-flip's narrow PR the
-# role also holds the smoke binding's grants, so a container still on the old env keeps working while the
-# flip's apply converges. Mirrors ducklake_maintenance_smoke.tf (the Decision 143 split precedent).
+# (ducklake_telemetry_writer_smoke.tf, Decision 236), so this role holds the production binding's grants only and a
+# pin-back to smoke first reverts PLAN-telemetry-production-flip's narrow PR (else every append is AccessDenied).
+# Mirrors ducklake_maintenance_smoke.tf (the Decision 143 split precedent).
 #
 # ---------------------------------------------------------------------------
 # APPLY POSTURE (environment-taxonomy.yaml guard_classification): the role CREATE and the
@@ -32,7 +32,7 @@ resource "aws_iam_role" "ducklake_telemetry_writer" {
   # Decision 144 (T2.48): mandatory broad-but-bounded exec-identity boundary.
   name = "agent-platform-ducklake-telemetry-writer"
   # Stale on purpose since the flip: an aws_iam_role update is outside in_budget_resource_types and would route the apply
-  # to tf-gated-apply (rec-4292 item 5's choice).
+  # to tf-gated-apply.
   description          = "Telemetry writer: S3 Get/Put on the smoke catalog data prefix and fenced blob root only, scoped catalog login read"
   permissions_boundary = "arn:aws:iam::${var.account_id}:policy/agent-platform-github-ci-apply-boundary"
   assume_role_policy   = data.aws_iam_policy_document.lambda_assume.json
@@ -52,24 +52,18 @@ resource "aws_iam_role_policy" "ducklake_telemetry_writer" {
         Resource = ["${aws_cloudwatch_log_group.ducklake_telemetry_writer.arn}:*"]
       },
       {
-        # Scoped catalog logins only; never the shared ducklake-neon-catalog-dsn. Both bindings until the narrow PR.
-        Sid    = "TelemetryDsnRead"
-        Effect = "Allow"
-        Action = ["secretsmanager:GetSecretValue"]
-        Resource = [
-          aws_secretsmanager_secret.ducklake_telemetry_writer_dsn.arn,
-          aws_secretsmanager_secret.ducklake_telemetry_writer_prod_dsn.arn,
-        ]
+        # The production scoped catalog login only; never the shared ducklake-neon-catalog-dsn or the twin's smoke login.
+        Sid      = "TelemetryDsnRead"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = [aws_secretsmanager_secret.ducklake_telemetry_writer_prod_dsn.arn]
       },
       {
-        # The smoke and production telemetry data prefixes ONLY. No Delete, and never the ops ducklake/ prefix.
-        Sid    = "TelemetryCatalogDataReadWrite"
-        Effect = "Allow"
-        Action = ["s3:GetObject", "s3:PutObject"]
-        Resource = [
-          "${aws_s3_bucket.data_lake.arn}/${local.ducklake_smoke_data_prefix}/*",
-          "${aws_s3_bucket.data_lake.arn}/${local.ducklake_telemetry_data_prefix}/*",
-        ]
+        # The production telemetry data prefix ONLY. No Delete, and never the ops ducklake/ prefix.
+        Sid      = "TelemetryCatalogDataReadWrite"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject"]
+        Resource = ["${aws_s3_bucket.data_lake.arn}/${local.ducklake_telemetry_data_prefix}/*"]
       },
       {
         Sid      = "TelemetryCatalogDataList"
@@ -78,20 +72,17 @@ resource "aws_iam_role_policy" "ducklake_telemetry_writer" {
         Resource = [aws_s3_bucket.data_lake.arn]
         Condition = {
           StringLike = {
-            "s3:prefix" = ["${local.ducklake_smoke_data_prefix}/*", "${local.ducklake_telemetry_data_prefix}/*"]
+            "s3:prefix" = ["${local.ducklake_telemetry_data_prefix}/*"]
           }
         }
       },
       {
-        # Fenced to the two catalogs' blob roots by their fixed locals, so a pin-back keeps both. No Delete: orphan deletion
-        # belongs to the maintenance role (rec-4033).
-        Sid    = "TelemetryBlobReadWrite"
-        Effect = "Allow"
-        Action = ["s3:GetObject", "s3:PutObject"]
-        Resource = [
-          "${aws_s3_bucket.data_lake.arn}/${local.telemetry_blob_data_prefix}/${local.ducklake_smoke_meta_schema}/*",
-          "${aws_s3_bucket.data_lake.arn}/${local.telemetry_blob_data_prefix}/${local.ducklake_telemetry_prod_meta_schema}/*",
-        ]
+        # Fenced to the production catalog's blob root by its fixed local, so a pin-back cannot widen it. No Delete: orphan
+        # deletion belongs to the maintenance role (rec-4033).
+        Sid      = "TelemetryBlobReadWrite"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject"]
+        Resource = ["${aws_s3_bucket.data_lake.arn}/${local.telemetry_blob_data_prefix}/${local.ducklake_telemetry_prod_meta_schema}/*"]
       },
       {
         Sid      = "TelemetryBlobList"
@@ -100,10 +91,7 @@ resource "aws_iam_role_policy" "ducklake_telemetry_writer" {
         Resource = [aws_s3_bucket.data_lake.arn]
         Condition = {
           StringLike = {
-            "s3:prefix" = [
-              "${local.telemetry_blob_data_prefix}/${local.ducklake_smoke_meta_schema}/*",
-              "${local.telemetry_blob_data_prefix}/${local.ducklake_telemetry_prod_meta_schema}/*",
-            ]
+            "s3:prefix" = ["${local.telemetry_blob_data_prefix}/${local.ducklake_telemetry_prod_meta_schema}/*"]
           }
         }
       },
@@ -255,9 +243,8 @@ resource "aws_cloudwatch_metric_alarm" "ducklake_telemetry_writer_errors" {
   }
 }
 
-# Writer alarms on the production MetaSchema series only, so the smoke twin can never trip them and they stay quiet
-# until PLAN-telemetry-production-flip points production traffic at this catalog. An OccRetryCount of 3 is the fourth
-# of OCC_MAX_ATTEMPTS = 5, one attempt short of exhaustion. The warm-wall p95 Decision 214 cl.4 names is unmeasured
+# Writer alarms on the production MetaSchema series only, so the smoke twin can never trip them. An OccRetryCount of 3
+# is the fourth of OCC_MAX_ATTEMPTS = 5, one attempt short of exhaustion. The warm-wall p95 Decision 214 cl.4 names is unmeasured
 # for this writer (rec-4482 owns it); CommitLatencyMs, the commit that dominates an append, is the alarmed series.
 resource "aws_cloudwatch_metric_alarm" "ducklake_telemetry_writer_occ" {
   alarm_name          = "ducklake-telemetry-writer-occ"

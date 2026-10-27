@@ -164,7 +164,6 @@ audit_invariants:
   - "Grain conflict rule (Decision 207): transcript_content refuses rows stored under one grain key that differ in any compared column, payload or not, with 500 grain_conflict {differing_rows} and never serves one of them as the row, because each page re-resolves the row and a per-page choice could splice two stored versions into one payload. Rows that agree on every compared column but store the payload two ways (one inline, one object) serve the inline row. grain_conflict is a catalog condition counted apart from object corruption."
   - "Exception to 'Rows are derived, never raw' above: transcript_content returns one stored row's payload bytes by its full grain key, never caller-chosen columns and never another row. It and session_tree_rows (the next exception) are the only event verbs that do, and neither is agent-facing."
   - "Exception to 'before any connection or SQL' above: transcript_content's offset-at-or-beyond-size refusal needs the row's content_bytes, so it answers 400 named_read_input after the resolve SQL, still naming the parameter and not echoing the value. Every other refusal happens before any connection."
-  - "The reader role's TelemetryBlobRead grant (s3:GetObject on telemetry-blobs/<meta_schema>/* only, no List) is reached only through transcript_content, which checks the row before serving bytes: with query_ops retired no caller SQL can name a table function over s3://, so the blob-object and object-store residuals are closed. rec-4292 keeps the remaining telemetry reader identity and tenant scoping (Decision 143 cl.1)."
   - "Verification verbs (telemetry slice 4, rec-4025; none agent-facing; served by agent-platform-ducklake-telemetry-reader, not by this function): session_tree_rows(session_id, offset, max_rows) returns every stored row of one tree, the rows sharing the root's tenant_id, project_id and session_started_at (all four tables, every parser_version, no dedupe), as table_name, row_json, total_rows and roots_in_tree, max_rows at most 2000; telemetry_orphan_counts(day_from, day_to, as_of) returns per day and telemetry join the child rows, the orphaned child rows split by whether their tree is quiescent past the idle threshold, the quiescent and pending tree counts and the conflicted grain-key count, over R4/R5-deduped rows of real-purpose projects; telemetry_root_sessions(day_from, day_to) returns each real-purpose root session's session_id, entity_ref, harness_session_key, branch, session_started_at, last_event_timestamp and its Decision 207 stamps. Windows span at most 7 days."
   - "Exception to 'Rows are derived, never raw' above: session_tree_rows returns the stored rows of exactly one tree, the compared columns plus created_timestamp and never content or content_uri, for verification callers only (the golden replay, the in-session source check and the daily verification monitor on the CI role), which hold the rows in memory for the comparison and never persist them; a page above the envelope guard answers 413 response_too_large and the caller halves max_rows (Decision 215 cl.6). Its callers print counts only."
   - "read_ops_current rejects a malformed `filter` (must carry BOTH column and value) loudly rather than degrading to an unfiltered full-table read (rec-2170 hardening)."
@@ -307,4 +306,15 @@ amendment_log:
       reader since the production flip (PLAN-telemetry-catalog-aware-capture), so no caller of this function sends an event
       verb or deadline_ms; the smoke-routed capture path raises NoEventReaderOnSmoke before any call. Rollback is a revert of
       the merge commit.
+  - date: "2026-10-27"
+    semantic_break: false
+    change_class: governance_note_add
+    summary: >-
+      PLAN-telemetry-production-flip PR narrow: the reader role's TelemetryBlobRead grant and the function's TELEMETRY_* env
+      are removed (terraform/personal/ducklake_lambdas.tf), so the invariant that described the grant and named its remaining
+      owner is closed and removed. The role reads only the ducklake/ and smoke data prefixes; event reads are the telemetry
+      reader's (Decision 236 cl.2).
+    migration_story: >-
+      No caller changes: the cleanup PR already stopped this function serving any verb that read the blob prefix or the
+      telemetry env. Rollback is a revert of the merge commit, after which the guarded apply restores the grant and env.
 previous_versions: []
