@@ -41,9 +41,9 @@ locals {
   # SSOT pin: config/lambda/ducklake/version.yaml -- must be try()-wrapped (validate_terraform_try gate)
   ducklake_version = try(yamldecode(file("${path.module}/../../config/lambda/ducklake/version.yaml")).duckdb_version, "")
 
-  # Telemetry (T2.36, slice 2a-2): pinned to the ISOLATED smoke catalog until a Decision moves it (slice 2c). The blob root
-  # is scoped by the catalog it serves, so smoke-era and production blobs never share a root.
-  ducklake_telemetry_meta_schema = "ducklake_smoke"
+  # Telemetry (T2.36): the writer's catalog pin, moved to the production telemetry catalog by Decision 230 (slice 2c's
+  # production flip). The blob root is scoped by the catalog it serves, so smoke-era and production blobs never share a root.
+  ducklake_telemetry_meta_schema = "ducklake_telemetry"
   telemetry_blob_data_prefix     = "telemetry-blobs"
   ducklake_telemetry_blob_root   = "s3://${aws_s3_bucket.data_lake.bucket}/${local.telemetry_blob_data_prefix}/${local.ducklake_telemetry_meta_schema}/"
 
@@ -51,7 +51,7 @@ locals {
   ducklake_telemetry_writer_function = "agent-platform-ducklake-telemetry-writer"
 
   # Production telemetry catalog (Decision 230): a sibling of ducklake/, never inside it, so the ops catalog's
-  # catalog-wide orphan cleanup never sees telemetry Parquet. The smoke pins above are unchanged until the flip.
+  # catalog-wide orphan cleanup never sees telemetry Parquet. The writer pin above holds the same value (Decision 230).
   ducklake_telemetry_data_prefix      = "ducklake-telemetry"
   ducklake_telemetry_data_path        = "s3://${aws_s3_bucket.data_lake.bucket}/ducklake-telemetry/"
   ducklake_telemetry_prod_meta_schema = "ducklake_telemetry"
@@ -267,7 +267,7 @@ resource "aws_iam_role_policy" "ducklake_reader" {
         Sid      = "TelemetryBlobRead"
         Effect   = "Allow"
         Action   = ["s3:GetObject"]
-        Resource = ["${aws_s3_bucket.data_lake.arn}/${local.telemetry_blob_data_prefix}/${local.ducklake_telemetry_meta_schema}/*"]
+        Resource = ["${aws_s3_bucket.data_lake.arn}/${local.telemetry_blob_data_prefix}/${local.ducklake_smoke_meta_schema}/*"]
       },
       {
         Sid      = "S3ListDataPrefix"
@@ -357,9 +357,10 @@ resource "aws_lambda_function" "ducklake_reader" {
       DUCKLAKE_DATA_PATH            = local.ducklake_prod_data_path
       DUCKLAKE_EXTENSION_DIRECTORY  = local.ducklake_extension_dir
       DUCKLAKE_FIELD_SEMANTICS_PATH = "/var/task/config/lambda/ducklake/field_semantics.yaml"
-      TELEMETRY_META_SCHEMA         = local.ducklake_telemetry_meta_schema
-      TELEMETRY_DATA_PATH           = local.ducklake_smoke_data_path
-      TELEMETRY_BLOB_ROOT           = local.ducklake_telemetry_blob_root
+      # The smoke binding by its fixed locals, never the moved writer pin: the rollback slot until PLAN-telemetry-production-flip's narrow PR.
+      TELEMETRY_META_SCHEMA = local.ducklake_smoke_meta_schema
+      TELEMETRY_DATA_PATH   = local.ducklake_smoke_data_path
+      TELEMETRY_BLOB_ROOT   = local.ducklake_telemetry_smoke_blob_root
     }
   }
 

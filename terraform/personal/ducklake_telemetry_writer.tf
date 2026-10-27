@@ -1,10 +1,12 @@
 # DuckLake telemetry writer Lambda (T2.36, slice 2a-2, option D part 1; Decision 143 cl.3, Decision 213).
 #
 # Telemetry write verbs get their own function, execution role and AWS_IAM Function URL so telemetry
-# identities never reach ops_* verbs and the shared catalog login. The role reaches S3 only on the
-# isolated ducklake_smoke catalog's data prefix and its fenced blob root, and connects to the catalog as
-# its own scoped login (aws_secretsmanager_secret.ducklake_telemetry_writer_dsn). Mirrors
-# ducklake_maintenance_smoke.tf (the Decision 143 split precedent).
+# identities never reach ops_* verbs and the shared catalog login. The function binds the production
+# telemetry catalog (ducklake_telemetry, Decision 230) and connects as the production scoped login
+# (aws_secretsmanager_secret.ducklake_telemetry_writer_prod_dsn); the smoke binding belongs to the twin
+# (ducklake_telemetry_writer_smoke.tf, Decision 236). Until PLAN-telemetry-production-flip's narrow PR the
+# role also holds the smoke binding's grants, so a container still on the old env keeps working while the
+# flip's apply converges. Mirrors ducklake_maintenance_smoke.tf (the Decision 143 split precedent).
 #
 # ---------------------------------------------------------------------------
 # APPLY POSTURE (environment-taxonomy.yaml guard_classification): the role CREATE and the
@@ -28,7 +30,9 @@ resource "aws_cloudwatch_log_group" "ducklake_telemetry_writer" {
 
 resource "aws_iam_role" "ducklake_telemetry_writer" {
   # Decision 144 (T2.48): mandatory broad-but-bounded exec-identity boundary.
-  name                 = "agent-platform-ducklake-telemetry-writer"
+  name = "agent-platform-ducklake-telemetry-writer"
+  # Stale on purpose since the flip: an aws_iam_role update is outside in_budget_resource_types and would route the apply
+  # to tf-gated-apply (rec-4292 item 5's choice).
   description          = "Telemetry writer: S3 Get/Put on the smoke catalog data prefix and fenced blob root only, scoped catalog login read"
   permissions_boundary = "arn:aws:iam::${var.account_id}:policy/agent-platform-github-ci-apply-boundary"
   assume_role_policy   = data.aws_iam_policy_document.lambda_assume.json
@@ -48,18 +52,24 @@ resource "aws_iam_role_policy" "ducklake_telemetry_writer" {
         Resource = ["${aws_cloudwatch_log_group.ducklake_telemetry_writer.arn}:*"]
       },
       {
-        # Scoped catalog login only; never the shared ducklake-neon-catalog-dsn.
-        Sid      = "TelemetryDsnRead"
-        Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue"]
-        Resource = [aws_secretsmanager_secret.ducklake_telemetry_writer_dsn.arn]
+        # Scoped catalog logins only; never the shared ducklake-neon-catalog-dsn. Both bindings until the narrow PR.
+        Sid    = "TelemetryDsnRead"
+        Effect = "Allow"
+        Action = ["secretsmanager:GetSecretValue"]
+        Resource = [
+          aws_secretsmanager_secret.ducklake_telemetry_writer_dsn.arn,
+          aws_secretsmanager_secret.ducklake_telemetry_writer_prod_dsn.arn,
+        ]
       },
       {
-        # Smoke catalog data prefix ONLY. No Delete, and never the production ducklake/ prefix.
-        Sid      = "TelemetryCatalogDataReadWrite"
-        Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:PutObject"]
-        Resource = ["${aws_s3_bucket.data_lake.arn}/${local.ducklake_smoke_data_prefix}/*"]
+        # The smoke and production telemetry data prefixes ONLY. No Delete, and never the ops ducklake/ prefix.
+        Sid    = "TelemetryCatalogDataReadWrite"
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:PutObject"]
+        Resource = [
+          "${aws_s3_bucket.data_lake.arn}/${local.ducklake_smoke_data_prefix}/*",
+          "${aws_s3_bucket.data_lake.arn}/${local.ducklake_telemetry_data_prefix}/*",
+        ]
       },
       {
         Sid      = "TelemetryCatalogDataList"
@@ -68,16 +78,20 @@ resource "aws_iam_role_policy" "ducklake_telemetry_writer" {
         Resource = [aws_s3_bucket.data_lake.arn]
         Condition = {
           StringLike = {
-            "s3:prefix" = ["${local.ducklake_smoke_data_prefix}/*"]
+            "s3:prefix" = ["${local.ducklake_smoke_data_prefix}/*", "${local.ducklake_telemetry_data_prefix}/*"]
           }
         }
       },
       {
-        # Fenced to the pinned catalog's blob root. No Delete: orphan deletion belongs to the maintenance role (rec-4033).
-        Sid      = "TelemetryBlobReadWrite"
-        Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:PutObject"]
-        Resource = ["${aws_s3_bucket.data_lake.arn}/${local.telemetry_blob_data_prefix}/${local.ducklake_telemetry_meta_schema}/*"]
+        # Fenced to the two catalogs' blob roots by their fixed locals, so a pin-back keeps both. No Delete: orphan deletion
+        # belongs to the maintenance role (rec-4033).
+        Sid    = "TelemetryBlobReadWrite"
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:PutObject"]
+        Resource = [
+          "${aws_s3_bucket.data_lake.arn}/${local.telemetry_blob_data_prefix}/${local.ducklake_smoke_meta_schema}/*",
+          "${aws_s3_bucket.data_lake.arn}/${local.telemetry_blob_data_prefix}/${local.ducklake_telemetry_prod_meta_schema}/*",
+        ]
       },
       {
         Sid      = "TelemetryBlobList"
@@ -86,7 +100,10 @@ resource "aws_iam_role_policy" "ducklake_telemetry_writer" {
         Resource = [aws_s3_bucket.data_lake.arn]
         Condition = {
           StringLike = {
-            "s3:prefix" = ["${local.telemetry_blob_data_prefix}/${local.ducklake_telemetry_meta_schema}/*"]
+            "s3:prefix" = [
+              "${local.telemetry_blob_data_prefix}/${local.ducklake_smoke_meta_schema}/*",
+              "${local.telemetry_blob_data_prefix}/${local.ducklake_telemetry_prod_meta_schema}/*",
+            ]
           }
         }
       },
@@ -116,7 +133,8 @@ resource "aws_lambda_function" "ducklake_telemetry_writer" {
   timeout       = 120
   memory_size   = 3008 # The writer's baseline (Decision 82).
 
-  # Bounds catalog sessions to 5 containers (connection budget); slice 2c re-sizes it.
+  # Bounds catalog sessions to 5 containers (2 x 5 within the production login's limit of 10); re-size when Throttles > 0
+  # or OccRetryCount p95 >= 2 over 7 days (PLAN-telemetry-production-catalog).
   reserved_concurrent_executions = 5
 
   s3_bucket = aws_s3_bucket.data_lake.id
@@ -130,11 +148,11 @@ resource "aws_lambda_function" "ducklake_telemetry_writer" {
   environment {
     variables = {
       TELEMETRY_META_SCHEMA         = local.ducklake_telemetry_meta_schema
-      TELEMETRY_DATA_PATH           = local.ducklake_smoke_data_path
+      TELEMETRY_DATA_PATH           = local.ducklake_telemetry_data_path
       TELEMETRY_BLOB_ROOT           = local.ducklake_telemetry_blob_root
       DUCKLAKE_EXTENSION_DIRECTORY  = local.ducklake_extension_dir
       DUCKLAKE_FIELD_SEMANTICS_PATH = "/var/task/config/lambda/ducklake/field_semantics.yaml"
-      TELEMETRY_DSN_SECRET_ID       = aws_secretsmanager_secret.ducklake_telemetry_writer_dsn.name
+      TELEMETRY_DSN_SECRET_ID       = aws_secretsmanager_secret.ducklake_telemetry_writer_prod_dsn.name
     }
   }
 
