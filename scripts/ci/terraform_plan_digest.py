@@ -6,10 +6,11 @@ Exit 0 digest printed, 1 plan unreadable or not a JSON object.
 
 The reviewer sees addresses (instance keys stripped), types, actions, changed top-level attribute
 NAMES and output names -- never a Terraform value. Exactly three per-type renderers print a value
-(IAM policy statement actions added/removed, aws_lambda_permission principal/action/function_name,
-aws_lambda_function_url authorization_type), and only when that value appears verbatim as a
-double-quoted literal in the public .tf files given with --literals-from; anything else prints
-<non-literal>. Plan JSON is never the source of a printed value, so a variable, state or sensitive
+(IAM policy statement actions and Sids added/removed/modified, aws_lambda_permission
+principal/action/function_name, aws_lambda_function_url authorization_type), and only when that value
+appears verbatim as a double-quoted literal in the public .tf files given with --literals-from;
+anything else prints <non-literal>. IAM Resource/Condition/Action changes show per Sid as element
+COUNTS only. Plan JSON is never the source of a printed value, so a variable, state or sensitive
 value cannot reach the reviewer, its prompt or its archived transcript.
 
 Changes are iterated ONLY through terraform_apply_guard.iter_resource_changes (the verdict's own
@@ -131,10 +132,10 @@ def _changed_names(before: Any, after: Any, after_unknown: Any) -> list[str]:
     return sorted(_clean(k) for k in names if before_d.get(k) != after_d.get(k) or unknown_d.get(k) is True)
 
 
-def _statement_tokens(policy_json: Any) -> Optional[dict[str, set[str]]]:
-    """Effect -> action tokens (NotAction tokens prefixed 'not '), or None when unparseable."""
+def _statements(policy_json: Any) -> Optional[list[dict]]:
+    """Policy statements as a list, [] for no policy, or None when unparseable."""
     if policy_json is None:
-        return {}
+        return []
     try:
         doc = json.loads(policy_json) if isinstance(policy_json, str) else policy_json
     except (json.JSONDecodeError, ValueError):
@@ -144,12 +145,15 @@ def _statement_tokens(policy_json: Any) -> Optional[dict[str, set[str]]]:
     statements = doc.get("Statement", [])
     if isinstance(statements, dict):
         statements = [statements]
-    if not isinstance(statements, list):
+    if not isinstance(statements, list) or not all(isinstance(stmt, dict) for stmt in statements):
         return None
+    return statements
+
+
+def _statement_tokens(statements: list[dict]) -> dict[str, set[str]]:
+    """Effect -> action tokens (NotAction tokens prefixed 'not ')."""
     tokens: dict[str, set[str]] = {}
     for stmt in statements:
-        if not isinstance(stmt, dict):
-            return None
         effect = "Allow" if stmt.get("Effect") == "Allow" else "Deny" if stmt.get("Effect") == "Deny" else "Other"
         bucket = tokens.setdefault(effect, set())
         for key, prefix in (("Action", ""), ("NotAction", "not ")):
@@ -161,6 +165,56 @@ def _statement_tokens(policy_json: Any) -> Optional[dict[str, set[str]]]:
     return tokens
 
 
+def _count(value: Any) -> int:
+    if value is None:
+        return 0
+    return len(value) if isinstance(value, list) else 1
+
+
+def _condition_count(value: Any) -> int:
+    if not isinstance(value, dict):
+        return 0
+    return sum(len(operands) if isinstance(operands, dict) else 1 for operands in value.values())
+
+
+def _sid_summaries(statements: list[dict]) -> dict[str, tuple[str, tuple[int, int, int]]]:
+    """Sid -> (content fingerprint, (Action, Resource, Condition) element counts); the fingerprint is never printed."""
+    out: dict[str, tuple[str, tuple[int, int, int]]] = {}
+    for index, stmt in enumerate(statements):
+        sid = stmt.get("Sid")
+        key = sid if isinstance(sid, str) and sid else f"(no Sid #{index + 1})"
+        while key in out:
+            key += "'"
+        counts = (
+            _count(stmt.get("Action", stmt.get("NotAction"))),
+            _count(stmt.get("Resource", stmt.get("NotResource"))),
+            _condition_count(stmt.get("Condition")),
+        )
+        out[key] = (json.dumps(stmt, sort_keys=True, default=str), counts)
+    return out
+
+
+def _gate_sid(sid: str, literals: frozenset[str]) -> str:
+    return sid if sid.startswith("(no Sid #") else _gate(sid, literals)
+
+
+def _render_sids(old: list[dict], new: list[dict], literals: frozenset[str]) -> list[str]:
+    before, after = _sid_summaries(old), _sid_summaries(new)
+    added = sorted(_gate_sid(k, literals) for k in after.keys() - before.keys())
+    removed = sorted(_gate_sid(k, literals) for k in before.keys() - after.keys())
+    changed = []
+    for key in sorted(before.keys() & after.keys()):
+        if before[key][0] != after[key][0]:
+            (a0, r0, c0), (a1, r1, c1) = before[key][1], after[key][1]
+            changed.append(f"{_gate_sid(key, literals)}: Action {a0}->{a1}, Resource {r0}->{r1}, Condition {c0}->{c1}")
+    parts = []
+    if added or removed:
+        parts.append(f"Sids +[{', '.join(added)}] -[{', '.join(removed)}]")
+    if changed:
+        parts.append(f"Sids modified [{'; '.join(changed)}]")
+    return parts
+
+
 def _gate_token(token: str, literals: frozenset[str]) -> str:
     if token == NON_LITERAL:
         return token
@@ -169,24 +223,67 @@ def _gate_token(token: str, literals: frozenset[str]) -> str:
     return _gate(token, literals)
 
 
-def _render_policy(before: Any, after: Any, unknown: Any, literals: frozenset[str]) -> str:
+def _render_policy(before: Any, after: Any, unknown: Any, literals: frozenset[str], deferred: str = "") -> str:
     before_d = before if isinstance(before, dict) else {}
     after_d = after if isinstance(after, dict) else {}
     if (unknown if isinstance(unknown, dict) else {}).get("policy") is True:
-        return " policy=(known after apply)"
+        return f" policy=(known after apply{deferred})"
     if before_d.get("policy") == after_d.get("policy"):
         return ""
-    old = _statement_tokens(before_d.get("policy"))
-    new = _statement_tokens(after_d.get("policy"))
+    old = _statements(before_d.get("policy"))
+    new = _statements(after_d.get("policy"))
     if old is None or new is None:
         return " policy=<unparsed>"
+    old_tokens, new_tokens = _statement_tokens(old), _statement_tokens(new)
     parts: list[str] = []
-    for effect in sorted(set(old) | set(new)):
-        added = sorted(_gate_token(t, literals) for t in new.get(effect, set()) - old.get(effect, set()))
-        removed = sorted(_gate_token(t, literals) for t in old.get(effect, set()) - new.get(effect, set()))
+    for effect in sorted(set(old_tokens) | set(new_tokens)):
+        added = sorted(_gate_token(t, literals) for t in new_tokens.get(effect, set()) - old_tokens.get(effect, set()))
+        removed = sorted(_gate_token(t, literals) for t in old_tokens.get(effect, set()) - new_tokens.get(effect, set()))
         if added or removed:
             parts.append(f"{effect} +[{', '.join(added)}] -[{', '.join(removed)}]")
-    return " policy: " + "; ".join(parts) if parts else ""
+    parts.extend(_render_sids(old, new, literals))
+    return " policy: " + "; ".join(parts) if parts else " policy: changed (no action, Sid, or count delta)"
+
+
+_REASON = re.compile(r"[a-z_]{1,64}")
+DEFERRED_READ = "read_because_dependency_pending"
+
+
+def _config_resources(module: Any, prefix: str = "") -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    if not isinstance(module, dict):
+        return out
+    for res in module.get("resources") or []:
+        if isinstance(res, dict) and isinstance(res.get("address"), str):
+            out[strip_instance_keys(prefix + res["address"])] = res
+    for name, call in (module.get("module_calls") or {}).items():
+        if isinstance(call, dict):
+            out.update(_config_resources(call.get("module"), f"{prefix}module.{name}."))
+    return out
+
+
+def _deferred_context(plan: dict) -> tuple[frozenset[str], dict[str, dict]]:
+    pending = frozenset(
+        strip_instance_keys(str(e.get("address", "")))
+        for e in iter_resource_changes(plan)
+        if e.get("action_reason") == DEFERRED_READ
+    )
+    config = plan.get("configuration")
+    return pending, _config_resources(config.get("root_module")) if isinstance(config, dict) and pending else {}
+
+
+def _deferred_note(entry: dict, pending: frozenset[str], config: dict[str, dict]) -> str:
+    if not pending:
+        return ""
+    address = strip_instance_keys(str(entry.get("address", "")))
+    expr = ((config.get(address) or {}).get("expressions") or {}).get("policy")
+    refs = expr.get("references") if isinstance(expr, dict) else None
+    linked = sorted(
+        {r for r in pending if any(isinstance(ref, str) and (ref == r or ref.startswith(r + ".")) for ref in refs or [])}
+    )
+    if linked:
+        return "; deferred data read: " + ", ".join(linked)
+    return "; plan has deferred data reads (" + DEFERRED_READ + ")"
 
 
 def _field(before: Any, after: Any, name: str) -> Any:
@@ -195,28 +292,33 @@ def _field(before: Any, after: Any, name: str) -> Any:
     return after_d.get(name, before_d.get(name))
 
 
-def _change_line(entry: dict, literals: frozenset[str]) -> str:
+def _change_line(
+    entry: dict, literals: frozenset[str], pending: frozenset[str] = frozenset(), config: Optional[dict] = None
+) -> str:
     change = entry.get("change") or {}
     rtype = entry.get("type", "<unknown>")
     before, after, unknown = change.get("before"), change.get("after"), change.get("after_unknown")
     names = _changed_names(before, after, unknown)
     detail = ""
     if rtype in _POLICY_TYPES:
-        detail = _render_policy(before, after, unknown, literals)
+        detail = _render_policy(before, after, unknown, literals, _deferred_note(entry, pending, config or {}))
     elif rtype == "aws_lambda_permission":
         detail = " " + " ".join(f"{f}={_gate(_field(before, after, f), literals)}" for f in _LAMBDA_PERMISSION_FIELDS)
     elif rtype == "aws_lambda_function_url":
         detail = f" authorization_type={_gate(_field(before, after, 'authorization_type'), literals)}"
     actions = ",".join(_clean(a) for a in change.get("actions") or [])
     address = _clean(strip_instance_keys(str(entry.get("address", "<unknown>"))))
-    return f"- {address} ({_clean(rtype)}) actions=[{actions}] changed=[{', '.join(names)}]{detail}"
+    reason = entry.get("action_reason")
+    why = f" reason={reason}" if isinstance(reason, str) and _REASON.fullmatch(reason) else ""
+    return f"- {address} ({_clean(rtype)}) actions=[{actions}]{why} changed=[{', '.join(names)}]{detail}"
 
 
 def build_digest(plan: dict, literals: frozenset[str] = frozenset(), size_cap: int = DIGEST_SIZE_CAP) -> str:
     """Names-only digest of plan; the preamble is carved out of the truncation budget."""
     counts: dict[str, int] = {}
+    pending, config = _deferred_context(plan)
     for entry in iter_resource_changes(plan):
-        line = _redact(_change_line(entry, literals))
+        line = _redact(_change_line(entry, literals, pending, config))
         counts[line] = counts.get(line, 0) + 1
     outputs = plan.get("output_changes")
     output_lines: list[str] = []
