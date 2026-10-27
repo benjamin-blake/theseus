@@ -22,6 +22,7 @@ import yaml
 
 from scripts.checks import _common, registry
 from scripts.checks.iam_tf import validate_invoke_implies_resolve as _vir
+from scripts.checks.iam_tf._secure_string_coverage import top_level_attr
 
 # Path-shaped literal (evaluator_kinds.check, contract-population.yaml): a full joined literal is
 # admitted as STRONGER evidence of reading than a bare basename match.
@@ -31,8 +32,7 @@ _VERSION_RESOURCE_RE = re.compile(r'resource\s+"aws_secretsmanager_secret_versio
 _SSM_RESOURCE_RE = re.compile(r'resource\s+"aws_ssm_parameter"\s+"([a-zA-Z0-9_]+)"\s*\{')
 _DATA_VERSION_RE = re.compile(r'data\s+"aws_secretsmanager_secret_version"\s+"([a-zA-Z0-9_]+)"\s*\{')
 _DATA_SSM_RE = re.compile(r'data\s+"aws_ssm_parameter"\s+"([a-zA-Z0-9_]+)"\s*\{')
-_TYPE_RE = re.compile(r'^\s*type\s*=\s*("[^"]*"|\S+)', re.MULTILINE)
-_NAME_RE = re.compile(r'^\s*name\s*=\s*("[^"]*"|\S+)', re.MULTILINE)
+_DATA_BYPATH_RE = re.compile(r'data\s+"aws_ssm_parameters_by_path"\s+"([a-zA-Z0-9_]+)"\s*\{')
 
 
 def _load_exceptions(contract_path: Path) -> set[str] | None:
@@ -42,6 +42,11 @@ def _load_exceptions(contract_path: Path) -> set[str] | None:
     data: dict[str, Any] = yaml.safe_load(contract_path.read_text(encoding="utf-8")) or {}
     exceptions = data.get("value_exceptions") or []
     return {str(e["resource"]) for e in exceptions if isinstance(e, dict) and "resource" in e}
+
+
+def _plain_literal(raw: str) -> bool:
+    """A quoted string with no interpolation: the only name form the scan can judge."""
+    return raw.startswith('"') and raw.endswith('"') and "${" not in raw
 
 
 def _scan(terraform_dir: Path) -> tuple[list[tuple[str, str, str]], int]:
@@ -59,18 +64,22 @@ def _scan(terraform_dir: Path) -> tuple[list[tuple[str, str, str]], int]:
             found.append(("value", f"aws_secretsmanager_secret_version.{m.group(1)}", rel))
         for m in _SSM_RESOURCE_RE.finditer(text):
             examined += 1
-            type_m = _TYPE_RE.search(_vir._extract_block(text, m.end() - 1))
-            if type_m is None or type_m.group(1) not in ('"String"', '"StringList"'):
+            if top_level_attr(_vir._extract_block(text, m.end() - 1), "type") not in ('"String"', '"StringList"'):
                 found.append(("value", f"aws_ssm_parameter.{m.group(1)}", rel))
         for m in _DATA_VERSION_RE.finditer(text):
             examined += 1
             found.append(("data_read", f"data.aws_secretsmanager_secret_version.{m.group(1)}", rel))
         for m in _DATA_SSM_RE.finditer(text):
             examined += 1
-            name_m = _NAME_RE.search(_vir._extract_block(text, m.end() - 1))
-            raw = name_m.group(1) if name_m else ""
-            if not raw.startswith('"') or raw.startswith('"/secret/'):
+            raw = top_level_attr(_vir._extract_block(text, m.end() - 1), "name") or ""
+            if not _plain_literal(raw) or raw.startswith('"/secret/'):
                 found.append(("data_read", f"data.aws_ssm_parameter.{m.group(1)}", rel))
+        for m in _DATA_BYPATH_RE.finditer(text):
+            examined += 1
+            raw = top_level_attr(_vir._extract_block(text, m.end() - 1), "path") or ""
+            path = raw.strip('"')
+            if not _plain_literal(raw) or "/secret/".startswith(path.rstrip("/") + "/") or path.startswith("/secret"):
+                found.append(("data_read", f"data.aws_ssm_parameters_by_path.{m.group(1)}", rel))
     return found, examined
 
 

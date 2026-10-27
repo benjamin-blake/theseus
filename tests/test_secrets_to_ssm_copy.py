@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -34,6 +35,8 @@ class _SM:
 
 
 class _SSM:
+    exceptions = SimpleNamespace(ParameterNotFound=_NotFound)
+
     def __init__(self, existing: dict[str, str] | None = None) -> None:
         self.store = dict(existing or {})
         self.puts: list[dict[str, Any]] = []
@@ -88,6 +91,7 @@ def test_overwrite_replaces_without_tags(capsys: pytest.CaptureFixture[str]) -> 
     code, out = _run(["--overwrite"], _SM(), ssm, capsys)
     assert code == 0 and "overwritten" in out
     assert len(ssm.puts) == 1 and ssm.puts[0]["Overwrite"] is True and "Tags" not in ssm.puts[0]
+    assert "Tier" not in ssm.puts[0]
 
 
 def test_tier_switches_above_4096_bytes(capsys: pytest.CaptureFixture[str]) -> None:

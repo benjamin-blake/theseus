@@ -13,6 +13,7 @@ from scripts.checks.iam_tf._secure_string_coverage import (
     covers_own_name,
     is_secure_string,
     secure_string_read_missing,
+    type_attr,
 )
 from scripts.checks.iam_tf.validate_ci_refresh_read_coverage import validate_ci_refresh_read_coverage
 from tests.checks.iam_tf.validate_ci_refresh_read_coverage.conftest import (  # noqa: F401 -- fixture import
@@ -41,6 +42,18 @@ def test_covers_own_name_red_cases() -> None:
     assert not covers_own_name("p", "/secret/a", "local.arns")
     assert not covers_own_name("p", "/secret/a", '["arn:aws:ssm:*:*:parameter/agent-platform/*"]')
     assert not covers_own_name("p", None, '["arn:aws:ssm:*:*:parameter/secret/a"]')
+
+
+def test_wildcard_entry_never_covers_a_secret_parameter() -> None:
+    assert not covers_own_name("p", "/secret/a", '["arn:aws:ssm:*:*:parameter/secret/*"]')
+    assert covers_own_name("p", "/agent-platform/a", '["arn:aws:ssm:*:*:parameter/agent-platform/*"]')
+
+
+def test_nested_tags_type_does_not_hide_a_securestring() -> None:
+    body = 'name = "/secret/a"\ntags = {\n  type = "String"\n}\ntype = "SecureString"'
+    assert type_attr("aws_ssm_parameter", body) == {"type": '"SecureString"'}
+    assert type_attr("aws_lambda_function", body) == {}
+    assert type_attr("aws_ssm_parameter", 'name = "/secret/a"') == {}
 
 
 def test_covers_own_name_green_cases() -> None:

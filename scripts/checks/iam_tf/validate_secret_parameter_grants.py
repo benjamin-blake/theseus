@@ -27,10 +27,23 @@ VALUE_VERBS = (
     "ssm:putparameter",
 )
 BY_PATH_VERB = "ssm:getparametersbypath"
-PROBE = "arn:aws:ssm:region:account:parameter/secret/probe"
+_ARN_PREFIX = "arn:aws:ssm:region:account:parameter/secret/"
+PROBE = _ARN_PREFIX + "probe"
+_SECRET_NAMES = (
+    "probe",
+    "neon-api-key",
+    "agent-platform-terraform-personal-tfvars",
+    "agent-platform-deepseek-api-key",
+    "agent-platform-anthropic-api-key",
+    "agent-platform-ducklake-telemetry-writer-dsn",
+    "agent-platform-ducklake-telemetry-writer-prod-dsn",
+    "agent-platform-ducklake-telemetry-reader-dsn",
+    "agent-platform-ducklake-smoke-maintainer-dsn",
+    "ducklake-neon-catalog-dsn",
+)
 _ANCESTOR_SUFFIXES = (":parameter", ":parameter/", ":parameter/secret", ":parameter/secret/")
 _EXCEPTIONS = (
-    ("github_ci_apply_boundary.tf", None),
+    ("github_ci_apply_boundary.tf", "DataPlaneAllow"),
     ("platform_admin_policies.tf", "SecretParameterAdmin"),
 )
 _INTERP_RE = re.compile(r"\$\{[^}]*\}")
@@ -54,7 +67,7 @@ def normalise(resource: str) -> str:
 def reaches_secret(resource: str, by_path: bool) -> bool:
     """True when the resource string can name a parameter/secret/ ARN (each ${...} counts as *)."""
     norm = normalise(resource)
-    if fnmatch.fnmatchcase(PROBE, norm) or ":parameter/secret/" in norm:
+    if any(fnmatch.fnmatchcase(_ARN_PREFIX + n, norm) for n in _SECRET_NAMES) or ":parameter/secret/" in norm:
         return True
     return by_path and norm.endswith(_ANCESTOR_SUFFIXES)
 
@@ -88,7 +101,8 @@ def read_field(body: str, name: str) -> tuple[str, list[str] | None]:
 
 
 def _strip_comments(text: str) -> str:
-    return "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith(("#", "//")))
+    lines = (ln for ln in text.splitlines() if not ln.lstrip().startswith(("#", "//")))
+    return "\n".join(re.sub(r'\s+#[^"\n]*$', "", ln) for ln in lines)
 
 
 def _statement(body: str, style: str) -> dict:
@@ -163,7 +177,12 @@ def validate_secret_parameter_grants(failed: list[str], root: Path | None = None
     examined = 0
     before = len(failed)
     for path in files:
-        for stmt in parse_statements(path.read_text(encoding="utf-8")):
+        try:
+            statements = parse_statements(path.read_text(encoding="utf-8"))
+        except ValueError:
+            failed.append(f"{key} {path.parent.name}/{path.name} has unbalanced braces -- cannot be parsed (fail closed)")
+            continue
+        for stmt in statements:
             examined += 1
             problem = _finding(stmt)
             if problem and not _excepted(path.name, stmt["sid"]):

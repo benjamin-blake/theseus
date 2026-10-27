@@ -36,11 +36,8 @@ def _tier(value: str) -> str:
 def _read_target(ssm: Any, target: str) -> str | None:
     try:
         return ssm.get_parameter(Name=target, WithDecryption=True)["Parameter"]["Value"]
-    except Exception as exc:  # noqa: BLE001 -- narrowed by the error code below
-        code = getattr(exc, "response", {}).get("Error", {}).get("Code")
-        if code == "ParameterNotFound":
-            return None
-        raise
+    except ssm.exceptions.ParameterNotFound:
+        return None
 
 
 def copy_one(sm: Any, ssm: Any, name: str, *, verify: bool, overwrite: bool) -> tuple[str, str]:
@@ -58,7 +55,8 @@ def copy_one(sm: Any, ssm: Any, name: str, *, verify: bool, overwrite: bool) -> 
         return "unchanged", tier
     if verify or not overwrite:
         return "mismatch", tier
-    ssm.put_parameter(Name=target, Value=source, Type="SecureString", Tier=tier, Overwrite=True)
+    grown = {"Tier": "Advanced"} if tier == "Advanced" else {}
+    ssm.put_parameter(Name=target, Value=source, Type="SecureString", Overwrite=True, **grown)
     return "overwritten", tier
 
 

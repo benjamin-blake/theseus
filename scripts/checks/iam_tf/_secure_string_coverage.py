@@ -12,10 +12,10 @@ import fnmatch
 import re
 
 from scripts.checks.iam_tf.validate_invoke_implies_resolve import _QUOTED_RE
+from scripts.checks.iam_tf.validate_secret_parameter_grants import normalise
 
 READ_ACTIONS = ("ssm:GetParameter", "ssm:ListTagsForResource")
 WRITE_ACTIONS = ("ssm:PutParameter", "ssm:DeleteParameter", "ssm:AddTagsToResource", "ssm:RemoveTagsFromResource")
-_INTERP_RE = re.compile(r"\$\{[^}]*\}")
 _PLAIN_TYPES = ('"String"', '"StringList"')
 
 
@@ -35,7 +35,11 @@ def covers_own_name(rname: str, resolved_name: str | None, resources_raw: str) -
     if not resolved_name:
         return False
     target = f"arn:aws:ssm:region:account:parameter{resolved_name}"
-    return any(fnmatch.fnmatchcase(target, _INTERP_RE.sub("*", entry)) for entry in _QUOTED_RE.findall(resources_raw))
+    secret = resolved_name.startswith("/secret/")
+    return any(
+        fnmatch.fnmatchcase(target, normalise(entry)) and not (secret and ("*" in entry or "?" in entry))
+        for entry in _QUOTED_RE.findall(resources_raw)
+    )
 
 
 def _all_of_covered(actions: tuple[str, ...], statements: list[dict], rname: str, resolved_name: str | None) -> list[str]:
@@ -53,14 +57,21 @@ def secure_string_read_missing(rname: str, resolved_name: str | None, statements
     return _all_of_covered(READ_ACTIONS, statements, rname, resolved_name)
 
 
+def top_level_attr(body: str, attr: str) -> str | None:
+    """The raw value text of `attr = ...` at brace depth 0 of a block body (a nested map's same-named key never matches)."""
+    depth = 0
+    for line in body.splitlines():
+        m = re.match(rf"\s*{attr}\s*=\s*(.+?)\s*$", line)
+        if depth == 0 and m:
+            return m.group(1)
+        depth += line.count("{") - line.count("}")
+    return None
+
+
 def type_attr(rtype: str, body: str) -> dict[str, str]:
-    """The raw type attribute of an aws_ssm_parameter body ({} for other types or when it is not a plain reference)."""
-    m = (
-        re.search(r'\btype\s*=\s*("(?:[^"\\]|\\.)*"|local\.\w+|aws_\w+\.\w+\.\w+)', body)
-        if rtype == "aws_ssm_parameter"
-        else None
-    )
-    return {"type": m.group(1)} if m else {}
+    """The raw top-level type attribute of an aws_ssm_parameter body ({} for other types or when it is absent)."""
+    value = top_level_attr(body, "type") if rtype == "aws_ssm_parameter" else None
+    return {"type": value} if value else {}
 
 
 def secure_string_findings(
@@ -107,6 +118,6 @@ def check_secure_string_write_coverage(
         if missing:
             failed.append(
                 f"{key} SecureString aws_ssm_parameter {rname!r} in {fname} lacks {missing} on a Resource covering its own "
-                "name in the apply role (Decision 237: the parameter/agent-platform/* marker does not cover a SecureString)"
+                "name in the apply role (Decision 237: a /secret/ parameter is covered only by its own literal ARN)"
             )
     return asserted

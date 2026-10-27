@@ -79,8 +79,30 @@ def test_deny_statement_is_ignored(tmp_path: Path) -> None:
     assert _run(tmp_path, {"personal/x.tf": text}) == []
 
 
-def test_boundary_file_is_excepted(tmp_path: Path) -> None:
-    assert _run(tmp_path, {"bootstrap/github_ci_apply_boundary.tf": RED["ssm_star_on_star"]}) == []
+def test_boundary_ceiling_statement_excepted_by_sid_only(tmp_path: Path) -> None:
+    ceiling = _json_stmt('["ssm:*"]', '["*"]', sid="DataPlaneAllow")
+    assert _run(tmp_path, {"bootstrap/github_ci_apply_boundary.tf": ceiling}) == []
+    assert len(_run(tmp_path, {"bootstrap/github_ci_apply_boundary.tf": RED["ssm_star_on_star"]})) == 1
+
+
+@pytest.mark.parametrize("pattern", ["parameter/*/neon-api-key", "parameter/s*/neon-api-key", "parameter/*-api-key"])
+def test_name_shaped_patterns_reaching_a_real_secret_fail(tmp_path: Path, pattern: str) -> None:
+    assert (
+        len(
+            _run(
+                tmp_path, {"personal/x.tf": _json_stmt('["ssm:GetParameter"]', f'["{PREFIX[: -len("parameter")]}{pattern}"]')}
+            )
+        )
+        == 1
+    )
+
+
+def test_trailing_comment_brace_and_unbalanced_file(tmp_path: Path) -> None:
+    ok = _json_stmt('["ssm:GetParameter"]', f'["{PREFIX}/agent-platform/x"]') + "# note {\n"
+    ok = ok.replace('Sid = "S"', 'Sid = "S" # trailing {')
+    assert _run(tmp_path, {"personal/x.tf": ok}) == []
+    failed = _run(tmp_path, {"personal/y.tf": 'resource "x" "y" {\n'})
+    assert len(failed) == 1 and "unbalanced" in failed[0]
 
 
 def test_admin_statement_excepted_by_sid_only(tmp_path: Path) -> None:
