@@ -4,7 +4,8 @@
 # identities never reach ops_* verbs and the shared catalog login. The function binds the production
 # telemetry catalog (ducklake_telemetry, Decision 230) and connects as the production scoped login
 # (aws_secretsmanager_secret.ducklake_telemetry_writer_prod_dsn); the smoke binding belongs to the twin
-# (ducklake_telemetry_writer_smoke.tf, Decision 236), so this role holds the production binding's grants only.
+# (ducklake_telemetry_writer_smoke.tf, Decision 236), so this role holds the production binding's grants only and a
+# pin-back to smoke first reverts PLAN-telemetry-production-flip's narrow PR (else every append is AccessDenied).
 # Mirrors ducklake_maintenance_smoke.tf (the Decision 143 split precedent).
 #
 # ---------------------------------------------------------------------------
@@ -242,9 +243,8 @@ resource "aws_cloudwatch_metric_alarm" "ducklake_telemetry_writer_errors" {
   }
 }
 
-# Writer alarms on the production MetaSchema series only, so the smoke twin can never trip them and they stay quiet
-# until PLAN-telemetry-production-flip points production traffic at this catalog. An OccRetryCount of 3 is the fourth
-# of OCC_MAX_ATTEMPTS = 5, one attempt short of exhaustion. The warm-wall p95 Decision 214 cl.4 names is unmeasured
+# Writer alarms on the production MetaSchema series only, so the smoke twin can never trip them. An OccRetryCount of 3
+# is the fourth of OCC_MAX_ATTEMPTS = 5, one attempt short of exhaustion. The warm-wall p95 Decision 214 cl.4 names is unmeasured
 # for this writer (rec-4482 owns it); CommitLatencyMs, the commit that dominates an append, is the alarmed series.
 resource "aws_cloudwatch_metric_alarm" "ducklake_telemetry_writer_occ" {
   alarm_name          = "ducklake-telemetry-writer-occ"
