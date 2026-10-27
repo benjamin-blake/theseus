@@ -191,6 +191,8 @@ conditions:
 
 **Related:** Decisions 93, 184, 185, 194, 199, 205, 206, 211, 212, 217; T4.15, T4.27, T4.32, T4.34.
 
+> **Update (2026-10-27):** the Coverage line's billing_shape local (rec-4561) is now held by inference-tier-rows-role-and-billing-shape, inference-local-server-credential-holder, telemetry-writer-admits-billing-shape-local and telemetry-local-cost-derives-null. No clause changes.
+
 ---
 
 ## Decision 233: The open core is customer-owned -- scale is never blocked and the tooling that makes it painless is paid, the free tier is a framework with no identity system of its own and GitHub holds approval authority, champion first (amends Decision 209 clause 1 and Decision 184 clauses 1-2) (Decided)
