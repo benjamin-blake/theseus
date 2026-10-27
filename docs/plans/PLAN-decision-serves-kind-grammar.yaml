@@ -93,7 +93,8 @@ scope:
     retired id still resolves as approved; never a raw YAML walk), then calls envelope_rules. Each
     new rule fires only when the contract declares it (kind in required_fields, closed_key_set present,
     field_shapes.serves present -- which also gates both WARN rules -- and number_assignment present), the
-    tolerated-absence pattern block_separator already uses, so tests/checks/decisions/test_validate_decision_entry_conformance.py's synthetic contracts stay valid and
+    tolerated-absence pattern block_separator already uses (keep _load_envelope_config's 2-tuple signature, which the
+    legacy module unpacks, and load the new contract sections in a separate loader), so tests/checks/decisions/test_validate_decision_entry_conformance.py's synthetic contracts stay valid and
     that module is untouched. New-in-diff entries: kind, serves, closed-key and number rules FAIL; a
     present-but-malformed envelope names its bad field. Every run (including the no-new-entries early return): an
     unsubstituted "## Decision NNN" heading FAILs (found with iter_placeholder_headings); the two WARN rules print lines
@@ -142,8 +143,9 @@ scope:
     (Decision 66). Public API: findings_for_plan(path) and findings_for_draft(path), each taking str or Path and
     returning finding objects with attributes number, title (the heading text after "Decision <number>: "), severity
     (FAIL or WARN), field and detail. A block with no well-formed envelope yields exactly one FAIL with field "envelope"
-    and no per-field findings. The folded-scalar rule is judged on the parsed string: a block whose ```yaml opener is not
-    alone on its line is that one envelope FAIL, with detail "folded scalar: put the draft in a literal (|) block";
+    and no per-field findings. The folded-scalar rule is judged on the parsed string by
+    envelope_rules.malformed_envelope_detail: a block whose first ```yaml occurrence (the envelope opener; a later
+    ```yaml reversal-conditions stanza is never judged) is not alone on its line is that one envelope FAIL, with detail "folded scalar: put the draft in a literal (|) block";
     literal, single-quoted and double-quoted scalars are all accepted. Report lines, exactly: "decision_drafts: none" when no drafted Decision is found, otherwise
     "decision_drafts: <d> drafted, <f> findings" followed by one "  FAIL <number> <field>: <detail>" or
     "  WARN <number> <field>: <detail>" line per finding. Never raises; an unreadable path is a finding.
@@ -205,7 +207,8 @@ scope:
   purpose: >-
     A plan embedding an NNN Decision with a conforming envelope reports "decision_drafts: 1 drafted, 0 findings";
     missing kind reports a FAIL line quoting the test; a draft missing significance, or claiming a "Never a numbered
-    Decision" routing row, reports a FAIL line; both folded-scalar shapes (with and without a blank line after the
+    Decision" routing row, reports a FAIL line; a literal draft that also carries a ```yaml reversal-conditions stanza
+    passes; both folded-scalar shapes (with and without a blank line after the
     heading) report the one folded-scalar envelope FAIL, while double-quoted and single-quoted drafts pass; an OLD/NEW
     anchor ("## Decision 229:" then a newline) is not a drafted Decision; a concrete number reports the WARN line;
     findings_for_plan accepts str and Path and returns title and field on each finding; a draft file via
@@ -428,13 +431,15 @@ verification_plan:
     and x.field == 'kind']; assert any(t in md for _, t in k), 'vacuous scan: no landed draft reported a kind FAIL';
     bad=sorted({(p, t) for p, t in k if t not in md}); print(*bad, sep=chr(10)); raise SystemExit(1 if bad else 0)"
   expected: >-
-    Exit 0 with no line printed. The non-vacuity assertion passes because already-landed drafts (about 30 at plan time)
+    Exit 0 with no line printed. The non-vacuity assertion passes because already-landed drafts (23 at plan time)
     still report a kind FAIL and are filtered out by their landed titles.
   fix_if: >-
     Each printed plan drafts a not-yet-landed Decision without kind. Do not merge: message the coordinator naming each
     plan, so Benjamin approves a kind line for that draft (its plan is amended in its own thread) or rules that it lands
     first. A plan whose Decision already landed under a reworded title is a false positive; confirm it by hand and say
-    so in the PR. A "vacuous scan" failure means findings_for_plan is not reading plans -- fix it, never skip the step.
+    so in the PR. A "vacuous scan" failure means findings_for_plan is not reading plans, or the folded-scalar rule is
+    judging a later ```yaml stanza -- fix it, never skip the step. An exit 1 with nothing printed and no assertion means
+    the branch is not rebased onto origin/main -- rebase and rerun.
   hermetic: false
   graduation: waive
   graduation_waiver_reason: A merge-time precondition on sibling plans' state; a standing guard would block unrelated PRs.
@@ -551,11 +556,11 @@ constraints:
 - >-
   No structural-size, SLOC or prose budget raise (Benjamin 2026-10-27: compact instead of raise). This plan never
   edits config/structural_size_budgets.yaml; if decision-entry.yaml would exceed 500 effective lines, stop.
-- "One rule set and one parser -- the conformance check and the planning-time report both call envelope_rules and read headings and envelopes only through scripts/decisions_md.py, placeholder grammar included; neither carries its own heading or fence regex (Decision 134)."
+- "One rule set and one parser -- the conformance check and the planning-time report both call envelope_rules and read headings and envelopes only through scripts/decisions_md.py, placeholder grammar included; neither carries its own heading or fence regex, and the folded-scalar judgement lives in envelope_rules.malformed_envelope_detail (Decision 134)."
 - No rescue agents or workaround loops (Decision 55).
 context:
 - "Decision-scout verdict FLAGS_FOUND (r2, 2026-10-27). Decisions triaged: 188 of 188. Roadmap items intersected: 5; CONFLICT: 0; RELATED: 5. CITE 167, 217, 84, 150, 105, 128, 66."
-- "gates: decision-scout=FLAGS_FOUND (r1, r2 addressed); plan-critique=REVISE r1 (F1-F13 fixed), REVISE r2 (R2-1..R2-6 fixed), REVISE r3 (R3-1..R3-4 fixed), REVISE r4 (R4-1..R4-4 fixed), r5 PENDING"
+- "gates: decision-scout=FLAGS_FOUND (r1, r2 addressed); plan-critique=REVISE r1 (F1-F13 fixed), REVISE r2 (R2-1..R2-6 fixed), REVISE r3 (R3-1..R3-4 fixed), REVISE r4 (R4-1..R4-4 fixed), PROCEED r5 (informational items 1-4 and 6 applied as wording)"
 - 'red_overlap (2026-10-27): {"verdict": "clear", "slo_hours": 4, "reds": []}'
 - "Scout flags folded in -- 196 WARN (VP 1); 166 WARN (no raise, compaction precondition: VP 1, VP 8); 134 NOTE (placeholder grammar in decisions_md); 177 SPIRIT (WARN remedies); 128 (split modules); 127 (skill pins); 179 SPIRIT (band-only projection, kind value only in the index)."
 - >-
