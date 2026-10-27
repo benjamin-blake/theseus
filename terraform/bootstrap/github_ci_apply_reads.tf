@@ -86,6 +86,9 @@ locals {
           "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-pr",
           "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-planner",
           "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-deploy",
+          # Pre-staged ahead of the role's own creation (same precedent as the telemetry-writer entries
+          # below): without it the gated apply's iam:GetRole after the create, and every refresh, fail closed.
+          "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-trusted-plan",
           "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-catalog-dr",
           "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-writer",
           "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-reader",
