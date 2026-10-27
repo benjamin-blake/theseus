@@ -371,6 +371,7 @@ context:
   - "Decisions triaged: 189 of 189"
   - "Roadmap items intersected: 8; CONFLICT: 0; RELATED: 8"
   - "Related-work check (red_overlap, 2026-10-27, exit 1): blocked by rec-4674 (critical, filed 21:59Z, 4h SLO) on rule 5, sharing four test modules reached transitively through docs/DECISIONS.md and the contracts manifest. Logged deferral: rec-4674 is the terraform-apply-sandbox plan reviewer (.github/actions/subagent-plan-review/review.sh, not a CI tier gate); this plan touches none of its files, Decisions or failure category. The build re-runs red_overlap at handoff and waits for a green full tier (Decision 163)."
+  - "Critique round 1 (REVISE): F1 check-owner identifier exemption, F3 root CLAUDE.md and SKILL.md nodes, F4 named compaction rows, F5 red_overlap re-runs, F6 DATE re-check, F7 open-PR notice at merge, F8 accounting counts shape items, F9 #1683 re-check, F10 parametrized tests -- all fixed. F11 (reuse validate_diff_coverage.added_line_numbers_by_file) disputed: it is hard-wired to src/ and scripts/ Python and returns line numbers only; this lint needs line text and removed lines, and generalising it would change another registered check. F2 (Coverage line, Decision 181 cl.2) put to Benjamin."
   - "gates: decision-scout=FLAGS_FOUND after 1 round; plan-critique=PENDING"
 pre_implementation_checklist:
   - Branch confirmed not on main
@@ -379,10 +380,16 @@ pre_implementation_checklist:
   - scripts/checks/contracts/validate_ports_contract.py, scripts/checks/iam_tf/validate_environment_taxonomy.py and scripts/checks/_common.py read
   - VP step 1 passes
 execution_steps:
-  - "Run VP step 1. It is the pre-build gate and runs once, before any edit."
+  - >-
+    Run VP step 1. It is the pre-build gate and runs once, before any edit. Then run bin/venv-python -m
+    scripts.ci_rca.red_overlap --plan docs/plans/PLAN-glossary.yaml (Decision 226): exit 0 proceeds; exit 1 proceeds
+    only on overlap with a red whose files, Decisions and failure category this plan does not touch (log it in the
+    report, as context does for rec-4674), and stops on slo_breached; exit 2 stops.
   - >-
     Re-check Decision numbering (constraints): choose NNN, then substitute NNN and DATE everywhere they appear in the
-    APPROVED TEXT blocks below, and nowhere else.
+    APPROVED TEXT blocks below, and nowhere else. Also check whether PR #1683 (decision-kind grammar) has merged: the
+    approved envelope carries kind {value: direction} either way; if #1683 merged with a value set that excludes
+    direction, stop and ask.
   - |-
     APPROVED TEXT. docs/DECISIONS.md -- insert this entry newest-first, directly above the current top entry; it already ends with a line containing only --- (add one blank line after it):
       ## Decision NNN: One name per thing where On The Loop meets its adopters -- this repository is the upstream source, a release is what adopters install, adopter for the free release and customer for the paid service; "platform" and "product" leave new governed text unqualified (Decided)
@@ -618,7 +625,9 @@ execution_steps:
     magic so **/CLAUDE.md also matches the root file. (l3) Added lines come from one git diff -U0 --no-color
     --no-renames <base> -- <governed pathspecs> against the working tree, with new-file line numbers, plus every line
     of an untracked governed file (git ls-files --others --exclude-standard). (l4) A token is the case-insensitive
-    match of (?<![\w./:-])(platforms?|products?)(?![\w/-]|\.\w). (l5) It is not a use, so passes, when: it is all
+    match of (?<![\w./:-])(platforms?|products?)(?![\w/-]|\.\w). (l5) It is not a use, so passes, when: it is the
+    check-owner identifier the contract lists (owner="platform", owner='platform', owner=platform or owner: platform);
+    it is all
     capitals (PLATFORM, PRODUCT: Decision 77's reserved axis names); it is a YAML mapping key (the first token of
     its line, optionally after "- ", followed by a colon); it sits inside a quoted span on the same line -- double
     quotes, single quotes or backticks, the opening mark at line start or after whitespace or one of ( [ { : , and
@@ -632,7 +641,9 @@ execution_steps:
     the base (approved text from a merged plan landing; read with git grep -F at the base commit, confirmed by
     exact stripped equality). (l7) Each remaining token prints FAIL: <path>:<line>: unqualified "<word>" -- say
     instead: <relative_words.<word>.say_instead>. Load errors append a failure and declare registry.skipped; every
-    other exit declares registry.examined(<added governed lines scanned>, unit="added_governed_lines") (Decision 170);
+    other exit declares registry.examined(<terms + read_as rows + added governed lines scanned>,
+    unit="glossary_items_and_added_lines") (Decision 170), so a diff with no governed lines still reports the
+    enforced shape and guidance legs rather than a vacuous pass;
     a clean pass prints one PASS line. Keep it under 500 SLOC (Decision 128); if it would not fit, make it a package
     whose __init__.py re-exports validate_glossary.
   - >-
@@ -643,9 +654,13 @@ execution_steps:
     [docs/contracts/glossary.yaml], description "Names where On The Loop meets its adopters, and how older text reads
     (Decision NNN).") and the amendment_log row "PLAN-glossary (Decision NNN): added the glossary route
     (topic-equals-subject) for the new Class D contract, paid for by compacting four older entries. Additive only.",
-    and compact the four oldest field_add rows into one row on the "Four entries compacted (PLAN-glossary)" pattern
-    of the existing "Three entries compacted" rows, writing any relative word in them as a glossary name or a quoted
-    mention. Measure with scripts.checks.structural._classify.effective_lines on the file text before and after: 497
+    and compact the four oldest single-entry field_add rows -- the two dated 2026-09-07
+    (PLAN-episode-lookup-primitive, PLAN-roadmap-blocking-liveness-detector), 2026-09-02
+    (PLAN-ambient-prose-contract-relocation) and 2026-09-01 (PLAN-inline-defer-boundary-contract) -- into one row dated
+    2026-09-07 in their place, summary "Four entries compacted (PLAN-glossary)." followed by one "<date> -- <summary>"
+    clause per entry, keeping every date and every PLAN-, Decision, rec and tier-item citation token (the 2026-09-22
+    row's rule); the already-compacted 2026-08-26 and 2026-08-24 rows stay as they are. Those four summaries use no
+    relative word outside identifiers, so the compacted row passes the lint. Measure with scripts.checks.structural._classify.effective_lines on the file text before and after: 497
     on main at 7243857f, about 498 after; if it no longer fits, compact one more row -- never raise the limit.
   - >-
     In scripts/executor/rec_write_guidance.py add glossary_path: Path | None = None to get_rec_write_guidance
@@ -665,15 +680,20 @@ execution_steps:
     say_instead text); test_ignores_text_already_on_the_base (a governed file whose base text holds unqualified uses,
     with an unrelated clean line added, passes); one passing node each for an identifier, an all-capitals token, a
     YAML key, a backtick span, a double-quoted span, adopter product, a moved line, a line inside the defining entry,
-    a docs/DECISIONS.md line equal to a PLAN-old.yaml line, a non-governed path (a tests/ file) and a hyphen-joined
-    slug; one failing node each for "platforms", "Product's", a quoted span over 6 words, a line in docs/plans/ equal to
-    a PLAN-old.yaml line, and an untracked governed file; shape nodes test_rejects_term_missing_do_not_use_for, one
+    a docs/DECISIONS.md line equal to a PLAN-old.yaml line, a non-governed path (a tests/ file), a hyphen-joined
+    slug and each check-owner identifier form; one failing node each for "platforms", "Product's", a quoted span over
+    6 words, a line in docs/plans/ equal to a PLAN-old.yaml line, an untracked governed file, an added line in the root
+    CLAUDE.md (proving the **/CLAUDE.md glob matches the root file) and an added line in a .claude/skills/<x>/SKILL.md
+    (proving the layer globs are read from instruction-architecture.yaml); shape nodes test_rejects_term_missing_do_not_use_for, one
     for a fifteenth term, one for ratified_via naming a missing Decision, one for a read_as row missing reads_as, and
     test_rejects_missing_ambient_pointer; and test_entry_resolves_and_is_sequenced, asserting
     registry.resolve("validate_glossary") is the module's function and the name is in registry.pre_sequence() and
     registry.full_sequence(). In tests/test_rec_write_guidance.py add class TestGlossaryGuidance:
     test_glossary_terms_match_contract (real tree: the keys and say_instead values equal the contract's),
     test_glossary_path_override (a one-term temporary contract is projected) and test_absent_glossary_omits_key.
+    Parametrize the passing and failing lint cases over one fixture so the module stays well under 500 SLOC; if it
+    would not, move the parametrized cases to tests/checks/contracts/test_validate_glossary_lint.py and keep the nodes
+    VP steps 3-5 and 7 name in this module.
   - Regenerate docs/decisions-index.json with bin/venv-python -m scripts.decisions_index --write.
   - >-
     Execute VP steps 2-14 -- run each step; loop until pass; on an unrecoverable failure stop and RCA (Decision 55). VP
@@ -682,14 +702,22 @@ execution_steps:
   - Code review via a fresh code-review subagent; fix every blocking finding and re-run VP steps 2-14.
   - >-
     CLOSURE -- separate facts, in order (a)-(e) (implement skill Commit Flows; docs/contracts/git-ops.yaml), each reported
-    on its own. (a) READINESS: bin/venv-python -m scripts.session.github_readiness (unknown is never PASS). (b) Set
+    on its own. (a) READINESS: bin/venv-python -m scripts.session.github_readiness (unknown is never PASS), and
+    re-run bin/venv-python -m scripts.ci_rca.red_overlap --plan docs/plans/PLAN-glossary.yaml with the same rule as
+    execution step 1. (b) Set
     implementation_declared true, commit, git fetch origin main and git rebase origin/main (STOP on conflict; re-check
     the Decision number, the per-entry size, the docs/CLAUDE.md budget and file-router.yaml's effective lines after a
-    rebase). (c) VP step 15 (the full tier) on the committed, rebased, clean tree, then bin/venv-python -m
+    rebase, and set DATE to the expected merge date in all three places: the envelope's decided_date, the bold Date
+    line and the glossary.yaml amendment_log entry). (c) VP step 15 (the full tier) on the committed, rebased, clean tree, then bin/venv-python -m
     scripts.checks.validation_result --verify-head. (d) Write a scratchpad JSON holding exactly the
     scripts.session.postflight_evidence.CATEGORIES keys, then bin/venv-python -m scripts.session.postflight --evidence
     that file. (e) Push, open the PR, subscribe to its activity and drive CI green.
-  - Merge (squash) only on code review PROCEED and green CI; then run VP step 16.
+  - >-
+    Before merging: if the merge date differs from DATE, update all three DATE places, re-run VP steps 11 and 12 and
+    push. Then list open PRs whose diff adds a governed line this lint would flag (the scan behind context's lint-scale
+    line) and send the list to the coordinator: required status checks are not strict (terraform/github/repo.tf), so
+    a PR whose CI ran before this merge could merge stale and red main's post-merge full tier (Decision 226). Merge
+    (squash) only on code review PROCEED and green CI; then run VP step 16.
   - >-
     Report, each item separately: what was implemented and the Decision number used; the readiness result; the
     validator verdicts (VP 2-15 and --verify-head); the postflight evidence; the code-review verdict; and the push, PR
