@@ -46,8 +46,10 @@ scope:
   purpose: >-
     The one shared parser gains the placeholder grammar, so no consumer hand-rolls a heading or fence regex (Decision
     134 cl.3). (1) iter_placeholder_headings(content) beside iter_decision_headings: matches "## Decision NNN:" and
-    "## Decision <n>:" headings (group(1) is the literal NNN or digits); iter_decision_headings' digits-only grammar is
-    unchanged, so an NNN heading never parses as a Decision. (2) extract_entry_envelope(block, placeholder=False): with
+    "## Decision <n>:" headings (group(1) is the literal NNN or digits) and requires a non-empty title on the same line
+    (":[ \t]*" then a non-blank title, never "\s*", so an OLD/NEW anchor such as "## Decision 229:" followed by a
+    newline is not a heading); iter_decision_headings' digits-only grammar is unchanged, so an NNN heading never parses
+    as a Decision. (2) extract_entry_envelope(block, placeholder=False): with
     placeholder=True the heading and the envelope number may be the literal NNN; drafts only. (3)
     _envelope_has_well_formed_shape type-checks serves (list of str) and kind (mapping), and admits number "NNN" only
     under placeholder=True. (4) parse_decisions_md rows gain index-only keys kind (the envelope's kind mapping
@@ -137,10 +139,12 @@ scope:
     reads (north-star ids through scripts/north_star_models.py), and applies every envelope_rules rule -- required
     fields, significance, kind, serves, closed keys, number -- with NNN accepted as the number. A concrete number is a WARN-class finding ("assign at implementation: Decision 217 cl.5"). When kind is
     missing or invalid, the finding quotes decision-kind.yaml's test so the drafter has the definition in hand
-    (Decision 66). Public API: findings_for_plan(path) and findings_for_draft(path), each returning findings with
-    number, title (the heading text after "Decision <number>: "), severity (FAIL or WARN), field and detail. A Decision
-    drafted in a plan must sit in a literal (|) block scalar; a heading whose block has no line break after it (a folded
-    scalar) is a FAIL naming that rule. Report lines, exactly: "decision_drafts: none" when no drafted Decision is found, otherwise
+    (Decision 66). Public API: findings_for_plan(path) and findings_for_draft(path), each taking str or Path and
+    returning finding objects with attributes number, title (the heading text after "Decision <number>: "), severity
+    (FAIL or WARN), field and detail. A block with no well-formed envelope yields exactly one FAIL with field "envelope"
+    and no per-field findings. The folded-scalar rule is judged on the parsed string: a block whose ```yaml opener is not
+    alone on its line is that one envelope FAIL, with detail "folded scalar: put the draft in a literal (|) block";
+    literal, single-quoted and double-quoted scalars are all accepted. Report lines, exactly: "decision_drafts: none" when no drafted Decision is found, otherwise
     "decision_drafts: <d> drafted, <f> findings" followed by one "  FAIL <number> <field>: <detail>" or
     "  WARN <number> <field>: <detail>" line per finding. Never raises; an unreadable path is a finding.
 - file: scripts/roadmap/plan_obligations.py
@@ -170,7 +174,7 @@ scope:
   action: Modify
   purpose: >-
     Shapes accepted and rejected for serves and kind; the row keys and their shapes (kind a mapping or {}, serves a list
-    or []); iter_placeholder_headings matches NNN and digits only; extract_entry_envelope reads an NNN draft only with
+    or []); iter_placeholder_headings matches NNN and digits only, and rejects a heading with no same-line title; extract_entry_envelope reads an NNN draft only with
     placeholder=True and still returns None for it by default.
 - file: tests/test_decisions_index_envelope_fields.py
   action: Create
@@ -201,8 +205,10 @@ scope:
   purpose: >-
     A plan embedding an NNN Decision with a conforming envelope reports "decision_drafts: 1 drafted, 0 findings";
     missing kind reports a FAIL line quoting the test; a draft missing significance, or claiming a "Never a numbered
-    Decision" routing row, reports a FAIL line; a draft inside a folded scalar reports the literal-block FAIL; a
-    concrete number reports the WARN line; findings_for_plan returns title and field on each finding; a draft file via
+    Decision" routing row, reports a FAIL line; both folded-scalar shapes (with and without a blank line after the
+    heading) report the one folded-scalar envelope FAIL, while double-quoted and single-quoted drafts pass; an OLD/NEW
+    anchor ("## Decision 229:" then a newline) is not a drafted Decision; a concrete number reports the WARN line;
+    findings_for_plan accepts str and Path and returns title and field on each finding; a draft file via
     --decision-draft; a plan with no drafted Decision reports "decision_drafts: none"; main() exits 0 in every case; an
     unreadable path is a finding, not a raise.
 - file: config/agent/verification_registry/entries/decision-entry-serves-kind-enforced.yaml
@@ -229,7 +235,7 @@ acceptance_criteria:
 - Every VERBATIM entry in execution_steps is present in its target file, with only DATE and the north-star Decision number substituted.
 - docs/decisions-index.json carries serves and kind on live enveloped rows only and is fresh; neither reaches a warehouse surface (backfill columns, DecisionPayload, DQ config -- VP 8).
 - decision-entry.yaml stays within the 500-effective-line contracts limit, and this plan does not touch config/structural_size_budgets.yaml.
-- rec-3260 is closed (VP 10).
+- rec-3260 is closed (VP 11).
 verification_plan:
 - step: 1
   phase: pre-deploy
@@ -415,18 +421,23 @@ verification_plan:
     Known at plan time: PLAN-aws-account-company-assignment and PLAN-work-graph-edge-model, whose approved Decision
     drafts have no kind.
   command: >-
-    bin/venv-python -c "import glob; from scripts.roadmap.plan_decision_drafts import findings_for_plan as f;
+    git fetch origin main --quiet && git merge-base --is-ancestor origin/main HEAD && bin/venv-python -c "import glob;
+    from pathlib import Path; from scripts.roadmap.plan_decision_drafts import findings_for_plan as f;
     md=''.join(open(p, encoding='utf-8').read() for p in ('docs/DECISIONS.md', 'docs/DECISIONS_ARCHIVE.md'));
-    bad=sorted({(p, x.title) for p in glob.glob('docs/plans/PLAN-*.yaml') for x in f(p) if x.severity == 'FAIL' and
-    x.field == 'kind' and x.title not in md}); print(*bad, sep=chr(10)); raise SystemExit(1 if bad else 0)"
-  expected: Exit 0 with no line printed.
+    k=[(p, x.title) for p in sorted(glob.glob('docs/plans/PLAN-*.yaml')) for x in f(Path(p)) if x.severity == 'FAIL'
+    and x.field == 'kind']; assert any(t in md for _, t in k), 'vacuous scan: no landed draft reported a kind FAIL';
+    bad=sorted({(p, t) for p, t in k if t not in md}); print(*bad, sep=chr(10)); raise SystemExit(1 if bad else 0)"
+  expected: >-
+    Exit 0 with no line printed. The non-vacuity assertion passes because already-landed drafts (about 30 at plan time)
+    still report a kind FAIL and are filtered out by their landed titles.
   fix_if: >-
     Each printed plan drafts a not-yet-landed Decision without kind. Do not merge: message the coordinator naming each
     plan, so Benjamin approves a kind line for that draft (its plan is amended in its own thread) or rules that it lands
     first. A plan whose Decision already landed under a reworded title is a false positive; confirm it by hand and say
-    so in the PR.
+    so in the PR. A "vacuous scan" failure means findings_for_plan is not reading plans -- fix it, never skip the step.
   hermetic: false
-  graduation: not-applicable
+  graduation: waive
+  graduation_waiver_reason: A merge-time precondition on sibling plans' state; a standing guard would block unrelated PRs.
 - step: 11
   phase: post-deploy
   action: Confirm rec-3260 is closed (the squash-merge Resolves trailer closes it).
@@ -544,7 +555,7 @@ constraints:
 - No rescue agents or workaround loops (Decision 55).
 context:
 - "Decision-scout verdict FLAGS_FOUND (r2, 2026-10-27). Decisions triaged: 188 of 188. Roadmap items intersected: 5; CONFLICT: 0; RELATED: 5. CITE 167, 217, 84, 150, 105, 128, 66."
-- "gates: decision-scout=FLAGS_FOUND (r1, r2 addressed); plan-critique=REVISE r1 (F1-F13 fixed), REVISE r2 (R2-1..R2-6 fixed), REVISE r3 (R3-1..R3-4 fixed), r4 PENDING"
+- "gates: decision-scout=FLAGS_FOUND (r1, r2 addressed); plan-critique=REVISE r1 (F1-F13 fixed), REVISE r2 (R2-1..R2-6 fixed), REVISE r3 (R3-1..R3-4 fixed), REVISE r4 (R4-1..R4-4 fixed), r5 PENDING"
 - 'red_overlap (2026-10-27): {"verdict": "clear", "slo_hours": 4, "reds": []}'
 - "Scout flags folded in -- 196 WARN (VP 1); 166 WARN (no raise, compaction precondition: VP 1, VP 8); 134 NOTE (placeholder grammar in decisions_md); 177 SPIRIT (WARN remedies); 128 (split modules); 127 (skill pins); 179 SPIRIT (band-only projection, kind value only in the index)."
 - >-
@@ -587,7 +598,7 @@ execution_steps:
 - Skills -- apply VERBATIM entries S1-S2 (planning) and C1-C3 (plan-critique); measure bytes against config/prose_budgets.yaml.
 - Registry shards for VP 4, 5 and 6.
 - Bookkeeping -- T4.36 c4 met (met_by decision-serves-kind-grammar).
-- Execute Verification Plan steps 2-10 after the edits -- loop until pass; on unrecoverable failure stop and RCA (Decision 55).
+- Execute Verification Plan steps 2-10 after the edits -- loop until steps 2-9 pass (VP 10 stops and escalates per its fix_if, never loops); on unrecoverable failure stop and RCA (Decision 55).
 - >-
   Closure evidence recorded as four SEPARATE facts (implement skill Commit Flows): GitHub readiness state; parent
   validator evidence (VP 8 full-tier exit 0 plus bin/venv-python -m scripts.checks.validation_result --verify-head for
