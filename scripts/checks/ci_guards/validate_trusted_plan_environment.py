@@ -35,9 +35,12 @@ _PRT = "pull_request_target"
 _DISPATCH = "github.event_name == 'workflow_dispatch'"
 _SAME_REPO = "github.event.pull_request.head.repo.full_name == github.repository"
 _PR_EXPR_RE = re.compile(r"\$\{\{[^}]*(?:github\.event\.pull_request\.|github\.head_ref)[^}]*\}\}")
-_SCRIPT_PATH_RE = re.compile(r"(?<![\w./-])(?:\./|\$\{?GITHUB_WORKSPACE\}?/)?(scripts/[\w./-]+)")
-_PYTHON_RE = re.compile(r"(?<![\w.-])(?:[\w./$-]*/)?(?:[\w-]*-)?python[\d.]*(?=\s)(\s+\S+)?")
-_ISOLATED_FLAG_RE = re.compile(r"-[A-Za-z]*I[A-Za-z]*")
+_SCRIPT_PATH_RE = re.compile(
+    r"(?<![\w./-])(?:\./|\"?\$\{?GITHUB_WORKSPACE\}?\"?/|\$\{\{\s*github\.workspace\s*\}\}/)?(scripts/[\w./-]+)"
+)
+_MODULE_RE = re.compile(r"(?<!\S)-m\s+(scripts(?:\.\w+)+)")
+_PYTHON_RE = re.compile(r"(?<![\w.-])(?:[\w./$-]*/)?(?:[\w-]*-)?python[\d.]*(?=\s|$|[;|&)\"'])(\s+\S+)?")
+_ISOLATED_FLAG_RE = re.compile(r"-[A-VYZa-z]*I[A-Za-z]*")
 
 
 def _jobs(wf: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -270,21 +273,22 @@ def check_checkouts(workflows: dict[str, dict[str, Any]]) -> list[str]:
 
 
 def _owned(path: str, codeowners: str) -> bool:
+    """GitHub semantics: the last matching pattern decides, and a matching line with no owner clears ownership."""
+    owned = False
     for line in codeowners.splitlines():
         parts = line.split()
-        if len(parts) < 2 or parts[0].startswith("#"):
+        if not parts or parts[0].startswith("#"):
             continue
-        pattern = parts[0]
-        anchored = pattern.startswith("/")
-        pattern = pattern.lstrip("/")
+        anchored = parts[0].startswith("/")
+        pattern = parts[0].lstrip("/")
         if pattern.endswith("/"):
-            if (path + "/").startswith(pattern):
-                return True
-        elif path == pattern or fnmatch.fnmatch(path, pattern):
-            return True
-        elif not anchored and fnmatch.fnmatch(path.rsplit("/", 1)[-1], pattern):
-            return True
-    return False
+            hit = (path + "/").startswith(pattern)
+        else:
+            hit = path == pattern or fnmatch.fnmatch(path, pattern)
+            hit = hit or (not anchored and fnmatch.fnmatch(path.rsplit("/", 1)[-1], pattern))
+        if hit:
+            owned = len(parts) > 1
+    return owned
 
 
 def check_owned_and_isolated(workflows: dict[str, dict[str, Any]], codeowners: str) -> list[str]:
@@ -294,6 +298,7 @@ def check_owned_and_isolated(workflows: dict[str, dict[str, Any]], codeowners: s
         for jid, job in _governed(name, wf):
             paths = [str(s["uses"])[2:].rstrip("/") for s in _steps(job) if str(s.get("uses", "")).startswith("./")]
             paths += [p for body in _run_bodies(job) for p in _SCRIPT_PATH_RE.findall(body)]
+            paths += [m.replace(".", "/") + ".py" for body in _run_bodies(job) for m in _MODULE_RE.findall(body)]
             out += [
                 f"h: {name}:{jid} executes {p}, which no CODEOWNERS pattern covers" for p in paths if not _owned(p, codeowners)
             ]
@@ -324,12 +329,16 @@ def validate_trusted_plan_environment(failed: list[str]) -> None:
     """Assert the tf-trusted-plan Environment and pull_request_target fence. See module docstring."""
     print("\n=== trusted-plan environment fence ===")
     try:
-        workflows = {p.name: _load(str(p)) for p in sorted((_common.ROOT / ".github" / "workflows").glob("*.yml"))}
+        workflows = {
+            p.name: _load(str(p))
+            for p in sorted((_common.ROOT / ".github" / "workflows").glob("*.y*ml"))
+            if p.suffix in (".yml", ".yaml")
+        }
         terraform = {
             p.name: p.read_text(encoding="utf-8") for p in sorted((_common.ROOT / "terraform" / "github").glob("*.tf"))
         }
         codeowners = (_common.ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
-    except (OSError, yaml.YAMLError) as exc:
+    except (OSError, yaml.YAMLError, TypeError, AttributeError) as exc:
         print(f"  FAIL: could not load the inputs: {exc}")
         failed.append("trusted-plan-environment: inputs unreadable, so no predicate ran")
         registry.examined(0, unit="fence_predicates")

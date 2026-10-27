@@ -265,3 +265,72 @@ def test_registered_check_reports_each_violation(monkeypatch) -> None:
     failed: list[str] = []
     v.validate_trusted_plan_environment(failed)
     assert failed == ["trusted-plan-environment: a: synthetic breach"]
+
+
+def test_pass_line_ignores_unrelated_earlier_failures(capsys) -> None:
+    failed = ["other-check: unrelated"]
+    v.validate_trusted_plan_environment(failed)
+    assert failed == ["other-check: unrelated"]
+    assert "PASS: predicates (a)-(h)" in capsys.readouterr().out
+
+
+def test_no_pass_line_when_this_check_fails(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(v, "run_all", lambda *_: [["a: synthetic breach"]])
+    v.validate_trusted_plan_environment([])
+    assert "PASS" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["cat x.py | python3", '"python3" x.py', "$(which python3) x.py", "echo hi && python3", "python3 -XI x.py"],
+)
+def test_more_python_forms_without_isolated_mode(wfs, real_codeowners, body) -> None:
+    _job(wfs, "claims-probe")["steps"].append({"run": body})
+    assert any("without -I" in x for x in v.check_owned_and_isolated(wfs, real_codeowners))
+
+
+@pytest.mark.parametrize("flag", ["-I", "-IB", "-sI"])
+def test_isolated_flag_clusters_that_pass(flag) -> None:
+    assert v._ISOLATED_FLAG_RE.fullmatch(flag)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "python3 -I -m scripts.ci.unowned",
+        "bash ${{ github.workspace }}/scripts/ci/unowned.sh",
+        'bash "${GITHUB_WORKSPACE}"/scripts/ci/unowned.sh',
+    ],
+)
+def test_unowned_module_and_workspace_expression_forms(wfs, real_codeowners, body) -> None:
+    _job(wfs, "claims-probe")["steps"].append({"run": body})
+    assert any("scripts/ci/unowned" in x for x in v.check_owned_and_isolated(wfs, real_codeowners))
+
+
+def test_codeowners_last_match_wins_and_ownerless_line_clears() -> None:
+    assert not v._owned("scripts/ci/a.py", "/scripts/ @o\n/scripts/ci/a.py\n")
+    assert v._owned("scripts/ci/a.py", "/scripts/ci/a.py\n/scripts/ @o\n")
+
+
+def test_yaml_extension_workflows_are_scanned(tmp_path, monkeypatch) -> None:
+    (tmp_path / ".github" / "workflows").mkdir(parents=True)
+    (tmp_path / "terraform" / "github").mkdir(parents=True)
+    (tmp_path / ".github" / "CODEOWNERS").write_text("", encoding="utf-8")
+    (tmp_path / ".github" / "workflows" / "other.yaml").write_text(
+        "on: [pull_request_target]\njobs:\n  j:\n    permissions:\n      id-token: write\n    steps: []\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(v._common, "ROOT", tmp_path)
+    failed: list[str] = []
+    v.validate_trusted_plan_environment(failed)
+    assert any("b: other.yaml:j" in x for x in failed)
+
+
+def test_empty_workflow_file_fails_cleanly(tmp_path, monkeypatch) -> None:
+    (tmp_path / ".github" / "workflows").mkdir(parents=True)
+    (tmp_path / "terraform" / "github").mkdir(parents=True)
+    (tmp_path / ".github" / "CODEOWNERS").write_text("", encoding="utf-8")
+    (tmp_path / ".github" / "workflows" / "empty.yml").write_text("", encoding="utf-8")
+    monkeypatch.setattr(v._common, "ROOT", tmp_path)
+    failed: list[str] = []
+    v.validate_trusted_plan_environment(failed)
+    assert any("unreadable" in x for x in failed)
