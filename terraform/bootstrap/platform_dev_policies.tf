@@ -151,6 +151,55 @@ locals {
         Resource = ["${local.data_lake_bucket_arn}/tfstate/personal/*"]
       },
       {
+        # Saved plans embed prior state (catalog passwords, ExternalIds; rec-2768) and tfstate/* covers every
+        # root including tfstate/github and its lock file (rec-4353). Agents have no reason to read or write them.
+        Sid    = "DenyTerraformArtifactRead"
+        Effect = "Deny"
+        Action = [
+          "s3:GetObject",
+          "s3:GetObjectVersion",
+          "s3:GetObjectVersionAcl",
+          "s3:GetObjectVersionTagging",
+          "s3:GetObjectVersionAttributes",
+          "s3:GetObjectAttributes",
+        ]
+        Resource = [
+          "${local.data_lake_bucket_arn}/tfstate/*",
+          "${local.data_lake_bucket_arn}/tfplan/*",
+        ]
+      },
+      {
+        Sid    = "DenyTerraformArtifactWrite"
+        Effect = "Deny"
+        Action = ["s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion"]
+        Resource = [
+          "${local.data_lake_bucket_arn}/tfstate/*",
+          "${local.data_lake_bucket_arn}/tfplan/*",
+        ]
+      },
+      {
+        # The plan reviewer reads plan JSON with values and writes these transcripts, and only CI writes this prefix.
+        # convergence/ and the rest of ci-rca-evidence/ stay open on purpose: agents read convergence/personal/sandbox.json
+        # and file ci-rca-evidence/<sha>.json. The bootstrap root state is in another bucket where PlatformDev has no Allow.
+        Sid    = "DenyReviewTranscriptRead"
+        Effect = "Deny"
+        Action = [
+          "s3:GetObject",
+          "s3:GetObjectVersion",
+          "s3:GetObjectVersionAcl",
+          "s3:GetObjectVersionTagging",
+          "s3:GetObjectVersionAttributes",
+          "s3:GetObjectAttributes",
+        ]
+        Resource = ["${local.data_lake_bucket_arn}/ci-rca-evidence/review-transcripts/*"]
+      },
+      {
+        Sid      = "DenyReviewTranscriptWrite"
+        Effect   = "Deny"
+        Action   = ["s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion"]
+        Resource = ["${local.data_lake_bucket_arn}/ci-rca-evidence/review-transcripts/*"]
+      },
+      {
         Sid      = "DataLakeBucketConfigRead"
         Effect   = "Allow"
         Action   = ["s3:GetLifecycleConfiguration", "s3:GetBucketVersioning"]
