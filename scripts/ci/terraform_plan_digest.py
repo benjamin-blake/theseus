@@ -150,7 +150,7 @@ def _statement_tokens(policy_json: Any) -> Optional[dict[str, set[str]]]:
     for stmt in statements:
         if not isinstance(stmt, dict):
             return None
-        effect = stmt.get("Effect") if stmt.get("Effect") in ("Allow", "Deny") else "Other"
+        effect = "Allow" if stmt.get("Effect") == "Allow" else "Deny" if stmt.get("Effect") == "Deny" else "Other"
         bucket = tokens.setdefault(effect, set())
         for key, prefix in (("Action", ""), ("NotAction", "not ")):
             value = stmt.get(key)
