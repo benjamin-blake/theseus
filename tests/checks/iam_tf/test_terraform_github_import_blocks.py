@@ -357,3 +357,11 @@ class TestTerraformGithubImportBlocks:
         files = _synthetic(**{"repo.tf": _SYN_RESOURCES.replace(f"      {name},\n", "")})
         with pytest.raises(AssertionError, match=name):
             assert_repository_ignores_unread_attributes(files)
+
+
+def test_real_tree_deployment_policy_id_variable_is_a_real_id(real: dict[str, str]) -> None:
+    text = _joined(real)
+    match = re.search(r'^\s*variable\s+"tf_trusted_plan_main_policy_id"\s*\{', text, re.M)
+    assert match is not None, "variable tf_trusted_plan_main_policy_id is not declared"
+    default = re.search(r"^\s*default\s*=\s*(\d+)\s*$", _balanced_block(text, match.end() - 1), re.M)
+    assert default is not None and int(default.group(1)) > 0, "tf_trusted_plan_main_policy_id has no real numeric default"

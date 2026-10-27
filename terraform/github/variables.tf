@@ -25,7 +25,7 @@ variable "main_protection_ruleset_id" {
 variable "tf_trusted_plan_main_policy_id" {
   description = "Numeric id of the tf-trusted-plan main deployment branch policy, used only by its import block. Re-read it from the API after a transfer."
   type        = number
-  default     = 0
+  default     = 64562499
 }
 
 variable "admin_bypass_actor_id" {
