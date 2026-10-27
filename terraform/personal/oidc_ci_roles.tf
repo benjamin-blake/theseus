@@ -74,6 +74,25 @@ data "aws_iam_policy_document" "github_ci_branch" {
   }
 
   statement {
+    # The agent/* trust runs unreviewed code under this role, so it must not read, overwrite or delete Terraform
+    # state, saved plans or review transcripts (rec-4632); the bucket-wide S3ReadWrite Allow above is overridden.
+    sid    = "DenyStatePlanAndReviewTranscriptIO"
+    effect = "Deny"
+    actions = [
+      "s3:GetObject",
+      "s3:GetObjectVersion",
+      "s3:PutObject",
+      "s3:DeleteObject",
+      "s3:DeleteObjectVersion"
+    ]
+    resources = [
+      "${aws_s3_bucket.data_lake.arn}/tfstate/*",
+      "${aws_s3_bucket.data_lake.arn}/tfplan/*",
+      "${aws_s3_bucket.data_lake.arn}/ci-rca-evidence/review-transcripts/*"
+    ]
+  }
+
+  statement {
     sid    = "S3List"
     effect = "Allow"
     actions = [
