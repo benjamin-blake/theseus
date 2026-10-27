@@ -318,9 +318,7 @@ def _locked_pass(
     try:
         client = client_factory(env, state, budget, sleep=sleep, rng=rng)
         protocol, catalog = _describe(client)
-        reset = loaded.valid and catalog != loaded.catalog
-        confirm = not reset and loaded.valid and loaded.reset_at is not None and now - loaded.reset_at >= RESET_CONFIRM_AFTER_S
-        reset_at = now if reset else None if confirm or not loaded.valid else loaded.reset_at
+        reset, confirm, reset_at = _reset_window(loaded, catalog, now)
         if reset or confirm:
             if detach_below is not None:
                 diag["catalog_reset_detached"] += 1
@@ -336,17 +334,29 @@ def _locked_pass(
         diag[exc.reason] += 1
         return _finish(state, record, "stopped", diag)
     except _Stop as stop:
-        diag[stop.reason] += 1
-        if sender is not None:
-            record["requests"] = sender.requests
-        if stop.halt is not None:
-            state.write_halt(stop.halt)
-            record["halt"] = stop.halt
-        return _finish(state, record, stop.outcome, diag)
+        return _stopped(state, record, stop, sender, diag)
     record["requests"] = sender.requests
     persisted = (catalog, reset_at)
     _persist_and_hook(state, record, result.next_cursor, root, loaded, diag, (event, final, "sent", reset), persisted)
     return _finish(state, record, "sent", diag)
+
+
+def _stopped(state: CaptureState, record: dict[str, Any], stop: _Stop, sender: _Sender | None, diag: Counter) -> PassResult:
+    diag[stop.reason] += 1
+    if sender is not None:
+        record["requests"] = sender.requests
+    if stop.halt is not None:
+        state.write_halt(stop.halt)
+        record["halt"] = stop.halt
+    return _finish(state, record, stop.outcome, diag)
+
+
+def _reset_window(loaded: Loaded, catalog: str, now: float) -> tuple[bool, bool, float | None]:
+    """RN-9 and RN-10 for a pass whose writer answered *catalog*: (reset, confirm, the reset_at to persist)."""
+    reset = loaded.valid and catalog != loaded.catalog
+    confirm = not reset and loaded.valid and loaded.reset_at is not None and now - loaded.reset_at >= RESET_CONFIRM_AFTER_S
+    reset_at = now if reset else None if confirm or not loaded.valid else loaded.reset_at
+    return reset, confirm, reset_at
 
 
 def _record(
