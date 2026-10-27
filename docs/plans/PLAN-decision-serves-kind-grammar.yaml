@@ -14,7 +14,6 @@ intent: >-
   persisted and checked. kind grants and gates nothing yet (Decision 235 is the ladder pattern only). Bound by the
   north-star Decision (Decision NNN clause 8, PLAN-north-star-tier-a).
 plan_type: IMPLEMENTATION
-implementation_declared: true
 verification_tier: V2
 plan_path: docs/plans/PLAN-decision-serves-kind-grammar.yaml
 phase: >-
@@ -54,7 +53,8 @@ scope:
     under placeholder=True. (4) parse_decisions_md rows gain index-only keys kind (the envelope's kind mapping
     {value, justification}, or {} -- the significance precedent, so a consumer reads row["kind"].get("value")) and
     serves (the envelope's list, or []). Never added to the warehouse backfill columns, DecisionPayload or DQ config
-    (Decision 84). Stays under 500 SLOC (441 at plan time): keep the additions small.
+    (Decision 84). Stays under 500 SLOC (441 at plan time): keep the additions small; if it would pass 500, decompose
+    it into a facade package (Decision 128), never raise.
 - file: scripts/decisions_index.py
   action: Modify
   purpose: >-
@@ -74,7 +74,9 @@ scope:
   action: Create
   purpose: >-
     Pure rule functions over parsed inputs (no file reads), shared by the conformance check and plan_decision_drafts
-    (one rule set, two callers): kind_issues (missing, value outside the values passed in, empty justification);
+    (one rule set, two callers): required_field_issues and significance_issues (moved unchanged from the check's
+    missing-fields test and _significance_issues, with _NEVER_NUMBERED_DECISION_TEXT); kind_issues (missing, value
+    outside the values passed in, empty justification);
     serves_issues (^NS\.\d+$, non-empty, duplicate-free, resolves against the ids passed in); unknown_key_issues
     (closed_key_set); malformed_envelope_detail (names the offending field when extract_entry_envelope returns None);
     number_issues (a new number must exceed the baseline maximum; an unsubstituted NNN heading fails; NNN accepted when
@@ -88,30 +90,52 @@ scope:
     carried_by through plan 1's scripts/north_star_models.py (load_north_star(path); resolution uses .ids(), so a
     retired id still resolves as approved; never a raw YAML walk), then calls envelope_rules. Each
     new rule fires only when the contract declares it (kind in required_fields, closed_key_set present,
-    field_shapes.serves present, number_assignment present) -- the tolerated-absence pattern block_separator already
-    uses -- so tests/checks/decisions/test_validate_decision_entry_conformance.py's synthetic contracts stay valid and
+    field_shapes.serves present -- which also gates both WARN rules -- and number_assignment present), the
+    tolerated-absence pattern block_separator already uses, so tests/checks/decisions/test_validate_decision_entry_conformance.py's synthetic contracts stay valid and
     that module is untouched. New-in-diff entries: kind, serves, closed-key and number rules FAIL; a
     present-but-malformed envelope names its bad field. Every run (including the no-new-entries early return): an
     unsubstituted "## Decision NNN" heading FAILs (found with iter_placeholder_headings); the two WARN rules print lines
     starting "  WARN:", never appended to failed. A declared contract that is missing or unparseable fails closed when a
     new entry needs it (Decision 170). Bundled rec-3260: both registry.examined calls use
-    unit="decision_entries_checked". The stale "at its 500-SLOC budget" comment is corrected.
+    unit="decision_entries_checked". The required-field and significance rules move into envelope_rules with behaviour
+    unchanged (the untouched legacy module proves it). The stale "at its 500-SLOC budget" comment is corrected.
 - file: scripts/checks/decisions/_manifest.py
   action: Modify
   purpose: >-
     validate_decision_entry_conformance's pre_globs gain docs/contracts/decision-kind.yaml, docs/contracts/north-star.yaml
     and scripts/north_star_models.py, so an edit to any input the check now reads runs it in --pre (never fail-open) and
     validate_pre_glob_closure stays green.
-- file: tests/checks/decisions/test_conformance_registration.py
+- file: tests/checks/decisions/test__manifest.py
   action: Modify
-  purpose: Asserts the three new pre_globs.
+  purpose: >-
+    _CLOSURE_INPUTS' validate_decision_entry_conformance row gains docs/contracts/decision-kind.yaml,
+    docs/contracts/north-star.yaml, scripts/north_star_models.py and scripts/checks/decisions/envelope_rules.py, so the
+    parametrized coverage node proves each is gated.
+- file: scripts/checks/roadmap/_manifest.py
+  action: Modify
+  purpose: >-
+    validate_plan_scope_closure's pre_globs gain scripts/decisions_md.py, scripts/checks/decisions/envelope_rules.py and
+    scripts/north_star_models.py (plus any first-party module north_star_models imports, as measured at build time):
+    plan_obligations now imports plan_decision_drafts, and validate_pre_glob_closure counts that closure.
+- file: tests/checks/roadmap/test__manifest.py
+  action: Modify
+  purpose: _CLOSURE_INPUTS' validate_plan_scope_closure row gains the same paths.
+- file: scripts/checks/verification/_manifest.py
+  action: Modify
+  purpose: >-
+    validate_admin_root_premerge_gate's pre_globs gain scripts/roadmap/plan_decision_drafts.py, scripts/decisions_md.py,
+    scripts/checks/decisions/envelope_rules.py and scripts/north_star_models.py (plus its measured first-party imports):
+    the gate imports plan_obligations, whose closure now includes them.
+- file: tests/checks/verification/test__manifest.py
+  action: Modify
+  purpose: TestGatedEntryInputClosures gains a node asserting validate_admin_root_premerge_gate's pre_globs cover those paths.
 - file: scripts/roadmap/plan_decision_drafts.py
   action: Create
   purpose: >-
     Finds drafted Decision blocks -- headings from iter_placeholder_headings inside a plan's string values, or in a
     draft file -- parses each with extract_entry_envelope(block, placeholder=True), reads the same contracts the check
-    reads (north-star ids through scripts/north_star_models.py), and applies envelope_rules with NNN accepted as the
-    number. A concrete number is a WARN-class finding ("assign at implementation: Decision 217 cl.5"). When kind is
+    reads (north-star ids through scripts/north_star_models.py), and applies every envelope_rules rule -- required
+    fields, significance, kind, serves, closed keys, number -- with NNN accepted as the number. A concrete number is a WARN-class finding ("assign at implementation: Decision 217 cl.5"). When kind is
     missing or invalid, the finding quotes decision-kind.yaml's test so the drafter has the definition in hand
     (Decision 66). Report lines, exactly: "decision_drafts: none" when no drafted Decision is found, otherwise
     "decision_drafts: <d> drafted, <f> findings" followed by one "  FAIL <number> <field>: <detail>" or
@@ -163,7 +187,7 @@ scope:
     decision-kind.yaml admits it with no code change; a contract that declares none of the new rules leaves an old-style
     entry passing. REAL-CONTRACT node: copies the committed docs/contracts/decision-entry.yaml and decision-kind.yaml
     with a minimal north-star fixture into tmp_path, and asserts a new entry without kind fails and a conforming one
-    passes.
+    passes. rec-3260 node: the no-new-entries path records registry.examined with unit decision_entries_checked.
 - file: tests/fixtures/decision_drafts/nnn_conforming.txt
   action: Create
   purpose: >-
@@ -173,7 +197,8 @@ scope:
   action: Create
   purpose: >-
     A plan embedding an NNN Decision with a conforming envelope reports "decision_drafts: 1 drafted, 0 findings";
-    missing kind reports a FAIL line quoting the test; a concrete number reports the WARN line; a draft file via
+    missing kind reports a FAIL line quoting the test; a draft missing significance, or claiming a "Never a numbered
+    Decision" routing row, reports a FAIL line; a concrete number reports the WARN line; a draft file via
     --decision-draft; a plan with no drafted Decision reports "decision_drafts: none"; main() exits 0 in every case; an
     unreadable path is a finding, not a raise.
 - file: config/agent/verification_registry/entries/decision-entry-serves-kind-enforced.yaml
@@ -189,7 +214,7 @@ scope:
   action: Modify
   purpose: Bookkeeping walk only -- T4.36 c4 open -> met, met_by decision-serves-kind-grammar.
 bundled_recommendations: [rec-3260]
-followon_recs: [rec-4659, rec-4660]
+followon_recs: [rec-4659, rec-4660, rec-4664]
 infrastructure_dependencies: []
 acceptance_criteria:
 - A new Decision without kind, with a value outside decision-kind.yaml's values, or with an empty justification fails validate_decision_entry_conformance with a message naming the field.
@@ -300,16 +325,16 @@ verification_plan:
   action: >-
     Each FAIL rule fails closed on a planted defect, each WARN rule warns without failing, the kind vocabulary is read
     from decision-kind.yaml, the committed contracts enforce kind, the untouched legacy module stays green, and the
-    check runs in --pre on every input it reads.
+    check and the two gates that import plan_obligations run in --pre on every input they now read.
   command: >-
     bin/venv-python -m pytest tests/checks/decisions/test_envelope_rules.py
     tests/checks/decisions/test_validate_decision_entry_conformance_serves_kind.py
-    tests/checks/decisions/test_validate_decision_entry_conformance.py
-    tests/checks/decisions/test_conformance_registration.py -q
-  expected: Every node passes. Red before (modules absent; pre_globs lack the three inputs).
+    tests/checks/decisions/test_validate_decision_entry_conformance.py tests/checks/decisions/test__manifest.py
+    tests/checks/roadmap/test__manifest.py tests/checks/verification/test__manifest.py -q
+  expected: Every node passes. Red before (modules absent; pre_globs and closure tables lack the new inputs).
   fix_if: >-
     A WARN case appending to failed, or a FAIL case passing, is a rule bug; a legacy-module failure means a new rule
-    fires without its contract declaration; a registration failure means pre_globs were not widened.
+    fires without its contract declaration; a manifest-test failure means a pre_globs widening is missing.
   hermetic: true
   expected_literals: []
   graduation: graduate
@@ -356,8 +381,8 @@ verification_plan:
     scripts.checks.contracts.validate_contract_drift import validate_contract_drift as v; f=[]; v(f);
     print(chr(10).join(f)); raise SystemExit(1 if f else 0)" && bin/venv-python -m scripts.validate
   expected: >-
-    The budget and warehouse files are unchanged, decision-entry.yaml prints at or under 500, the drift gate passes
-    with one more governed contract than origin/main, and the full tier exits 0.
+    The budget and warehouse files are unchanged, decision-entry.yaml prints at or under 500, the drift gate exits 0
+    with decision-kind.yaml governed, and the full tier exits 0.
   fix_if: >-
     Over 500 effective lines means the text grew beyond the approved 30 lines or the compaction left less room -- stop
     and tell the coordinator, never raise. An evaluator finding means the check module lacks the decision-kind.yaml
@@ -373,7 +398,7 @@ verification_plan:
   hermetic: true
   expected_literals: []
   graduation: waive
-  graduation_waiver_reason: A one-off label fix; the accounting check already reads the unit.
+  graduation_waiver_reason: The serves_kind module's rec-3260 node, graduated under VP 5, guards the unit label.
 - step: 10
   phase: post-deploy
   action: Confirm rec-3260 is closed (the squash-merge Resolves trailer closes it).
@@ -426,8 +451,18 @@ test_obligations:
 - source: scripts/checks/decisions/_manifest.py
   behavior: the check's pre_globs cover decision-kind.yaml, north-star.yaml and scripts/north_star_models.py.
   verification_step: 5
-  test_selector: tests/checks/decisions/test_conformance_registration.py
+  test_selector: tests/checks/decisions/test__manifest.py
   red_green_expectation: red before (globs absent), green after
+- source: scripts/checks/roadmap/_manifest.py
+  behavior: validate_plan_scope_closure's pre_globs cover plan_obligations' widened import closure.
+  verification_step: 5
+  test_selector: tests/checks/roadmap/test__manifest.py
+  red_green_expectation: red before (closure row lacks the paths), green after
+- source: scripts/checks/verification/_manifest.py
+  behavior: validate_admin_root_premerge_gate's pre_globs cover plan_obligations' widened import closure.
+  verification_step: 5
+  test_selector: tests/checks/verification/test__manifest.py
+  red_green_expectation: red before (node absent), green after
 - source: scripts/roadmap/plan_decision_drafts.py
   behavior: drafted Decision blocks found in plans and draft files and checked with NNN accepted; exact report lines.
   verification_step: 6
@@ -481,7 +516,7 @@ constraints:
 - No rescue agents or workaround loops (Decision 55).
 context:
 - "Decision-scout verdict FLAGS_FOUND (r2, 2026-10-27). Decisions triaged: 188 of 188. Roadmap items intersected: 5; CONFLICT: 0; RELATED: 5. CITE 167, 217, 84, 150, 105, 128, 66."
-- "gates: decision-scout=FLAGS_FOUND (r1, r2 addressed); plan-critique=REVISE r1 (F1-F13 addressed in r2), r2 PENDING"
+- "gates: decision-scout=FLAGS_FOUND (r1, r2 addressed); plan-critique=REVISE r1 (F1-F13 fixed), REVISE r2 (R2-1..R2-6 fixed), r3 PENDING"
 - 'red_overlap (2026-10-27): {"verdict": "clear", "slo_hours": 4, "reds": []}'
 - >-
   Flags folded in: 196 WARN (plan 1's build is a hard precondition, VP 1); 166 WARN (no raise: the compaction plan is
@@ -515,7 +550,7 @@ context:
   .principles, .ids(), .active_ids(); no I/O at import). That plan adds an optional status active | retired (2026-10-27),
   which gives the approved WARN remedy its shape; a retired id still resolves here. Refusing new serves claims on a
   retired id needs new approved wording, so it is rec-4660. rec-4659 points candidate-decision-ratification.yaml's
-  numbering-race notes at number_assignment.
+  numbering-race notes at number_assignment; rec-4664 names the placeholder grammar in shared_parser_note.
 - Index shape is shared with PLAN-scout-north-star-lane and PLAN-emergent-north-star-orient; whichever touches build_index regenerates the index in-PR.
 - Every other in-flight plan that drafts a Decision landing after this one must carry kind.
 - No contract-population.yaml or file-router.yaml edit. validate_contract_drift passes with decision-kind.yaml added (dry-run at plan time) once the check module names its path, and neither registration is part of the approved text.
@@ -531,9 +566,9 @@ execution_steps:
   Contracts -- create docs/contracts/decision-kind.yaml from VERBATIM entry K and apply VERBATIM entries E1-E3 to
   decision-entry.yaml and P1-P2 to plan-obligations.yaml, each at the placement its first line names. Substitute DATE
   and "Decision NNN clause" only (constraints). Copy the text; never retype or rewrap it.
-- Parser -- scripts/decisions_md.py placeholder iterator, placeholder envelope parsing, shape check and row keys, with tests/decisions_md/test_envelope.py (red, then green). Measure SLOC.
+- Parser -- scripts/decisions_md.py placeholder iterator, placeholder envelope parsing, shape check and row keys, with tests/decisions_md/test_envelope.py (red, then green). Measure SLOC; past 500, decompose into a facade package (Decision 128), never raise.
 - Index -- scripts/decisions_index.py band projection, its new test module and the widened key set in tests/test_decisions_index.py; regenerate docs/decisions-index.json.
-- Rules and check -- envelope_rules.py and its tests first, then wire into the conformance check (path constant, north_star_models loader, each rule gated on its contract declaration) with its new test module including the REAL-CONTRACT node; widen _manifest.py pre_globs and assert them in test_conformance_registration.py; rec-3260 unit fix. Measure SLOC.
+- Rules and check -- envelope_rules.py and its tests first, then wire into the conformance check (path constant, north_star_models loader, each rule gated on its contract declaration) with its new test module including the REAL-CONTRACT node; move the required-field and significance rules into envelope_rules; widen the decisions, roadmap and verification _manifest.py pre_globs (measure north_star_models' first-party imports) with their test__manifest.py rows; rec-3260 unit fix and its node. Measure SLOC.
 - Planning-time report -- plan_decision_drafts.py, the .txt fixture and its tests, then the plan_obligations section and flag.
 - Skills -- apply VERBATIM entries S1-S2 (planning) and C1-C3 (plan-critique); measure bytes against config/prose_budgets.yaml.
 - Registry shards for VP 4, 5 and 6.
