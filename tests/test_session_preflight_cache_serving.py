@@ -372,6 +372,7 @@ class TestPhaseBAbsenceOfReaderCalls:
         }
         with (
             patch.object(_common, "_make_reader", return_value=reader),
+            patch.object(_common, "_make_event_reader", return_value=reader),
             patch("scripts.sync.ops.warm_sync", return_value=warm),
             patch.object(env_git, "check_venv", return_value=True),
             patch.object(env_git, "get_git_status", return_value=("agent/test", False, [])),

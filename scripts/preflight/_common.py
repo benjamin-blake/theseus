@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from scripts.aws_profile import resolve_aws_profile  # noqa: F401
 from scripts.s3_log_store import get_backend, read_jsonl  # noqa: F401
@@ -22,6 +23,13 @@ DECISIONS_FILE = ROOT / "docs" / "DECISIONS.md"
 STRATEGIC_REVIEW_LOOKBACK_DAYS = 30
 PRIORITY_QUEUE_FILE = ROOT / "logs" / "priority-queue" / ".priority-queue.jsonl"
 _NON_AUTOMATABLE_SOFTCAP = 250
+
+
+def _make_event_reader(profile: str | None = None) -> Any:
+    """The telemetry event reader: the routed reader serving the writer's catalog (scripts/telemetry_capture/read_route.py)."""
+    from scripts.telemetry_capture import read_route  # noqa: PLC0415
+
+    return read_route.make_routed_reader(profile)
 
 
 # Sentinel default distinguishing "no cache rows supplied -> use the reader (back-compat / tests)"

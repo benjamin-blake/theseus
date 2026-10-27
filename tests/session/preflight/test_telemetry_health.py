@@ -85,9 +85,28 @@ def test_exactly_one_reader_call() -> None:
     reader = _reader(_all(telemetry_sessions=1))
     th.check_telemetry_health(reader)
     assert reader.named.call_args_list == [(("telemetry_health_count",), {})]
-    with patch.object(th._common, "_make_reader", return_value=reader) as make:
+    with patch.object(th._common, "_make_event_reader", return_value=reader) as make:
         th.check_telemetry_health()
     make.assert_called_once()
+
+
+def test_gauge_reads_through_the_common_event_reader_seam(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts.telemetry_capture import read_route
+
+    reader = _reader(_all(telemetry_sessions=2))
+    built: list[str | None] = []
+    with monkeypatch.context() as routed:
+        routed.setattr(read_route, "make_routed_reader", lambda profile=None: built.append(profile) or reader)
+        assert th.check_telemetry_health()["status"] == "pass" and built == [None]
+    assert reader.named.call_args_list == [(("telemetry_health_count",), {})]
+
+    ops = MagicMock()
+    monkeypatch.setattr(read_route, "make_reader", lambda profile=None: ops)
+    monkeypatch.setattr(read_route, "_parameter", lambda *a, **k: None)
+    monkeypatch.delenv(read_route.CATALOG_ENV, raising=False)
+    gauge = th.check_telemetry_health()
+    assert gauge["status"] == "unavailable" and gauge["reason"].startswith("TelemetryCatalogUnresolved: ")
+    assert gauge["tables"] == dict.fromkeys(th.TABLES) and ops.named.call_count == 0
 
 
 def _run_main(tmp_path: Path, *, creds: str, reader: MagicMock) -> tuple[dict, MagicMock]:
@@ -101,6 +120,7 @@ def _run_main(tmp_path: Path, *, creds: str, reader: MagicMock) -> tuple[dict, M
     report_path = tmp_path / ".preflight-report.json"
     patches = [
         patch("scripts.preflight._common._make_reader", return_value=reader),
+        patch("scripts.preflight._common._make_event_reader", return_value=reader),
         patch("scripts.preflight.env_git.check_venv", return_value=True),
         patch("scripts.preflight.env_git.get_git_status", return_value=("agent/test", False, [])),
         patch("scripts.preflight.env_git.check_main_freshness", return_value=freshness),
