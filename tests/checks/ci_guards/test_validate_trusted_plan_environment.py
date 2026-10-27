@@ -231,3 +231,37 @@ def test_unreadable_input_fails_instead_of_skipping(monkeypatch) -> None:
     failed: list[str] = []
     v.validate_trusted_plan_environment(failed)
     assert any("unreadable" in x for x in failed)
+
+
+def test_trigger_shapes() -> None:
+    assert v._triggers({"on": "push"}) == {"push"}
+    assert v._triggers({"on": ["push", "pull_request"]}) == {"push", "pull_request"}
+    assert v._triggers({"on": {"push": {}}}) == {"push"}
+    assert v._triggers({}) == set()
+
+
+def test_unbalanced_block_is_returned_whole() -> None:
+    assert v._balanced_block("{ open", 0) == "{ open"
+
+
+def test_no_environment_declared() -> None:
+    assert any("no github_repository_environment" in x for x in v.check_terraform({"a.tf": "# nothing"}))
+
+
+def test_codeowners_unanchored_basename_pattern() -> None:
+    assert v._owned("scripts/ci/a.py", "a.py @o\n")
+    assert not v._owned("scripts/ci/b.py", "a.py @o\n")
+
+
+def test_registered_check_passes_on_the_real_tree(capsys) -> None:
+    failed: list[str] = []
+    v.validate_trusted_plan_environment(failed)
+    assert failed == []
+    assert "PASS" in capsys.readouterr().out
+
+
+def test_registered_check_reports_each_violation(monkeypatch) -> None:
+    monkeypatch.setattr(v, "run_all", lambda *_: [["a: synthetic breach"], []])
+    failed: list[str] = []
+    v.validate_trusted_plan_environment(failed)
+    assert failed == ["trusted-plan-environment: a: synthetic breach"]
