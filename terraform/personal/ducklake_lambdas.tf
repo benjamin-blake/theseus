@@ -218,8 +218,8 @@ resource "aws_iam_role_policy" "ducklake_writer" {
 }
 
 # ---------------------------------------------------------------------------
-# Read-scoped execution role: S3 GetObject ONLY on the ducklake/ + smoke prefixes and the catalog-scoped telemetry-blobs/
-# prefix (transcript_content's blob read; no Put/Delete -> writes denied, no List), DSN secret read, logs. No metrics.
+# Read-scoped execution role: S3 GetObject ONLY on the ducklake/ + smoke prefixes (no Put/Delete -> writes denied), DSN
+# secret read, logs. No metrics, and no telemetry grant: event reads are the telemetry reader's (Decision 236).
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_role" "ducklake_reader" {
@@ -260,14 +260,6 @@ resource "aws_iam_role_policy" "ducklake_reader" {
           "${aws_s3_bucket.data_lake.arn}/${local.ducklake_prod_data_prefix}/*",
           "${aws_s3_bucket.data_lake.arn}/${local.ducklake_smoke_data_prefix}/*",
         ]
-      },
-      {
-        # transcript_content reads a stored blob object by its full key (HEAD, then a ranged GET). GetObject on the
-        # catalog-scoped blob prefix only: no List (an absent key answers 403), no Put or Delete.
-        Sid      = "TelemetryBlobRead"
-        Effect   = "Allow"
-        Action   = ["s3:GetObject"]
-        Resource = ["${aws_s3_bucket.data_lake.arn}/${local.telemetry_blob_data_prefix}/${local.ducklake_smoke_meta_schema}/*"]
       },
       {
         Sid      = "S3ListDataPrefix"
@@ -357,10 +349,6 @@ resource "aws_lambda_function" "ducklake_reader" {
       DUCKLAKE_DATA_PATH            = local.ducklake_prod_data_path
       DUCKLAKE_EXTENSION_DIRECTORY  = local.ducklake_extension_dir
       DUCKLAKE_FIELD_SEMANTICS_PATH = "/var/task/config/lambda/ducklake/field_semantics.yaml"
-      # The smoke binding by its fixed locals, never the moved writer pin: the rollback slot until PLAN-telemetry-production-flip's narrow PR.
-      TELEMETRY_META_SCHEMA = local.ducklake_smoke_meta_schema
-      TELEMETRY_DATA_PATH   = local.ducklake_smoke_data_path
-      TELEMETRY_BLOB_ROOT   = local.ducklake_telemetry_smoke_blob_root
     }
   }
 
