@@ -2,8 +2,9 @@
 
 One post-deploy gate, --lambda-telemetry-reader, proves the telemetry reader is URL-only, bound to the production
 telemetry catalog on a SELECT-only login attached READ_ONLY (observed live, never echoed from a flag), serves exactly the
-event verbs minus transcript_content, answers no ops verb and no content, and reads the four event tables. It reads
-production and writes nothing. Gates call core._function_url / core._sigv4_invoke through the module object (Decision 104).
+event verbs minus transcript_content, answers no ops verb and no content, reads the four event tables, and answers the
+session and verification-verb checks the shared reader answered before slice 2c's cleanup. It reads production and writes
+nothing. Gates call core._function_url / core._sigv4_invoke through the module object (Decision 104).
 
 Failure text carries only a status code, a handler error_type, an exception class name or a botocore error code; never a
 response body, an error message, an ARN, an account id or a URL (Decision 101).
@@ -14,7 +15,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from scripts.ducklake_smoke import core, lambda_telemetry_gates
+from scripts.ducklake_smoke import core, lambda_ec_gates, lambda_telemetry_gates
 from src.common.ducklake_event_read_verbs import EVENT_READS
 
 _FUNCTION_NAME = "agent-platform-ducklake-telemetry-reader"
@@ -125,8 +126,33 @@ def _check_reads(url: str, profile: str | None, region: str) -> None:
     )
 
 
+def _check_sessions(url: str, profile: str | None, region: str) -> None:
+    """An absent session answers no rows, a malformed one 400 named_read_input without an echo, then the verification verbs."""
+
+    def call(payload: dict[str, Any]) -> Any:
+        return _invoke(url, payload, profile, region)
+
+    def fail(reason: str, detail: object) -> None:
+        raise _fail(f"{reason}: {detail}")
+
+    as_of = datetime.now(timezone.utc).isoformat()
+
+    def session(session_id: str) -> Any:
+        params = {"session_id": session_id, "as_of": as_of}
+        return call({"action": "named_read", "verb": "session_state_and_duration", "params": params})
+
+    if _expect_ok(session(lambda_ec_gates._ABSENT_SESSION), "absent session").get("row_count") != 0:
+        raise _fail("a well-formed absent session_id returned rows")
+    bad = session(lambda_ec_gates._MALFORMED_MARKER)
+    if lambda_ec_gates._MALFORMED_MARKER in bad.text:
+        raise _fail(f"a malformed session_id was echoed status={bad.status_code}")
+    _expect_400(bad, "malformed session", "named_read_input")
+    lambda_ec_gates._verification_verb_checks(call, fail)
+
+
 def lambda_telemetry_reader(*, profile: str | None = None, region: str = "eu-west-2") -> None:
-    """Prove the telemetry reader is URL-only, production-pinned, READ_ONLY, content-free and reads the event tables."""
+    """Prove the telemetry reader is URL-only, production-pinned, READ_ONLY, content-free, reads the event tables and
+    answers the session and verification-verb checks."""
     url = core._function_url("telemetry_reader")
     _check_unsigned(url, profile, region)
     _check_describe(url, profile, region)
@@ -134,4 +160,5 @@ def lambda_telemetry_reader(*, profile: str | None = None, region: str = "eu-wes
     _check_refusals(url, profile, region)
     _check_direct_invoke_denied(profile, region)
     _check_reads(url, profile, region)
+    _check_sessions(url, profile, region)
     print(_SUCCESS)

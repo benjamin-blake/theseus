@@ -18,8 +18,9 @@ from scripts.telemetry_verify.dedupe import parse_timestamp
 # The first UTC day after the day the producer fixes build's PARSER_VERSION 4 commit (12c017fd, 2026-10-17 23:23Z) reached
 # main: a session created before that merge runs the parser_version 3 producer and writes no harness key.
 V4_FIRST_JUDGED_DAY = "2026-10-18"
-# None until PLAN-telemetry-production-flip sets it once the flip day is known.
-PRODUCTION_FIRST_JUDGED_DAY: str | None = None
+# The first full UTC day after PLAN-telemetry-production-flip's flip (8a846418) converged on ducklake_telemetry at
+# 2026-10-27 11:39:15Z (first_full_production_day in that plan's FLIP-RECORD.md).
+PRODUCTION_FIRST_JUDGED_DAY: str | None = "2026-10-28"
 REPOSITORIES = ("benjamin-blake/theseus", "otl-labs/ontheloop")
 THREAD_FILE = "thread_sessions.json"
 SESSIONS_FILE = "sessions.json"

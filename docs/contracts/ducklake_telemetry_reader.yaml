@@ -14,7 +14,8 @@ contract:
     on its own SELECT-only scoped login, attached READ_ONLY; it takes no catalog selector and never reaches the ops verbs, the
     smoke catalog, the blob root or transcript content. It serves exactly the EVENT_READS registry
     (src/common/ducklake_event_read_verbs.py) minus transcript_content. Read-side tenancy is the function and principal
-    boundary in a single-tenant data plane (Decision 236 cl.4). Until the production flip it reads the empty production catalog.
+    boundary in a single-tenant data plane (Decision 236 cl.4). It is the only function serving the event verbs: the shared
+    reader serves none (ducklake_reader.yaml).
   governance:
     auth_type: >-
       AWS_IAM SigV4-signed Function URL, invoked URL-only; read-only IAM role (S3 GetObject and List on the production
@@ -31,10 +32,10 @@ contract:
     authored_via: PLAN-telemetry-reader-and-smoke-twin (T2.36 slice 2c)
     rationale: >-
       Class B contracts start provisional_v0: the verb set, error taxonomy and payload shapes are validated against real
-      traffic before ratification. The function has served no production traffic yet.
+      traffic before ratification. The function has served production telemetry since the production flip (2026-10-27).
     surfacing_note: >-
-      Only the production_invocations condition applies: there is no first production invocation date until the production
-      flip. check_re_ratification_trigger schema-validates this block in CI.
+      Only the production_invocations condition applies: the trigger declares no day-based condition, so no first production
+      invocation date is recorded. check_re_ratification_trigger schema-validates this block in CI.
     re_ratification_trigger:
       first_of:
         - "production_invocations >= 500"
@@ -44,7 +45,7 @@ verbs:
     payload_schema_ref: >-
       event envelope {action: "describe"}. Connectionless: returns the function name, the pinned catalog's meta_schema and
       whether its data path is the smoke path, and the per-verb parameter schema of the served verbs only. No connection is
-      opened. Until the production flip rewrites them, the served verbs' descriptions still say they read the smoke catalog.
+      opened. The served verbs' descriptions say they read the production telemetry catalog through this function.
     response_codes:
       200: "body {ok, function, catalog: {meta_schema, data_path_is_smoke}, verbs}"
       500: "unmapped: any exception answers 500 {ok, error_type, error_class, request_id, action, elapsed_ms}, never its message"
@@ -83,6 +84,8 @@ audit_invariants:
   - "Read-side tenancy is the function boundary: in a single-tenant data plane no tenant predicate is built into the read verbs (Decision 236 cl.4). A data plane holding a second tenant reopens this."
   - "No request that reaches the handler answers the Function URL's 502: an exception no row maps answers 500 unmapped, a dead catalog connection that survives the reopen-once answers 503 catalog_unavailable and an event read past its deadline answers 504 read_deadline_exceeded (residual owner rec-4303). Process-level failures (an interrupt that overruns the margin, out of memory, Runtime.ExitError, an init failure) remain the runtime's 502 (rec-4296 owns the exits)."
   - "Declared residual: the ducklake_unmapped_error and ducklake_named_read_input log lines carry the exception message redacted and truncated to 300 characters, so a request value inside an exception's message can reach the log."
+  - "Event read deadline (rec-4474, moved from ducklake_reader.yaml with the event verbs): named_read runs each query attempt (the first and the reopen-once retry) under a deadline at the earlier of the Lambda's remaining time minus 10 s and the caller's deadline_ms. At the deadline the DuckDB statement is interrupted (re-sent every 50 ms until the call returns, because DuckDB 1.5.4 drops an interrupt sent before execution starts), a deadline already spent never runs the query, and the answer is 504 read_deadline_exceeded, which the client never retries. describe and attach_check run with no deadline. The interrupted connection is kept; its next acquire runs one catalog probe (a select over __ducklake_metadata_<alias>.ducklake_metadata) and reopens through the existing probe-failure path if it fails, with no per-acquire catalog round trip."
+  - "Threads and spill (rec-4474, moved from ducklake_reader.yaml with the event verbs): the connection runs DuckDB at threads=1, so catalog scans and Parquet reads are serial. An 8-thread telemetry connection with pg_use_ctid_scan=false was tried on 2026-10-19 and withdrawn: its telemetry_orphan_counts smoke read exceeded the 100 s deadline against the same read passing at 1 thread, so parallelism returns only with measured evidence (the compaction plan). memory_limit is 300MB and the spill directory is /tmp/telemetry-spill, capped at 300MB inside the function's default 512MB of /tmp, because the function's working directory is read-only (a spill to the default relative .tmp answered 500 unmapped)."
 amendment_log:
   - date: "2026-10-25"
     semantic_break: false
@@ -92,4 +95,24 @@ amendment_log:
       and named_read verbs, the typed terminal answers and the audit invariants.
     migration_story: >-
       A new function, so no existing verb or response changes. It reads the empty production catalog until the flip.
+  - date: "2026-10-27"
+    semantic_break: false
+    change_class: governance_note_add
+    summary: >-
+      PLAN-telemetry-production-flip PR cleanup (Decision 236 cl.2): the event read deadline and threads-and-spill invariants
+      move here from ducklake_reader.yaml with the event verbs (they were written by PLAN-telemetry-cold-read-deadline,
+      rec-4474, for the shared reader's telemetry slot); this function's deadline_ms, 504 read_deadline_exceeded and no-502
+      wording already stood. The moved text keeps threads=1, the setting in force (an 8-thread trial was withdrawn on
+      2026-10-19).
+    migration_story: >-
+      No answer changes: this function has run the same deadline, probe, thread and spill code since it was first deployed.
+  - date: "2026-10-27"
+    semantic_break: false
+    change_class: prose_improvement
+    summary: >-
+      PLAN-telemetry-production-flip PR cleanup: the description, provisional rationale, surfacing note and describe wording
+      drop their before-the-flip sentences (the empty production catalog, no production traffic, the smoke-catalog verb
+      descriptions) now that the production flip has converged.
+    migration_story: >-
+      Prose only: the served verbs, the payloads and the answers are unchanged.
 previous_versions: []

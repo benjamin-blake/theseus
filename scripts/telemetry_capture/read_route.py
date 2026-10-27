@@ -2,9 +2,11 @@
 
 Every telemetry read client routes the event verbs by the catalog the deployed writer serves, read from the writer's deploy
 output /agent-platform/ducklake/telemetry_catalog (DUCKLAKE_TELEMETRY_CATALOG overrides it, as DUCKLAKE_READER_URL does the
-reader URL): ducklake_smoke's events are served by the shared reader, ducklake_telemetry's by the telemetry reader's own
-Function URL. Ops reads always use the shared reader. Nothing resolves at construction, so a failure raises at the first use,
-inside the caller's own handler. Errors name a source, never a value, a URL or an AWS error text (Decision 101).
+reader URL): ducklake_telemetry's events are served by the telemetry reader's own Function URL, and ducklake_smoke has no
+event reader since slice 2c's cleanup (the shared reader serves no event verb), so an event read on that route raises
+NoEventReaderOnSmoke before any call. Ops reads always use the shared reader. Nothing resolves at construction, so a
+failure raises at the first use, inside the caller's own handler. Errors name a source, never a value, a URL or an AWS
+error text (Decision 101).
 """
 
 from __future__ import annotations
@@ -29,6 +31,10 @@ EVENT_VERBS = frozenset(EVENT_READS)
 
 class TelemetryCatalogUnresolved(RuntimeError):
     """The writer's catalog deploy output is unreadable or names no known catalog."""
+
+
+class NoEventReaderOnSmoke(TelemetryCatalogUnresolved):
+    """The deploy output names ducklake_smoke, whose events no deployed reader serves (Decision 236)."""
 
 
 def _client(service: str, profile: str | None, region: str) -> Any:
@@ -119,8 +125,11 @@ class RoutedReader:
         return dict(self._ops_verbs) if self._ops_verbs is not None else dict(self._ops.describe())
 
     def named(self, verb: str, **params: Any) -> list[dict[str, Any]]:
-        reader = self._event_reader() if verb in EVENT_VERBS else self._ops
-        return list(reader.named(verb, **params))
+        if verb not in EVENT_VERBS:
+            return list(self._ops.named(verb, **params))
+        if self.shared:
+            raise NoEventReaderOnSmoke(f"the telemetry catalog route {self.catalog} has no event reader")
+        return list(self._event_reader().named(verb, **params))
 
     def describe(self) -> dict[str, Any]:
         if self._described is None:

@@ -140,9 +140,9 @@ def test_event_verbs_route_by_the_deploy_output(aws: Aws, monkeypatch: pytest.Mo
     monkeypatch.setenv(read_route.CATALOG_ENV, SMOKE)
     ops = Ops()
     smoke = read_route.make_routed_reader(ops=ops)
-    assert smoke.named(EVENT_VERB, day="d") == [{"reader": "ops", "verb": EVENT_VERB}] and ops.calls == [
-        (EVENT_VERB, {"day": "d"})
-    ]
+    with pytest.raises(read_route.NoEventReaderOnSmoke):
+        smoke.named(EVENT_VERB, day="d")
+    assert ops.calls == []
     assert (smoke.catalog, smoke.shared, smoke.event_function) == (SMOKE, True, read_route.SHARED_READER_FUNCTION)
     assert smoke.binding() is None and Events.built == 0
 
@@ -152,6 +152,20 @@ def test_event_verbs_route_by_the_deploy_output(aws: Aws, monkeypatch: pytest.Mo
     assert prod.named(EVENT_VERB, day="d") == [{"reader": "telemetry", "verb": EVENT_VERB}] and ops.calls == []
     assert prod.named(EVENT_VERB) and Events.built == 1 and prod._events.profile == "a-profile"
     assert (prod.catalog, prod.shared, prod.event_function) == (PROD, False, read_route.READER_FUNCTION)
+
+
+def test_an_event_verb_on_the_smoke_route_raises_without_a_call(aws: Aws, monkeypatch: pytest.MonkeyPatch) -> None:
+    resolved: list[str | None] = []
+    monkeypatch.setattr(read_route, "resolve_catalog", lambda profile=None: resolved.append(profile) or SMOKE)
+    ops = Ops()
+    routed = read_route.make_routed_reader(ops=ops)
+    assert routed.named(OPS_VERB, day="d") == [{"reader": "ops", "verb": OPS_VERB}]
+    for verb in sorted(EVENT_READS):
+        with pytest.raises(read_route.NoEventReaderOnSmoke) as raised:
+            routed.named(verb, day="d")
+        assert isinstance(raised.value, read_route.TelemetryCatalogUnresolved)
+        assert str(raised.value) == f"the telemetry catalog route {SMOKE} has no event reader"
+    assert ops.calls == [(OPS_VERB, {"day": "d"})] and Events.built == 0 and aws.calls == [] and resolved == [None]
 
 
 def test_describe_merges_ops_rows_with_the_event_readers_rows(aws: Aws, monkeypatch: pytest.MonkeyPatch) -> None:

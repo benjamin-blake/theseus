@@ -394,16 +394,24 @@ def test_handler_errors_module_bundled_by_serving_functions_only(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_reader_bundle_carries_the_transcript_content_modules():
+def test_reader_bundle_carries_no_event_read_module():
     manifests = load_all()
     reader = set(manifests["ducklake_reader"].includes)
     for module in (
+        "src/common/ducklake_event_reads.py",
+        "src/common/ducklake_event_read_sql.py",
+        "src/common/ducklake_event_read_verbs.py",
         "src/common/ducklake_event_content.py",
+        "src/common/ducklake_read_deadline.py",
         "src/common/ducklake_telemetry_blobstore.py",
         "src/telemetry/blobs.py",
         "src/telemetry/request.py",
     ):
-        assert module in reader, f"ducklake_reader must bundle {module}"
+        assert module not in reader, f"ducklake_reader must not bundle {module}"
+    assert not [m for m in reader if m.startswith("src/telemetry/")]
+    telemetry_reader = set(manifests["ducklake_telemetry_reader"].includes)
+    for module in ("src/common/ducklake_event_reads.py", "src/common/ducklake_read_deadline.py"):
+        assert module in telemetry_reader, module
     assert "src/common/ducklake_event_content.py" in set(manifests["data-pipeline"].excludes)
 
 
