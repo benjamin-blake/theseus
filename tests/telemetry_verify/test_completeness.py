@@ -175,3 +175,12 @@ def test_lists_that_stop_short_of_the_judged_day_are_refused(tmp_path: Path) -> 
     _write(tmp_path, cp.THREAD_FILE, [{"sessions": [], "next_cursor": "more"}])
     assert not cp.lists_cover(cp.Lists(thread_complete=False, sessions_complete=True), DAY)
     assert not cp.load_lists(tmp_path).thread_complete
+
+
+def test_first_judged_day_is_per_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert cp.first_judged_day("ducklake_smoke") == cp.V4_FIRST_JUDGED_DAY and cp.PRODUCTION_FIRST_JUDGED_DAY is None
+    assert cp.first_judged_day("ducklake_telemetry") is None
+    monkeypatch.setattr(cp, "V4_FIRST_JUDGED_DAY", "2030-01-01")
+    monkeypatch.setattr(cp, "PRODUCTION_FIRST_JUDGED_DAY", "2030-02-02")
+    assert (cp.first_judged_day("ducklake_smoke"), cp.first_judged_day("ducklake_telemetry")) == ("2030-01-01", "2030-02-02")
+    assert cp.first_judged_day("ducklake_ops") is None and cp.first_judged_day("") is None

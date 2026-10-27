@@ -70,6 +70,13 @@ ENTRIES: tuple[Entry, ...] = (
         full_segment="full_after_lint",
     ),
     Entry(
+        name="validate_ci_branch_state_fence",
+        module="scripts.checks.iam_tf.validate_ci_branch_state_fence",
+        attr="validate_ci_branch_state_fence",
+        pre=True,
+        full_segment="full_after_lint",
+    ),
+    Entry(
         name="validate_planner_secret_value_reads",
         module="scripts.checks.iam_tf.validate_planner_secret_value_reads",
         attr="validate_planner_secret_value_reads",

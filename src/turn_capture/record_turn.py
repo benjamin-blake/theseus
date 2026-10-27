@@ -180,7 +180,9 @@ def record_turn(
     project_ref: str,
     billing_shape: str = "fixed_non_rollover_allowance",
     session_final: bool = False,
+    resend_tree: bool = False,
 ) -> CaptureResult:
+    """*resend_tree* re-emits every row of the tree, keeping the cursor's pins and finalization cuts (a catalog reset)."""
     if billing_shape not in BILLING_SHAPES:
         raise ValueError(f"billing_shape must be one of {BILLING_SHAPES}")
     if not project_ref:
@@ -202,7 +204,7 @@ def record_turn(
             billing_shape=billing_shape,
             session_started_at_ms=started_ms,
         )
-        matches = (cursor.producer, cursor.parser_version) == (PRODUCER, PARSER_VERSION)
+        matches = not resend_tree and (cursor.producer, cursor.parser_version) == (PRODUCER, PARSER_VERSION)
         base = cursor if matches else cursor.reset(PARSER_VERSION)
     ctx = Ctx(PRODUCER, PRODUCER_VERSION, PARSER_VERSION, pin, billing_shape, cap)
     diag: Counter[str] = Counter()
