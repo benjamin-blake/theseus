@@ -48,6 +48,7 @@ RED = {
     "not_action": _json_stmt('["ssm:GetParameter"]', '["*"]', key="Resource").replace("Action =", "NotAction ="),
     "bare_local_resource": _json_stmt('["ssm:GetParameter"]', "local.some_arns"),
     "hcl_style": _hcl_stmt('["ssm:GetParameter"]', f'["{PREFIX}/*"]'),
+    "nonliteral_action": _json_stmt("local.actions", f'["{PREFIX}/agent-platform/*"]'),
     "hcl_not_resources": _hcl_stmt('["ssm:GetParameter"]', "[]", key="not_resources"),
 }
 
@@ -99,3 +100,9 @@ def test_registered_in_pre_and_full_sequence() -> None:
     name = "validate_secret_parameter_grants"
     assert name in {s.name for s in registry.pre_sequence() if s.kind == "check"}
     assert name in {s.name for s in registry.full_sequence() if s.kind == "check"}
+
+
+def test_missing_roots_skip(tmp_path: Path) -> None:
+    failed: list[str] = []
+    validate_secret_parameter_grants(failed, root=tmp_path)
+    assert failed == []

@@ -53,6 +53,39 @@ def secure_string_read_missing(rname: str, resolved_name: str | None, statements
     return _all_of_covered(READ_ACTIONS, statements, rname, resolved_name)
 
 
+def type_attr(rtype: str, body: str) -> dict[str, str]:
+    """The raw type attribute of an aws_ssm_parameter body ({} for other types or when it is not a plain reference)."""
+    m = (
+        re.search(r'\btype\s*=\s*("(?:[^"\\]|\\.)*"|local\.\w+|aws_\w+\.\w+\.\w+)', body)
+        if rtype == "aws_ssm_parameter"
+        else None
+    )
+    return {"type": m.group(1)} if m else {}
+
+
+def secure_string_findings(
+    rtype: str,
+    rname: str,
+    fname: str,
+    resolved_name: str | None,
+    attrs: dict[str, str] | None,
+    role_statements: dict[str, list[dict]],
+    key: str,
+) -> list[str] | None:
+    """Read-side findings for a SecureString aws_ssm_parameter (one per role lacking cover); None for any other resource."""
+    if rtype != "aws_ssm_parameter" or not is_secure_string(attrs):
+        return None
+    findings = []
+    for role_key, statements in role_statements.items():
+        missing = secure_string_read_missing(rname, resolved_name, statements)
+        if missing:
+            findings.append(
+                f"{key} SecureString {rtype} {rname!r} in {fname} lacks {missing} on a Resource covering its own name in "
+                f"the {role_key} role policy (Decision 237: its refresh decrypts, so ssm:Describe* or List* cannot cover it)"
+            )
+    return findings
+
+
 def check_secure_string_write_coverage(
     apply_statements: list[dict],
     resources: list[tuple[str, str, str]],

@@ -21,6 +21,7 @@ from typing import Any
 import yaml
 
 from scripts.checks import _common, registry
+from scripts.checks.iam_tf import validate_invoke_implies_resolve as _vir
 
 # Path-shaped literal (evaluator_kinds.check, contract-population.yaml): a full joined literal is
 # admitted as STRONGER evidence of reading than a bare basename match.
@@ -43,16 +44,6 @@ def _load_exceptions(contract_path: Path) -> set[str] | None:
     return {str(e["resource"]) for e in exceptions if isinstance(e, dict) and "resource" in e}
 
 
-def _block_body(text: str, open_idx: int) -> str:
-    depth = 0
-    for i in range(open_idx, len(text)):
-        depth += text[i] == "{"
-        depth -= text[i] == "}"
-        if depth == 0:
-            return text[open_idx + 1 : i]
-    return text[open_idx + 1 :]
-
-
 def _scan(terraform_dir: Path) -> tuple[list[tuple[str, str, str]], int]:
     """Return ([(kind, address, relative_file)] for each undeclared-candidate block, blocks examined).
 
@@ -68,7 +59,7 @@ def _scan(terraform_dir: Path) -> tuple[list[tuple[str, str, str]], int]:
             found.append(("value", f"aws_secretsmanager_secret_version.{m.group(1)}", rel))
         for m in _SSM_RESOURCE_RE.finditer(text):
             examined += 1
-            type_m = _TYPE_RE.search(_block_body(text, m.end() - 1))
+            type_m = _TYPE_RE.search(_vir._extract_block(text, m.end() - 1))
             if type_m is None or type_m.group(1) not in ('"String"', '"StringList"'):
                 found.append(("value", f"aws_ssm_parameter.{m.group(1)}", rel))
         for m in _DATA_VERSION_RE.finditer(text):
@@ -76,7 +67,7 @@ def _scan(terraform_dir: Path) -> tuple[list[tuple[str, str, str]], int]:
             found.append(("data_read", f"data.aws_secretsmanager_secret_version.{m.group(1)}", rel))
         for m in _DATA_SSM_RE.finditer(text):
             examined += 1
-            name_m = _NAME_RE.search(_block_body(text, m.end() - 1))
+            name_m = _NAME_RE.search(_vir._extract_block(text, m.end() - 1))
             raw = name_m.group(1) if name_m else ""
             if not raw.startswith('"') or raw.startswith('"/secret/'):
                 found.append(("data_read", f"data.aws_ssm_parameter.{m.group(1)}", rel))
