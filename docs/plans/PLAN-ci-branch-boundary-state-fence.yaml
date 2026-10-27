@@ -8,7 +8,6 @@ intent: >-
   principal-conditioned Deny in the admin-applied permissions boundary agent-platform-github-ci-apply-boundary, covering
   the CI branch role and the CI PR role, plus a guard test and read-only admin simulate proof. Follow-on to S1 (rec-4632)
   of the trusted plan executor ("no agent-controlled identity reads Terraform state or saved plans"); executes rec-4645.
-implementation_declared: true
 plan_type: IMPLEMENTATION
 verification_tier: V3
 plan_path: docs/plans/PLAN-ci-branch-boundary-state-fence.yaml
@@ -28,8 +27,10 @@ scope:
     "arn:aws:s3:::agent-platform-data-lake/ci-rca-evidence/review-transcripts/*"], Condition exactly
     { ArnLike = { "aws:PrincipalArn" = ["arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-branch",
     "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-pr"] } } -- exact role ARNs, no wildcard. One short
-    why-comment inside the object: the two CI roles agents reach without review (agent/* pushes, pull_request jobs) must
-    not read, overwrite or delete state, saved plans or review transcripts; the branch role's inline Deny (rec-4632) is
+    why-comment inside the object: the two CI roles that agents reach without review (agent/* pushes, pull_request
+    jobs) and that never need state, saved plans or review transcripts must not read, overwrite or delete them (the
+    planner, also PR-reachable, keeps its state access until S2 and S4 move it; the comment must not imply these two are
+    the only agent-reachable state readers); the branch role's inline Deny (rec-4632) is
     removable by an in-budget auto-applied PR, this copy is admin-held (Decision 143 cl.1, rec-4645); the condition keeps
     the apply role, planner, PlatformDev and every other carrier of this shared boundary unaffected. The comment
     contains no "[", "]", "{" or "}" character and no quoted star (the bracket-regex trap recorded at
@@ -160,7 +161,7 @@ verification_plan:
     (affected_tests.py:136-142); add it to the file-reading helper call
   hermetic: false
   graduation: waive
-  graduation_waiver_reason: A property of the test file's text that step 1's file pins; the selector itself has its own tests.
+  graduation_waiver_reason: A property of the test file's text (it reads the boundary by that quoted basename); a one-time pre-merge confirmation, and the selector itself has its own tests.
 - step: 5
   phase: pre-deploy
   action: the existing boundary guards and the whole iam_tf suite stay green with no edit to them
@@ -434,6 +435,13 @@ test_obligations:
   verification_step: 1
   test_selector: tests/checks/iam_tf/test_ci_branch_boundary_state_fence.py
   red_green_expectation: red before (the Sid is absent on origin/main, step 2), green after
+- source: config/agent/verification_registry/entries/ci-branch-boundary-state-fence.yaml
+  behavior: Records VP step 1's graduation (check_id ci-branch-boundary-state-fence, node_id the new test file).
+  verification_step: 9
+  command: bin/venv-python -m scripts.validate
+  waiver_reason: >-
+    A registry row is itself an executable check; validate_verification_registry and validate_graduation_completeness
+    run it in every tier and fail on a missing or non-resolving shard, which is the red-green proof.
 constraints:
 - terraform/bootstrap is admin-only; nothing is applied before merge and the apply is full-root with no -target (Decisions 126, 223).
 - No other statement in the boundary changes; test_telemetry_prefix_fence.py, test_url_only_invoke_guard.py and the S1 inline fence and its check stay unedited (Decision 235 cl.1).
