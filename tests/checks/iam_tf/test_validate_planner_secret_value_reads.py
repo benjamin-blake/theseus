@@ -288,3 +288,55 @@ def test_missing_session_local_fails(tree: Path) -> None:
 def test_logical_commands_joins_continuations_and_keeps_trailing_buffer() -> None:
     got = [" ".join(c.split()) for c in _logical_commands("# c\nterraform plan \\\n  -x\nnext \\")]
     assert got == ["terraform plan -x", "next"]
+
+
+_SSM_PREFIX = "arn:aws:ssm:${var.aws_region}:${var.account_id}:parameter"
+
+
+def _ssm_statement(sid: str, actions: str, resources: str, condition: bool = False) -> str:
+    cond = (
+        '    condition {\n      test = "StringLike"\n      variable = "aws:userid"\n'
+        "      values = [local.convergence_writer_session_name]\n    }\n"
+        if condition
+        else ""
+    )
+    head = f'  statement {{\n    sid = "{sid}"\n    effect = "Allow"\n'
+    return head + f"    actions = {actions}\n    resources = {resources}\n{cond}  }}\n"
+
+
+@pytest.mark.parametrize(
+    ("sid", "actions", "resources"),
+    [
+        ("NeonKey", '["ssm:GetParameter"]', f'["{_SSM_PREFIX}/secret/neon-api-key"]'),
+        ("GetStar", '["ssm:Get*"]', f'["{_SSM_PREFIX}/secret/*"]'),
+        ("ByPath", '["ssm:GetParametersByPath"]', f'["{_SSM_PREFIX}/secret"]'),
+        ("BareLocal", '["ssm:GetParameter"]', "local.arns"),
+    ],
+)
+def test_unconditioned_ssm_secret_read_fails(tree: Path, sid: str, actions: str, resources: str) -> None:
+    _append_planner_statement(tree, _ssm_statement(sid, actions, resources))
+    assert any(sid in f and "SSM" in f for f in _run(tree)), sid
+
+
+def test_ssm_read_conditioned_on_another_session_fails(tree: Path) -> None:
+    stmt = _ssm_statement("Other", '["ssm:GetParameter"]', f'["{_SSM_PREFIX}/secret/neon-api-key"]')
+    stmt = stmt.replace(
+        "  }\n",
+        '    condition {\n      test = "StringLike"\n      variable = "aws:userid"\n'
+        '      values = ["*:terraform-plan-pr"]\n    }\n  }\n',
+    )
+    _append_planner_statement(tree, stmt)
+    assert any("Other" in f for f in _run(tree))
+
+
+def test_ssm_conditioned_drift_read_and_tfvars_read_pass(tree: Path) -> None:
+    _append_planner_statement(
+        tree, _ssm_statement("DriftRead", '["ssm:GetParameter"]', f'["{_SSM_PREFIX}/secret/neon-api-key"]', condition=True)
+    )
+    _append_planner_statement(
+        tree,
+        _ssm_statement(
+            "TfvarsRead", '["ssm:GetParameter"]', f'["{_SSM_PREFIX}/secret/agent-platform-terraform-personal-tfvars"]'
+        ),
+    )
+    assert _run(tree) == []

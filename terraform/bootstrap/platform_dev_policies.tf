@@ -95,6 +95,17 @@ locals {
         ]
       },
       {
+        # Decision 237 (secrets-to-ssm-grants): the agent runtime reads exactly the two inference-key parameters by
+        # literal ARN (the parameters do not exist yet, so no data-source lookup; ARNs are built from variables).
+        Sid    = "InferenceCredentialsParameterRead"
+        Effect = "Allow"
+        Action = ["ssm:GetParameter"]
+        Resource = [
+          "arn:aws:ssm:${var.aws_region}:${var.account_id}:parameter/secret/agent-platform-deepseek-api-key",
+          "arn:aws:ssm:${var.aws_region}:${var.account_id}:parameter/secret/agent-platform-anthropic-api-key",
+        ]
+      },
+      {
         # Scoped to exactly the two inference-credential secret ARNs (by-name lookup, Decision 157
         # DescribeSecret metadata only -- the rendered document is byte-identical to live).
         Sid    = "InferenceCredentialsRead"
