@@ -15,11 +15,15 @@ phase: >-
   security_advisory (soft-warn category; no tier_item claimed, so the Tier Item Freshness Gate is skipped). Executes
   rec-4639, slice S6 of the trusted plan executor split.
 scope:
-  - file: scripts/terraform_plan_digest.py
+  - file: scripts/ci/terraform_plan_digest.py
     action: Create
     purpose: >-
       The reviewer digest, moved out of the guard (Decision 128: the guard would pass 500 SLOC with the renderers) and made
-      values-free. CLI: python3 scripts/terraform_plan_digest.py [--literals-from PATH ...] <plan.json>; exit 0 digest
+      values-free. Stdlib only (review.sh runs it with the runner's system python3). Imports the guard as
+      `from scripts.terraform_apply_guard import ...`; for CLI runs (invoked by path from terraform/personal) it inserts the
+      repo root (Path(__file__).resolve().parents[2]) on sys.path inside the `if __name__ == "__main__":` block only, as
+      scripts/roadmap/plan_audit.py:31 does, with no import-time raise. Carries the preamble and truncation marker moved from
+      the guard. CLI: python3 scripts/ci/terraform_plan_digest.py [--literals-from PATH ...] <plan.json>; exit 0 digest
       printed, 1 unreadable or non-object plan. build_digest(plan, literals=frozenset(), size_cap=8000) -> str. Iterates
       changes ONLY through terraform_apply_guard.iter_resource_changes (the verdict's traversal, so the digest can never list
       a different resource set). Output: the data-not-instructions preamble (extended to say the digest is names-only and
@@ -32,7 +36,8 @@ scope:
       aws_iam_user_policy, aws_iam_group_policy and every RESOURCE_POLICY_TYPES entry that has one): parse before and after
       JSON, and per Effect list action tokens added (+) and removed (-) across Action and NotAction (NotAction tokens
       prefixed "not "); unknown after -> "policy=(known after apply)", unparseable -> "policy=<unparsed>"; (b)
-      aws_lambda_permission principal and action, always shown (the T2.45 forced-field set); (c) aws_lambda_function_url
+      aws_lambda_permission principal, action and function_name, always shown even when unchanged (the T2.45 forced-field
+      set), each literal-gated like every other value; (c) aws_lambda_function_url
       authorization_type. Resources, conditions, Sids, tags, descriptions, names and output values never print. Literal set:
       every double-quoted string in the given .tf files (a directory means its *.tf, non-recursive) that contains no ${
       interpolation, unescaped; no --literals-from means an empty set (everything gated prints <non-literal>). _redact
@@ -49,7 +54,7 @@ scope:
     action: Modify
     purpose: >-
       (1) Validate CONTEXT_DESCRIPTION against ^[A-Za-z0-9 ().,:_/-]{1,300}$; on mismatch _starved_marker + outcome=starved
-      + exit 1 before any reviewer call. (2) Digest via python3 "${WORKSPACE_ROOT}/scripts/terraform_plan_digest.py"
+      + exit 1 before any reviewer call. (2) Digest via python3 "${WORKSPACE_ROOT}/scripts/ci/terraform_plan_digest.py"
       --literals-from . plan.json > plan_digest.txt (same STARVED path on failure). (3) Prompt replaced by exactly: "Review
       the terraform plan digest below for ${CONTEXT_DESCRIPTION}. It has already passed the deterministic guard (no
       destroy, no out-of-budget IAM/trust change; may include in-budget IAM inline-policy or attachment UPDATEs on managed
@@ -63,7 +68,9 @@ scope:
       CLAUDE_P_RETRY_BACKOFF_BASE, TMPDIR and LANG; claude args become --output-format json --tools "" --strict-mcp-config
       --max-turns "$MAX_TURNS" "$PROMPT" (no --allowedTools; never --bare, which disables OAuth on 2.1.148); transcripts are
       written by absolute path to the step's working directory (review.json, review_retry.json) so archive_transcripts.sh
-      is unchanged; REVIEW_CWD is removed afterwards. MAX_TURNS 5, the pre-written starved outcome, set +e, the single
+      is unchanged; REVIEW_CWD is removed by an EXIT trap so every exit path cleans it. (5) After classifying each transcript, print one line
+      "[SUBAGENT-REVIEW] stats num_turns=<n> permission_denials=<m>" to stderr (counts only, read from the last result
+      object with python3; missing fields print "unknown"), so the live check reads the job log, not the transcript. MAX_TURNS 5, the pre-written starved outcome, set +e, the single
       same-budget retry and the case block are unchanged.
   - file: .github/actions/subagent-plan-review/action.yml
     action: Modify
@@ -77,19 +84,39 @@ scope:
     action: Modify
     purpose: >-
       Comment-only, no net added lines: the two places that describe "terraform_apply_guard.py --digest" and "--allowedTools
-      Read" (around :217 and :370) name scripts/terraform_plan_digest.py and the no-tools reviewer.
+      Read" (around :217 and :370) name scripts/ci/terraform_plan_digest.py and the no-tools reviewer.
   - file: .github/workflows/subagent-review-smoke.yml
     action: Create
     purpose: >-
       Dispatch-only smoke of the real reviewer (fork 3a). Workflow name: subagent-review-smoke (the taxonomy row key). on: workflow_dispatch only; permissions contents: read; no
-      id-token, no AWS step; one job, if github.ref == 'refs/heads/main', timeout-minutes 15. Steps: checkout
-      (persist-credentials false), setup-python 3.12, then one run step (thin; the body is a here-doc-free call): copy
-      tests/fixtures/subagent_plan_review/plan.json and source.tf.txt (as main.tf) into a mktemp working dir, run
-      .github/actions/subagent-plan-review/review.sh there with CLAUDE_CODE_OAUTH_TOKEN from secrets, a fixed
-      CONTEXT_DESCRIPTION "a smoke test of the plan review gate on a fixture plan", WORKSPACE_ROOT=$GITHUB_WORKSPACE and a
-      temp GITHUB_OUTPUT; assert the written outcome is proceed or revise (not starved) and that no SENTINEL- string occurs
-      in plan_digest.txt, review.json or review_retry.json; print the outcome and num_turns only, never the transcript.
-      Archival is not run. Dispatched by Benjamin (Decision 205 clause 1: a maintainer-issued dispatch qualifies).
+      id-token, no AWS step; one job (id smoke), if github.ref == 'refs/heads/main', timeout-minutes 15. Steps: checkout
+      (persist-credentials false), setup-python 3.12, then one step with id run-smoke whose run body is the single line
+      `bash scripts/ci/subagent_review_smoke.sh` with CLAUDE_CODE_OAUTH_TOKEN from secrets in its env. Archival is not run. Dispatched by Benjamin (Decision 205 clause 1: a maintainer-issued dispatch qualifies).
+  - file: scripts/ci/subagent_review_smoke.sh
+    action: Create
+    purpose: >-
+      The smoke body. Copies tests/fixtures/subagent_plan_review/plan.json and source.tf.txt (as main.tf) into a mktemp
+      working dir, runs .github/actions/subagent-plan-review/review.sh there under GitHub's composite argv with a fixed
+      CONTEXT_DESCRIPTION "a smoke test of the plan review gate on a fixture plan", WORKSPACE_ROOT set to the repo root and
+      a temp GITHUB_OUTPUT, tolerating review.sh's exit 1 on REVISE; exits non-zero unless the last outcome written is
+      proceed or revise and no SENTINEL- string occurs in plan_digest.txt, review.json or review_retry.json. Prints only
+      "SMOKE outcome=<o>" and review.sh's stats line, never digest or transcript content.
+  - file: config/composite_action_body_baseline.yaml
+    action: Modify
+    purpose: >-
+      r3_workflows entry ".github/workflows/subagent-review-smoke.yml::smoke::run-smoke": 1 (the one-line delegate body,
+      measured as validate_composite_action_shell_bodies counts it).
+  - file: tests/test_subagent_review_smoke.py
+    action: Create
+    purpose: >-
+      Hermetic test of scripts/ci/subagent_review_smoke.sh with the stub claude from the values-stripped test: green on a
+      PROCEED and on a REVISE reply; red on a starved outcome (stub returns max-turns error) and on a SENTINEL- string
+      planted in each of plan_digest.txt, review.json and review_retry.json; stdout holds only the SMOKE and stats lines.
+  - file: docs/contracts/account-credential-inventory.yaml
+    action: Modify
+    purpose: >-
+      ANT-04 location field only: add subagent-review-smoke to the list of workflows consuming CLAUDE_CODE_OAUTH_TOKEN (T4.26
+      c4 enumerates surviving consumers). No other field or row changes.
   - file: config/ci_rca_taxonomy.yaml
     action: Modify
     purpose: >-
@@ -126,8 +153,10 @@ scope:
       AWS_SECRET_ACCESS_KEY seeded in the env, and a stub claude (paths baked into the stub, since env -i strips the env)
       that records NUL-separated argv, $PWD, ls -A of $PWD, env and stdin and replies PROCEED. Asserts: outcome=proceed; no
       SENTINEL- string in recorded stdin, argv, env or review.json; argv contains the pair --tools and the empty string and
-      --strict-mcp-config, and no --allowedTools, Read or plan.json; recorded cwd is empty and not under the repo or the
-      working dir; env has no AWS_ key; review.json lands in the working dir. (c) A CONTEXT_DESCRIPTION with a backtick or a
+      --strict-mcp-config, the prompt is the last argv element and is not the element after --tools, and no
+      --allowedTools, Read or plan.json; recorded cwd is empty and not under the repo or the
+      working dir and is gone after the run; env has no AWS_ key; review.json lands in the working dir; the stats line is in
+      stderr. (c) A CONTEXT_DESCRIPTION with a backtick or a
       $ yields outcome=starved and no claude call.
   - file: tests/test_terraform_apply_guard.py
     action: Modify
@@ -170,7 +199,7 @@ verification_plan:
   - step: 2
     phase: pre-deploy
     action: Digest unit tests, guard tests and review wiring tests.
-    command: bin/venv-python -m pytest tests/test_terraform_plan_digest.py tests/test_terraform_apply_guard.py tests/test_subagent_review_wiring.py -q
+    command: bin/venv-python -m pytest tests/test_terraform_plan_digest.py tests/test_terraform_apply_guard.py tests/test_subagent_review_wiring.py tests/test_subagent_review_smoke.py -q
     expected: exit 0.
     fix_if: A guard verdict test fails -- the traversal refactor changed behaviour; restore it. A wiring case fails -- fix review.sh, not the case.
     hermetic: true
@@ -181,9 +210,9 @@ verification_plan:
     phase: pre-deploy
     action: Real-data check -- the digest over the real IAM-update fixture with the live terraform/personal literals renders the added action and nothing else of value.
     command: >-
-      python3 scripts/terraform_plan_digest.py --literals-from terraform/personal
+      bin/venv-python scripts/ci/terraform_plan_digest.py --literals-from terraform/personal
       tests/fixtures/terraform_apply_guard/iam_inline_update_branch.json | tee /dev/stderr | grep -q "Allow +\[s3:GetObject\]"
-      && ! python3 scripts/terraform_plan_digest.py --literals-from terraform/personal
+      && ! bin/venv-python scripts/ci/terraform_plan_digest.py --literals-from terraform/personal
       tests/fixtures/terraform_apply_guard/iam_inline_update_branch.json | grep -qE "example-bucket|agent-platform-github-ci-branch|NewPermission"
       && echo REAL_DATA_OK
     expected: Prints the digest then REAL_DATA_OK.
@@ -196,8 +225,8 @@ verification_plan:
     phase: pre-deploy
     action: Stale-reference sweep for the retired surfaces (guard --digest, Read-allowed reviewer, plan.json prompt sentence).
     command: >-
-      ! grep -rnE 'terraform_apply_guard\.py"? --digest|allowedTools "?Read|plan\.json \(Read tool\)|build_digest' .github scripts tests/test_terraform_apply_guard.py
-      tests/test_subagent_review_wiring.py --include=*.sh --include=*.yml --include=*.py | grep -vE 'scripts/terraform_plan_digest\.py|tests/test_terraform_plan_digest\.py|tests/test_subagent_plan_review_values_stripped\.py|ci-rca\.yml'
+      ! grep -rnE 'terraform_apply_guard\.py"? --digest|allowedTools( to)? "?Read|plan\.json \(Read tool\)|build_digest' .github scripts tests/test_terraform_apply_guard.py
+      tests/test_subagent_review_wiring.py --include=*.sh --include=*.yml --include=*.py | grep -vE 'scripts/ci/terraform_plan_digest\.py|ci-rca\.yml'
       && echo SWEEP_OK
     expected: Prints SWEEP_OK (ci-rca.yml's own --allowedTools is a different agent and stays).
     fix_if: A hit -- update or remove that reference; a live caller of the old --digest mode is a stop-and-report.
@@ -246,14 +275,15 @@ verification_plan:
     phase: post-deploy
     action: >-
       The first push-to-main terraform-apply-sandbox run after the merge (the next terraform/personal merge) passes its
-      subagent review step, and its archived transcript shows a single turn with no tool use. The transcript read is a
-      read-only admin probe that prints counts only, never content.
+      subagent review step, and the step's stats line shows a single turn with no tool use (read from the job log, never
+      from the transcript).
     command: >-
       mcp__github__actions_list(method="list_workflow_runs", owner="otl-labs", repo="ontheloop",
       resource_id="terraform-apply-sandbox.yml", workflow_runs_filter={"event": "push", "branch": "main"}) -> first run
-      created after this plan's build merge -> job apply-sandbox step "Subagent plan review" conclusion; then
-      bin/venv-python -c "import boto3,json; s3=boto3.Session(profile_name='agent_platform_admin').client('s3'); t=s3.get_object(Bucket='agent-platform-data-lake', Key='ci-rca-evidence/review-transcripts/<run id>/review.json')['Body'].read().decode(); i=t.rfind('{\"type\":\"result\"'); d=json.loads(t[i:]) if i>=0 else {}; print('num_turns', d.get('num_turns'), 'permission_denials', len(d.get('permission_denials') or []), 'result_head', str(d.get('result'))[:7])"
-    expected: Review step success; num_turns 1; permission_denials 0; result_head PROCEED.
+      created after this plan's build merge -> job apply-sandbox step "Subagent plan review" conclusion;
+      mcp__github__get_job_logs(job_id=<apply-sandbox job id>, return_content=true, tail_lines=400) -> the
+      "[SUBAGENT-REVIEW] stats" line and the "Reviewer verdict" line.
+    expected: "Review step success; num_turns=1; permission_denials=0; the verdict line reads PROCEED."
     fix_if: >-
       The step starved or revised -- stop and report to the planning thread with the run URL; the apply is blocked
       fail-closed and nothing latches red for starved. Never re-run with tools.
@@ -269,7 +299,7 @@ verification_plan:
     hermetic: false
     graduation: not-applicable
 test_obligations:
-  - source: scripts/terraform_plan_digest.py
+  - source: scripts/ci/terraform_plan_digest.py
     behavior: Names-only digest; per-type values only when literal; keys stripped; outputs names only; shared traversal.
     verification_step: 2
     test_selector: tests/test_terraform_plan_digest.py
@@ -301,8 +331,26 @@ test_obligations:
     verification_step: 6
     command: bin/venv-python -m scripts.validate
     waiver_reason: Comment-only, behaviour-neutral; step 4's sweep proves the stale description is gone.
+  - source: scripts/ci/subagent_review_smoke.sh
+    behavior: Fails on a starved outcome or any SENTINEL- in the digest or transcripts; prints counts only.
+    verification_step: 2
+    test_selector: tests/test_subagent_review_smoke.py
+    red_green_expectation: red before (script missing), green after.
+  - source: config/composite_action_body_baseline.yaml
+    behavior: The smoke's one-line body is registered.
+    verification_step: 6
+    command: bin/venv-python -m scripts.validate
+    waiver_reason: >-
+      A one-row baseline; validate_composite_action_shell_bodies fails on an unregistered workflow body in every tier,
+      which is the red-green proof.
+  - source: docs/contracts/account-credential-inventory.yaml
+    behavior: ANT-04 lists the new token consumer.
+    verification_step: 6
+    command: bin/venv-python -m scripts.validate
+    waiver_reason: >-
+      A data-row location edit with no enforced behaviour; the contract's schema checks run in every tier.
   - source: .github/workflows/subagent-review-smoke.yml
-    behavior: Main-only dispatch smoke of the real reviewer; asserts not-starved and no sentinel.
+    behavior: Main-only dispatch smoke of the real reviewer; delegates to the tested script.
     verification_step: 6
     command: bin/venv-python -m scripts.validate
     waiver_reason: >-
@@ -337,7 +385,7 @@ constraints:
   - Never pass --bare (it disables OAuth on the pinned CLI) and never re-add a file tool to the reviewer.
   - Do not change claude_p_retry.sh (shared with ci-rca.yml) or the CLI pin.
   - The guard's verdict logic, exit codes and fail-closed behaviour are untouched (Decision 77, 92 point 1).
-  - Admin credentials only for step 8's read-only transcript probe (project critical rule).
+  - No admin-credential use anywhere in this plan (project critical rule); every live check reads GitHub job logs.
   - No rescue agents or workaround loops (Decision 55).
 context:
   - "Slice map: /mnt/project-files/trusted-plan-executor/SPLIT.md (S6). Consult: /mnt/project-files/values-stripped-plan-review/ADVICE.md. 6b: step6b-presentation.md in the same folder."
@@ -349,6 +397,8 @@ context:
   - "Decision 205 clause 2 deferral: the reviewer prompt stays in a composite action until T4.26 (clause 4); T4.26 c3/c5 must carry the no-tools, values-free input and the argv test forward."
   - "Decision 77 spirit: the review half now judges shape plus literal-gated IAM actions, principals and auth type; resource-policy shapes stay deterministically classified by the guard (T2.45)."
   - "Decision 143 spirit: the no-tools flags live inside the agent merge loop; values-free input by construction plus the S1/S1b fences are the durable controls."
+  - "Not in scope (critique advisory): CODEOWNERS has /scripts/terraform_apply_guard.py but neither the digest module nor .github/actions/subagent-plan-review/; the build files a rec for that if it agrees."
+  - "Renderers (a) for resource-policy types and (c) only see inert changes (the guard routes other changes on those types to gated-apply, terraform_apply_guard.py:268-303); kept as defence in depth."
   - "Gotcha: env -i strips the test shims' env; bake shim paths into the shim files."
   - "Decision-scout verdict FLAGS_FOUND (NOTE 205; SPIRIT 77, 143); CITE: Decision 77, Decision 55, Decision 92, Decision 158, Decision 162, Decision 181, Decision 101, Decision 48. Decisions triaged: 188 of 188. Roadmap items intersected: 3; CONFLICT: 0; RELATED: 2 (T4.26 CITE, T2.47, T4.23)."
   - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING after 0 round(s)"
@@ -361,10 +411,20 @@ pre_implementation_checklist:
 execution_steps:
   - Re-check rec-4639 relevance per the implement skill's protocol (its acceptance names tests/test_subagent_plan_review_values_stripped.py).
   - scripts/terraform_apply_guard.py -- add iter_resource_changes, route evaluate_plan through it, delete the digest code and --digest mode.
-  - scripts/terraform_plan_digest.py and tests/test_terraform_plan_digest.py -- the names-only digest and its unit tests.
+  - scripts/ci/terraform_plan_digest.py and tests/test_terraform_plan_digest.py -- the names-only digest and its unit tests.
   - Fixtures, then tests/test_subagent_plan_review_values_stripped.py; then review.sh and action.yml until it passes; then update tests/test_terraform_apply_guard.py and tests/test_subagent_review_wiring.py.
   - Comment-only edits in terraform-apply-sandbox.yml and reconcile.yml; create subagent-review-smoke.yml; registry shard.
   - Run VP steps 1-6; loop until pass; on unrecoverable failure stop and RCA (Decision 55).
+  - >-
+    Closure evidence recorded as four SEPARATE facts (implement skill Commit Flows): GitHub readiness state; parent
+    validator evidence (VP 6 full-tier exit 0 plus bin/venv-python -m scripts.checks.validation_result --verify-head for
+    the pushed HEAD); structured postflight evidence (write the scripts.session.postflight_evidence.CATEGORIES JSON in the
+    scratchpad, then bin/venv-python -m scripts.session.postflight --evidence <file>); the real outcome -- push, PR, CI
+    green by event-driven wake (never polled), squash-merge, then steps 7-9.
+  - >-
+    Ordering with S1 (rec-4632, a terraform/personal change whose merge runs this reviewer): before merging, ask the
+    coordinator whether S1's build PR is open or merged. If it is unmerged, ask that S1 not merge until step 7's smoke has
+    passed; if S1 merged first, nothing changes here.
   - 'Open the PR. Merge needs Benjamin''s word on the final diff in the build thread (security change to the apply gate); then squash-merge on code review PROCEED + green CI with a `Resolves: rec-4639` trailer.'
   - Ask Benjamin to dispatch the smoke (step 7) before the next terraform/personal merge; then steps 8-9. If step 7 or 8 fails, reopen rec-4639 with update_rec citing the failure and stop.
   - 'Report: what was implemented, verification results'
