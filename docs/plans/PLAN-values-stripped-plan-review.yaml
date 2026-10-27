@@ -168,17 +168,26 @@ scope:
   - file: tests/test_terraform_apply_guard.py
     action: Modify
     purpose: >-
-      Planned change (Decision 181): delete the digest tests (they move, inverted, to tests/test_terraform_plan_digest.py);
+      Planned change (Decision 181, Decision 235 cl.1 -- shown to Benjamin as part of this plan; the merge also needs his
+      word on the final diff): delete the digest tests (they move, inverted, to tests/test_terraform_plan_digest.py);
       the "--digest" CLI case becomes a usage-error case; test_digest_resource_policy_reason_redacts_external_principal is
       an evaluate_plan verdict test despite its name and stays; add a test that evaluate_plan's findings are unchanged across the
       existing fixtures via iter_resource_changes. No verdict assertion is loosened.
+  - file: tests/test_terraform_apply_guard_sensitive.py
+    action: Delete
+    purpose: >-
+      ONLY if plan D2 (PLAN-secrets-to-ssm-expand) built and merged first and created it: it asserts on the guard's deleted
+      build_digest. Its after_sensitive cases move, inverted to "no value at all", into tests/test_terraform_plan_digest.py
+      (the fixture's SENTINEL-SENSITIVE case already covers them). If the file does not exist at build time, this row is a
+      no-op.
   - file: tests/test_subagent_review_wiring.py
     action: Modify
     purpose: >-
       Keep every errexit/STARVED/retry/archival case green under the new invocation: the python3 shim keys on
       terraform_plan_digest.py instead of terraform_apply_guard.py, the claude shim's log path is baked into the shim (env
       -i strips CLAUDE_INVOCATION_LOG), the python3 shim passes any other invocation (the stats line's python3 -c) through to
-      the real interpreter, and any assertion on the old argv is updated. No case is removed.
+      the real interpreter by an absolute path baked into the shim (sys.executable; never python3 from PATH, which would
+      re-enter the shim), and any assertion on the old argv is updated. No case is removed.
   - file: config/agent/verification_registry/entries/subagent-plan-review-values-stripped.yaml
     action: Create
     purpose: Graduation shard for VP step 1 (check_id subagent-plan-review-values-stripped), node_id tests/test_subagent_plan_review_values_stripped.py, guard_target .github/actions/subagent-plan-review/review.sh.
@@ -234,7 +243,7 @@ verification_plan:
     phase: pre-deploy
     action: Stale-reference sweep for the retired surfaces (guard --digest, Read-allowed reviewer, plan.json prompt sentence).
     command: >-
-      ! grep -rnE 'terraform_apply_guard\.py"? --digest|allowedTools( to)? "?Read|plan\.json \(Read tool\)|via the Read tool|build_digest' .github scripts tests/test_terraform_apply_guard.py
+      ! grep -rnE 'terraform_apply_guard\.py"? --digest|allowedTools( to)? "?Read|guard --digest|plan\.json \(Read tool\)|via the Read tool|build_digest' .github scripts tests/test_terraform_apply_guard.py
       tests/test_subagent_review_wiring.py docs/contracts --include=*.sh --include=*.yml --include=*.yaml --include=*.py | grep -vE 'scripts/ci/terraform_plan_digest\.py|ci-rca\.yml'
       && echo SWEEP_OK
     expected: Prints SWEEP_OK (ci-rca.yml's own --allowedTools is a different agent and stays).
@@ -413,6 +422,7 @@ context:
   - "Decision 143 spirit: the no-tools flags live inside the agent merge loop; values-free input by construction plus the S1/S1b fences are the durable controls."
   - "Not in scope (critique advisory): CODEOWNERS has /scripts/terraform_apply_guard.py but neither the digest module nor .github/actions/subagent-plan-review/; the build files a rec for that if it agrees."
   - "Renderers (a) for resource-policy types and (c) only see inert changes (the guard routes other changes on those types to gated-apply, terraform_apply_guard.py:268-303); kept as defence in depth."
+  - "Cross-plan: D2 (PLAN-secrets-to-ssm-expand) masks after_sensitive in the same digest code; whichever lands second amends (execution_steps). Reported to the coordinator at plan merge."
   - "Gotcha: env -i strips the test shims' env; bake shim paths into the shim files."
   - "Decision-scout verdict FLAGS_FOUND (NOTE 205; SPIRIT 77, 143); CITE: Decision 77, Decision 55, Decision 92, Decision 158, Decision 162, Decision 181, Decision 101, Decision 48. Decisions triaged: 188 of 188. Roadmap items intersected: 3; CONFLICT: 0; RELATED: 2 (T4.26 CITE, T2.47, T4.23)."
   - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING after 0 round(s)"
@@ -435,6 +445,13 @@ execution_steps:
     the pushed HEAD); structured postflight evidence (write the scripts.session.postflight_evidence.CATEGORIES JSON in the
     scratchpad, then bin/venv-python -m scripts.session.postflight --evidence <file>); the real outcome -- push, PR, CI
     green by event-driven wake (never polled), squash-merge, then steps 7-9.
+  - >-
+    Ordering with plan D2 (PLAN-secrets-to-ssm-expand, merged, unbuilt), which edits the same guard digest code to mask
+    after_sensitive values and creates tests/test_terraform_apply_guard_sensitive.py. Whichever lands second amends: if
+    D2's build merged first, take the Delete row above and remove its masking code with the rest of the digest code; if
+    this plan merges first, message the coordinator that D2's scripts/terraform_apply_guard.py and
+    tests/test_terraform_apply_guard_sensitive.py rows are superseded (the names-only digest already keeps the DSN out of
+    the reviewer's input) so D2 drops them before building.
   - >-
     Ordering with the next terraform/personal merge (its apply runs this reviewer; S1, rec-4632, already merged as #1667
     on the old reviewer): before merging, ask the coordinator which terraform/personal PRs are close to merge and ask
