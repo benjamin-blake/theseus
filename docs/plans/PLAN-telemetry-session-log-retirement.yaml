@@ -29,7 +29,8 @@ scope:
       daemon thread and records its start time; result() joins it for whatever remains of SESSION_HISTORY_DEADLINE_S = 60
       counted from that start (measured cold first reads: 28.5 s and 34.6 s; warm 4-6 s), so a cold reader (rec-4474
       class) never holds preflight open past the deadline; a timeout, any exception, or a 504/503 answer returns status
-      unavailable. Returns {"status": "ok"|"empty"|"unavailable", "window_days": int,
+      unavailable. The thread writes nothing to stderr and runs with the reader client's logging silenced, so a read
+      that outlives the deadline cannot print during interpreter shutdown. Returns {"status": "ok"|"empty"|"unavailable", "window_days": int,
       "recent_sessions": list[str] | None, "last_session": str | None, "reason"?: str}: on ok the newest `limit` rows by
       session_started_at DESCENDING (the verb orders ascending, so selection is client-side, never via `limit`), each
       rendered as one line "<session_started_at UTC, minute precision> state=<state> outcome=<outcome or -> duration=<s or
@@ -62,7 +63,8 @@ scope:
       a Phase B placement would hit the deadline on a typical cold open. Added preflight wall time is at most the
       deadline minus the serial phases it overlaps, and zero on a warm reader. Report: last_session = result["last_session"], context.recent_sessions =
       result["recent_sessions"], and a new top-level key session_history = {status, window_days, reason?} (additive).
-      Print format_history to stderr beside the telemetry gauge line. The facade re-exports of SESSION_LOG_FILE (import
+      The join and the format_history stderr line come after Phase B, where the report is assembled, so the read
+      overlaps Phase B too. The facade re-exports of SESSION_LOG_FILE (import
       list near line 55) and parse_last_session (near line 120) go. If this file would cross its SLOC limit, move the
       wiring into scripts/preflight/session_history.py rather than raise a budget (Decision 128).
   - file: scripts/preflight/context_docs.py
@@ -163,13 +165,18 @@ scope:
     purpose: Patch of context_docs.parse_last_session moves to session_history.read_session_history; mocked read_context_files drops recent_sessions.
   - file: tests/test_session_preflight_cache_serving.py
     action: Modify
-    purpose: Patch of context_docs.parse_last_session moves to session_history.read_session_history; mocked read_context_files drops recent_sessions.
+    purpose: >-
+      The context_docs.parse_last_session patch goes and session_history runs against the test's stub reader, which
+      serves sessions_window; the exact verb_calls assertion (near line 392) gains "sessions_window": 1, so it keeps
+      guarding the constraint of exactly one sessions_window call per creds-ok run instead of hiding the new call behind
+      a patch; mocked read_context_files drops recent_sessions.
   - file: tests/test_session_preflight_decomposition.py
     action: Modify
     purpose: >-
       FROZEN_REPORT_KEYS gains session_history and both report-key count pins move from 54 to 55 (near lines 142 and
-      386); FROZEN_EXPORTS drops SESSION_LOG_FILE and parse_last_session; the decomposition symbol lists gain
-      read_session_history (session_history); the stubbed read_context_files return drops recent_sessions;
+      386); FROZEN_EXPORTS drops SESSION_LOG_FILE and parse_last_session and gains nothing (session_history is not
+      re-exported through the facade); the (context_docs, "parse_last_session", "") stub spec is replaced by the
+      session_history stub below; the stubbed read_context_files return drops recent_sessions;
       _base_stub_specs gains a session_history stub (this file sits outside tests/session/preflight/conftest.py's
       autouse reader stub and runs with credentials ok) returning a fixed ok result; the context assertion near line 458
       (report["context"] == {"marker": "context-docs-intercept"}) becomes the marker plus the stub's recent_sessions,
@@ -225,7 +232,9 @@ scope:
       "docs/SESSION_LOG.md" from both grandfathered_globs lists (ratchet-only shrink, Decision 168); the
       SESSION_LOG_ARCHIVE.md entries stay. Add a route for scripts/preflight/session_history.py beside the
       telemetry_health one if the preflight package has per-module routes. file-router.yaml is a Class D contract, so
-      the edit adds one amendment_log entry (validate_contract_drift's check_amendment_log_for_class_d).
+      the edit adds one amendment_log entry (validate_contract_drift's check_amendment_log_for_class_d) whose summary
+      says "the retired session-log and north-star routes" without spelling the retired file or module names (VP 5's
+      sweep covers live contracts).
   - file: scripts/checks/contracts/_retired_identity.py
     action: Modify
     purpose: Drop "docs/SESSION_LOG.md" from _EXEMPT_FILES (the file no longer exists); the archive exemption stays.
@@ -252,7 +261,7 @@ scope:
     purpose: >-
       The Source-of-truth paragraph's "Session log remains on its legacy path pending disposition" becomes "Session log
       retired (T3.20 c6); preflight reads recent sessions from telemetry" -- no longer than that (the S8 byte budget has
-      24 bytes of headroom).
+      91 bytes of headroom).
   - file: tests/session/test_session_log_surface_retired.py
     action: Create
     purpose: >-
@@ -267,7 +276,8 @@ scope:
     action: Modify
     purpose: >-
       Step 2's context line: recent_sessions comes from telemetry (sessions_window over 2 UTC days) and is null when
-      session_history.status is unavailable; read the status before relying on it.
+      session_history.status is unavailable; read the status before relying on it; the newest entry may be the current
+      session itself (state running).
   - file: docs/ROADMAP-PLATFORM.yaml
     action: Modify
     purpose: >-
@@ -313,8 +323,7 @@ verification_plan:
     command: bin/venv-python -m pytest tests/session/preflight/test_session_history.py -q
     expected: exit 0; every case passes; the module does not exist before the change.
     fix_if: A case fails - fix session_history.py, never the assertion.
-    hermetic: true
-    expected_literals: ["passed"]
+    hermetic: false
     graduation: waive
     graduation_waiver_reason: The unit suite runs in every tier and is the permanent guard.
   - step: 2
@@ -325,8 +334,7 @@ verification_plan:
       tests/test_session_preflight_cache_serving.py -q
     expected: exit 0.
     fix_if: A patch target is stale - move it to session_history.read_session_history; never delete a non-SESSION_LOG case.
-    hermetic: true
-    expected_literals: ["passed"]
+    hermetic: false
     graduation: waive
     graduation_waiver_reason: Existing suites run in every tier.
   - step: 3
@@ -337,8 +345,7 @@ verification_plan:
       bin/venv-python -m pytest tests/session/postflight/test_close_reports_only_performed_effects.py::test_close_output_claims_no_session_log_write -q
     expected: exit 0 for both; the acceptance node fails before the change.
     fix_if: A claim survives in output, help or docstring - remove it from postflight.py.
-    hermetic: true
-    expected_literals: ["passed"]
+    hermetic: false
     graduation: waive
     graduation_waiver_reason: rec-4598's acceptance node and the postflight suite run in every tier.
   - step: 4
@@ -351,8 +358,7 @@ verification_plan:
       exit 0; tests/s3_log_store/test_append_jsonl_local.py holds both moved tests with byte-identical statements; the
       absence guard is red before the change.
     fix_if: A moved test changed or is missing - restore it verbatim; an absence case fails - finish the deletion it names.
-    hermetic: true
-    expected_literals: ["passed"]
+    hermetic: false
     graduation: waive
     graduation_waiver_reason: Existing suites run in every tier.
   - step: 5
@@ -406,7 +412,7 @@ verification_plan:
       datetime as d; r=json.load(open('logs/.preflight-report.json')); h=r['session_history'];
       s=r['context']['recent_sessions']; ls=r['last_session'] or '';
       floor=(d.datetime.now(d.UTC).date()-d.timedelta(days=1)).isoformat(); print('SESSION_HISTORY', h['status'],
-      len(s or []), ls[:16]); raise SystemExit(0 if h['status']=='ok' and s and len(s)<=5 and ls[:10]>=floor else 1)"
+      len(s or []), ls[:16], h.get('reason')); raise SystemExit(0 if h['status']=='ok' and s and len(s)<=5 and ls[:10]>=floor else 1)"
     expected: >-
       Prints SESSION_HISTORY ok <n> <timestamp> with n between 1 and 5 and a timestamp within the last 2 UTC days; exit 0
       (the recency and count are asserted, not only printed).
@@ -533,13 +539,13 @@ context:
   - "Approval: Benjamin 'write the plan on that basis' 2026-10-28 16:17Z (cmsg_012XgaFy8VaDQbxP5D8nC958S6yP7MU3omMGX7Ard61PoF) on the presentation /mnt/project-files/telemetry-slice5/step6b-presentation.md, which named the registry-check retirement as needing his Decision 235 confirmation; that message is the confirmation."
   - "Slice 5 = this plan (T3.20 c6) + PLAN-telemetry-causal-chain-probe (T3.2). T2.36 c2 closes in the production flip's bookkeeping PR; both touch docs/ROADMAP-PLATFORM.yaml only in bookkeeping, so the second to land rebases."
   - "Why deletion, not archive: Decision 127 (no standing human-audience artefact; the archive would grow 43%) and Decision 174 (retirement is by deletion). CD.40's pending detail says 'archived ..., not deleted outright'; a pending CD does not outrank Decided 127/174, and the bookkeeping walk records the realization note on CD.40 (no ratification)."
-  - "Measured 2026-10-28 via PlatformDev: sessions_window over 1/3/7 days -> 3/23/25 rows in 5-12 s (production holds rows since 2026-10-27); 17 of 25 read running (Decision 228's 24 h idle threshold). Critique re-measures over 2 UTC days: 28.5 s cold (round 1); telemetry_health_count 17.5 s cold, then sessions_window 34.6 s, then 6.0 s (round 2) -- the gauge reads catalog metadata only and does not warm the data-file path (rec-4474), so session_history starts before warm_sync to overlap the serial phases, with a 60 s deadline from its start."
+  - "Measured 2026-10-28 via PlatformDev: sessions_window over 1/3/7 days -> 3/23/25 rows in 5-12 s (production holds rows since 2026-10-27); 17 of 25 read running (Decision 228's 24 h idle threshold). Critique re-measures over 2 UTC days: 28.5 s cold (round 1); telemetry_health_count 17.5 s cold, then sessions_window 34.6 s, then 6.0 s (round 2); 54.4 s cold then 4.3 s warm (round 3, about 17:40Z) -- the gauge reads catalog metadata only and does not warm the data-file path, and cold cost grows with un-merged files through each 6-hourly merge cycle (rec-4474), so session_history starts before warm_sync to overlap the serial phases and Phase B, with a 60 s deadline from its start. The margin is thin near the end of a merge cycle; the residual is rec-4474's (compaction), never a raised deadline. VP 7 records the measured time."
   - "Recs moot by deletion, superseded (not Resolves, since their acceptance nodes live in deleted or rewritten test files, Decision 201): rec-3652, rec-3657, rec-3658 (SESSION_LOG parsing defects) and rec-3613 (the append_jsonl relocation this plan performs; its acceptance greps the deleted tests/test_north_star_tracker.py) -- /implement sets status superseded via update_rec with this plan's slug in the resolution. rec-3614 (High) is re-scoped via update_rec: its north_star_tracker coverage-floor half is dropped (the module is deleted), the lambda_manifest floor and checker-assertion halves stay open. rec-3630 (umbrella) is unchanged."
   - "Named residuals of the sweep: config/agent/executor/instructions/executor-supervisor-*.instructions.md (Decision 117 executor boundary; executor frozen per Decision 67) still tell the executor to append to SESSION_LOG.md -- owner T4.18 c3, which deletes both files; .claude/hooks/session_start_deepen_history.sh keeps its dated 2026-08-18 worked example; config/agent/fast_tier/module_costs.json keeps its generated keys for the deleted test modules until its own regeneration."
   - "Decision-scout: FLAGS_FOUND (176 WARN -> git mv to deprecated; 235 NOTE -> append_jsonl tests moved; 117 NOTE -> residuals named; 127 WARN and 174 NOTE -> deletion). Decisions triaged: 189 of 189; Roadmap items intersected: 7; CONFLICT: 0; RELATED: 6. CITE: 236, 84, 215, 199, 228, 181, 201. Report: /mnt/project-files/telemetry-slice5/decision-scout-report-c6.md."
   - "Fable consult: /mnt/project-files/telemetry-slice5/fable-independent-advice.md (F4 a, F5 delete, F6 two plans; adopted)."
   - "red_overlap: verdict clear (no reds, SLO 4h) at plan write 2026-10-28."
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<pending> after 2 round(s)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<pending> after 3 round(s)"
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
