@@ -23,11 +23,13 @@ scope:
   - file: scripts/ci/terraform_plan_digest.py
     action: Modify
     purpose: >-
-      (1) Partition resource_changes with the guard's inert definition (import _INERT_ACTIONS from
-      scripts/terraform_apply_guard.py; no third copy, Decision 190): inert = actions ["no-op"], or ["read"] with no
-      action_reason; everything else, including reads carrying an action_reason, is actionable. (2) Body order: the summary
-      line; actionable lines in full, ordered delete-bearing (delete / replace) first, then create, then update, then
-      read-with-reason, address-sorted within each group; changed outputs (actions other than ["no-op"]); then the inert tail.
+      (1) Partition resource_changes on the guard's _INERT_ACTIONS (imported from scripts/terraform_apply_guard.py; no
+      third copy, Decision 190), refined so a read carrying an action_reason is actionable (deliberately more conservative
+      than the guard, which treats every read as inert): inert = actions ["no-op"], or ["read"] with no action_reason;
+      everything else is actionable. (2) Body order: the summary line; actionable lines in full, ordered delete-bearing
+      (delete / replace) first, then create, then update, then read-with-reason, address-sorted within each group, keeping
+      today's merge of identical stripped lines with an " xN" suffix (so <A> counts entries, not distinct lines); changed
+      outputs (actions other than ["no-op"]); then the inert tail.
       (3) Summary line keeps the existing substrings "<N> resource change(s), <M> output change(s)" (N and M count every entry,
       as today) and appends " Listed: <A> actionable resource(s), <C> changed output(s). Counted only: <X> no-op, <Y> read,
       <Z> unchanged output(s)." (4) Inert tail: one line per inert action kind, "- no-op by type: <type> x<n>, ..." and
@@ -59,7 +61,8 @@ scope:
     purpose: >-
       Add a pure revise_reason(raw_output) -> str: the text after the REVISE token in the last result envelope (raw-text
       fallback as classify does), whitespace runs (including newlines) collapsed to one space, control characters dropped,
-      passed through the guard's _redact (sys.path insert to the repo root as terraform_plan_digest.py does), capped at
+      passed through the guard's _redact (imported lazily inside revise_reason, with a sys.path insert to the repo root as
+      terraform_plan_digest.py does, so the one-argument classify path gains no import-time dependency), capped at
       500 characters with a trailing "...", and "(no reason given)" when empty. CLI: "review_verdict.py --reason <file>"
       prints that one line and exits 0 (unreadable file prints "(transcript unreadable)", exit 0). The existing one-argument
       form, its output and its 0/2/1 exit contract are unchanged.
@@ -79,7 +82,8 @@ scope:
       today's "plan digest build failed" marker. (2) Track the transcript the final VERDICT came from (review.json or
       review_retry.json). In the REVISE branch only, print one line "[SUBAGENT-REVIEW] REVISE reason: <reason>" from
       "review_verdict.py --reason <transcript>" to stderr and, when GITHUB_STEP_SUMMARY is set, append "## Subagent review
-      REVISE" plus the same line. Outcome values, exit codes and the prompt are unchanged.
+      REVISE" plus the same line with the reason inside a code span (backticks in the reason replaced by single quotes), so
+      model text cannot render markdown links or images. Outcome values, exit codes and the prompt are unchanged.
   - file: tests/test_subagent_review_overflow_and_reason.py
     action: Create
     purpose: >-
@@ -94,27 +98,23 @@ scope:
   - file: .github/workflows/terraform-apply-sandbox.yml
     action: Modify
     purpose: >-
-      speculative-plan job only. (1) New step "Reviewer digest fit (advisory)", id digest_fit, after pred_guard, same
-      if: and working-directory as pred_guard; body: LINE=$(python3 "$GITHUB_WORKSPACE/scripts/ci/terraform_plan_digest.py"
-      --literals-from . --fit-report plan.json) || LINE="Reviewer digest: fit unavailable."; echo "line=${LINE}" >>
-      "$GITHUB_OUTPUT". It never fails the job (Decision 83: advisory). (2) "Build and post PR comment" gains env DIGEST_FIT:
-      ${{ steps.digest_fit.outputs.line || 'Reviewer digest: fit unavailable.' }} and its existing predicted-verdict
-      COMMENT+= line is extended in place to append "${DIGEST_FIT}${_NL}", so that step's run body keeps its 31-line R3
-      ceiling (no raise). No other job or step changes; apply-sandbox and the reviewer path are untouched.
-  - file: config/composite_action_body_baseline.yaml
-    action: Modify
-    purpose: >-
-      Register the new step's body under r3_workflows (".github/workflows/terraform-apply-sandbox.yml::speculative-plan::digest_fit":
-      <measured lines>), the ordinary registration path for a new entry (composite-action-shape.yaml baseline_file
-      section_allowlist note). No existing ceiling changes.
+      speculative-plan job, step "Build and post PR comment (redacted plan + predicted verdict)" only. Its existing line
+      COMMENT+="${_NL}**Predicted guard verdict: ${PREDICTED_VERDICT}**${_NL}" is extended IN PLACE (same single line) to
+      append $(python3 "$GITHUB_WORKSPACE/scripts/ci/terraform_plan_digest.py" --literals-from . --fit-report plan.json
+      2>/dev/null || echo 'Reviewer digest: fit unavailable.')${_NL}. No new step, env line or other line: the file stays
+      at its 550-effective-line structural budget (config/structural_size_budgets.yaml, dec-183 entry, no headroom) and the
+      step's run body at its 31-line R3 ceiling, both without a raise. The || echo keeps the substitution exit 0 under the
+      step's set -euo pipefail and covers a missing plan.json (the step runs on always()). The fit line passes the step's
+      existing redaction_check assert-clean. Advisory only (Decision 83). apply-sandbox and the reviewer path are untouched.
   - file: tests/test_plan_review_digest_fit_wiring.py
     action: Create
     purpose: >-
-      Parse terraform-apply-sandbox.yml: speculative-plan has a digest_fit step after pred_guard and before the PR-comment
-      step, invoking scripts/ci/terraform_plan_digest.py with --fit-report on plan.json under the job's WORKDIR, with a
-      non-failing fallback; the PR-comment step's env carries DIGEST_FIT from steps.digest_fit.outputs.line and its body
-      appends ${DIGEST_FIT}; apply-sandbox job steps do not reference digest_fit. Run the new step body under bash -e with
-      a python3 shim that exits non-zero and assert it still exits 0 and writes the fallback line to GITHUB_OUTPUT.
+      Parse terraform-apply-sandbox.yml: the speculative-plan PR-comment step's run body contains exactly one invocation of
+      scripts/ci/terraform_plan_digest.py with --fit-report plan.json, on the predicted-verdict COMMENT+= line, with the
+      "|| echo 'Reviewer digest: fit unavailable.'" fallback; no step in the apply-sandbox job references --fit-report.
+      Extract that COMMENT+= line and run it under bash -euo pipefail (with _NL and PREDICTED_VERDICT set) twice: with a
+      python3 shim that prints a fit line (the line appears in COMMENT) and with one that exits non-zero (exit 0 and the
+      fallback text appears).
   - file: docs/plans/PLAN-plan-review-digest-actionable-first.yaml
     action: Create
     purpose: This plan.
@@ -141,7 +141,8 @@ acceptance_criteria:
     characters, mirrored to the step summary; outcome and exit status are unchanged, and PROCEED and STARVED print none.
   - >-
     The speculative-plan PR comment carries the reviewer-digest fit line (actionable count and bytes, or an OVERFLOW
-    warning); the new step never fails the job, and the PR-comment step's run body does not grow past its R3 ceiling.
+    warning), a fit failure never fails the step, the PR-comment step's run body stays at its 31-line R3 ceiling, and
+    terraform-apply-sandbox.yml stays within its 550-effective-line structural budget.
   - >-
     After merge and Benjamin's acknowledge-and-retry (Decision 183), the sandbox record is green and rec-4674 is closed.
 verification_plan:
@@ -179,12 +180,13 @@ verification_plan:
     graduation_waiver_reason: All five suites run in every tier.
   - step: 4
     phase: pre-deploy
-    action: Workflow wiring for the advisory fit line, the redaction-check wiring, and the R3 body ceilings.
+    action: Workflow wiring for the advisory fit line, the redaction-check wiring, the R3 body ceiling and the workflow's structural-size budget.
     command: >-
       bin/venv-python -m pytest tests/test_plan_review_digest_fit_wiring.py tests/test_redaction_check.py
-      tests/checks/ci_guards/test_validate_composite_action_shell_bodies.py -q && bin/venv-python -c "from scripts.checks.ci_guards.validate_composite_action_shell_bodies import validate_composite_action_shell_bodies as v; f=[]; v(f); print('R3 FAILED' if f else 'R3 OK'); raise SystemExit(1 if f else 0)"
-    expected: exit 0; the PR-comment step body is still at most 31 lines and the digest_fit entry is registered.
-    fix_if: The comment-step body grew - fold the change into the existing COMMENT+= line; never raise its ceiling.
+      tests/checks/ci_guards/test_validate_composite_action_shell_bodies.py -q && bin/venv-python -c "from scripts.checks.ci_guards.validate_composite_action_shell_bodies import validate_composite_action_shell_bodies as v; f=[]; v(f); raise SystemExit(1 if f else 0)"
+      && bin/venv-python -c "from scripts.checks.structural.size_limits import validate_structural_size_limits as v; f=[]; v(f); raise SystemExit(1 if f else 0)"
+    expected: exit 0; the PR-comment step body is still at most 31 lines and terraform-apply-sandbox.yml at most 550 effective lines.
+    fix_if: A body or the file grew - fold the change into the existing COMMENT+= line; never raise a ceiling or budget.
     hermetic: false
     graduation: not-applicable
   - step: 5
@@ -203,10 +205,12 @@ verification_plan:
       The first terraform/personal PR after merge shows the fit line in its speculative-plan comment (this plan's own PR
       does not touch terraform/personal, so it is the next one).
     command: >-
-      bin/venv-python -c "print('Read the latest speculative-plan PR comment via mcp__github__pull_request_read get_comments
-      and confirm a line starting with Reviewer digest:')"
-    expected: A "Reviewer digest:" line with an actionable count and byte count, no OVERFLOW for an ordinary PR.
-    fix_if: Line missing or "fit unavailable" - read the digest_fit step log and fix by PR.
+      bin/venv-python -c "print('HUMAN-READ STEP: open the latest terraform/personal PR speculative-plan comment (mcp__github__pull_request_read
+      method get_comments) and confirm a line starting with Reviewer digest:')"
+    expected: >-
+      Human-read step (no in-repo command reads PR comments; gh is not installed). The comment shows a "Reviewer digest:"
+      line with an actionable count and byte count, no OVERFLOW for an ordinary PR.
+    fix_if: Line missing or "fit unavailable" - read the PR-comment step log and fix by PR.
     hermetic: false
     graduation: not-applicable
   - step: 7
@@ -243,16 +247,10 @@ test_obligations:
     test_selector: tests/test_subagent_review_overflow_and_reason.py
     red_green_expectation: red before (generic marker, no reason line), green after.
   - source: .github/workflows/terraform-apply-sandbox.yml
-    behavior: speculative-plan digest_fit step feeds the PR comment and never fails the job.
+    behavior: The PR comment carries the fit line from an in-place substitution that never fails the step.
     verification_step: 4
     test_selector: tests/test_plan_review_digest_fit_wiring.py
-    red_green_expectation: red before (no digest_fit step), green after.
-  - source: config/composite_action_body_baseline.yaml
-    behavior: The new step body is registered at its measured ceiling; no existing ceiling changes.
-    verification_step: 4
-    command: >-
-      bin/venv-python -c "from scripts.checks.ci_guards.validate_composite_action_shell_bodies import validate_composite_action_shell_bodies as v; f=[]; v(f); print('R3 FAILED' if f else 'R3 OK'); raise SystemExit(1 if f else 0)"
-    red_green_expectation: red before (unregistered digest_fit body fails the R3 guard), green after.
+    red_green_expectation: red before (no --fit-report substitution), green after.
 weakening_dispositions:
   - candidate: "[assertion-changed] tests/test_terraform_plan_digest.py::test_preamble_survives_truncation_and_marker_is_reworded"
     disposition: planned-change
@@ -266,7 +264,7 @@ constraints:
     The reviewer prompt, its tools flags, claude_p_retry.sh, the CLI pin, review_verdict.py's classify and exit codes, the
     guard's verdicts, and outcome values (proceed/revise/starved, Decision 162 pt 4 strict consumer) are unchanged.
   - The fit line is advisory only and never a required check (Decision 83).
-  - No R3 or SLOC ceiling is raised (Decisions 128, 162 pt 3, 165); grow nothing past a ceiling - decompose or fold in place.
+  - No R3, SLOC or structural-size ceiling is raised (Decisions 128, 162 pt 3, 165, 183 budget entry); grow nothing past a ceiling - decompose or fold in place.
   - No rescue agents or workaround loops (Decision 55).
 context:
   - "Origin: Benjamin pasted the reviewer result 2026-10-28 11:46Z (thread Unblock merges after review REVISE); evidence runs 40590294289, 40602048516."
@@ -274,12 +272,12 @@ context:
   - "Overflow heal route (scout WARN on Decision 183, accepted under 1a): neither heal verb clears an overflow episode; recovery is a Track B forward-fix PR raising the cap or trimming the change, with Decision 154's stale_green_backlog as backstop. Routing oversized plans to tf-gated-apply was considered and not chosen (needs environment-taxonomy.yaml text, Decision 92 pt 5)."
   - "Why old reviewer passed the same truncation: pre-#1678 it had Read on plan.json (old marker said see plan.json); #1678 removed tools by design."
   - "scripts/ci/plan_digest.py is the sha256 saved-plan integrity hash (DEP-07), unrelated to terraform_plan_digest.py; do not confuse them."
-  - "Reconcile shares the composite action (Decision 158); its file-reconcile-starved-rec text says max-turns for every STARVED - left as is; the step log carries the distinct overflow marker."
+  - "Known misnaming, left as is: write-convergence-record's STARVED log line (its action.yml) on apply-sandbox and Reconcile's file-reconcile-starved-rec text (Decision 158) both say max-turns for every STARVED; the review step log carries the distinct overflow marker, and ci-rca files on the failed job (Decision 154 pt 6)."
   - "rec-4675 (#1690) still reads open despite its Resolves trailer; not this plan's work (reported to the coordinator)."
   - "Decision-scout: FLAGS_FOUND (SPIRIT WARN 183 addressed above); Decisions triaged: 189 of 189; Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1. CITE: 55, 77, 101, 162, 183, 201, 226, 235, 128. Related: 154, 158, 92, 190, 126."
   - "Fable consult: /mnt/project-files/plan-review-revise-unblock/ADVICE.md (adopted Q1-Q5; Q6 adopted by Benjamin's 3b)."
   - "red_overlap: verdict clear (rec-4674 rule repairs_this_red, Track B, SLO 4h, age 14.1h at write)."
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING (round 1 REVISE: structural-size breach fixed by in-place fold-in; xN merge, inert wording, lazy import, code span, misnaming note, VP 6 applied)"
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -293,8 +291,8 @@ execution_steps:
   - Edit scripts/ci/review_verdict.py and tests/test_review_verdict.py; run VP 2.
   - Edit review.sh and create tests/test_subagent_review_overflow_and_reason.py; run VP 3.
   - >-
-    Edit the speculative-plan job, register the digest_fit body in config/composite_action_body_baseline.yaml at its
-    measured line count, and create tests/test_plan_review_digest_fit_wiring.py; run VP 4.
+    Extend the speculative-plan PR-comment step's predicted-verdict COMMENT+= line in place and create
+    tests/test_plan_review_digest_fit_wiring.py; run VP 4.
   - Run VP 5 (full tier) to completion.
   - >-
     Open the PR with "Resolves: rec-4674" in the body; merge on code review PROCEED and green CI only after Benjamin's word
