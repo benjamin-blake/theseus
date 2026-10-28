@@ -57,7 +57,10 @@ scope:
       register, begin_blobs or append (422 row_rule or blob_not_verified, 500) -> persist. Retry policy: register and
       append are retried at most twice with backoff on 0, 429 or 503 (safe: an identical re-send is a no-op, Decision
       207), begin_blobs keeps deliver_blobs' own retries; a 429 or 503 still standing after that -> unavailable, never
-      persist (Decision 215 cl.2).
+      persist (Decision 215 cl.2). deliver_blobs' BlobDeliveryError kinds map: transient with no status -> transit;
+      transient with a status (a 429 or 503 from begin_blobs, a PUT 5xx, each still standing after its retries) ->
+      unavailable; proxy -> transit; refused -> persist; defect with a status -> persist; defect with no status (the row
+      integrity check before any call) -> produce.
       (4) query: from the last append's 200, poll session_tree_rows for the derived root session_id every 10 s until
       compare_tree(record_turn's own batches, decoded stored rows) reports no missing_in_store or SLA_SECONDS (180)
       elapse. The reader answered 200 at least once but rows stayed missing -> query; no 200 within the SLA (504
@@ -68,8 +71,9 @@ scope:
       (5) projection: session_state_and_duration(session_id, as_of=now) must equal derive.session_state_and_duration over
       the decoded tree rows (the monitor's comparison) and read state success with a non-null duration; and one
       sessions_window read spanning the UTC date of run_started_at to today must hold no row of the probe's project (real_window_hits=0, Decision 236 cl.1
-      exclusion, counted in-process from the register_project answer and never printed as an id). Either failing ->
-      projection.
+      exclusion, counted in-process from the register_project answer and never printed as an id). Either disagreeing on
+      a 200 answer -> projection; a read that does not answer 200 (504 read_deadline_exceeded, 503, error) -> unavailable,
+      never projection.
       (6) post-persist, delegated to the next row. It runs whenever the Actions API is reachable (a token in
       GITHUB_TOKEN or GH_TOKEN), in either identity mode, with prior selection pinned to telemetry-causal-chain.yml;
       prior_mode=skipped only when no token is present. --require-prior exits 3 when post-persist is skipped, unavailable
@@ -115,7 +119,8 @@ scope:
       compare_tree against those batches. Root session absent, or any compare.ALARM_CLASSES count (missing_in_store,
       unexpected_in_store, column_mismatch, key_mismatch, duplicate_ref_rows) or race_duplicate_rows above zero -> lost
       (vanished, changed, re-keyed or duplicated by merge or GC); stored rows of another parser_version than the current
-      PARSER_VERSION (other_generation_rows), another shape version or an unreadable sha -> skipped and counted. A POST_PERSIST_BUDGET_S (600) wall-clock cap stops further
+      PARSER_VERSION (other_generation_rows), another shape version or an unreadable sha -> skipped and counted. A session_tree_rows read that does not
+      answer 200 (504 read_deadline_exceeded, 503, error) -> post-persist unavailable, never lost. A POST_PERSIST_BUDGET_S (600) wall-clock cap stops further
       reads and counts the rest skipped, so the job stays inside its timeout.
   - file: tests/ducklake_neon_smoke_test/test_lambda_telemetry_causal_chain.py
     action: Create
@@ -132,7 +137,10 @@ scope:
       version, run id and attempt and the first timestamp is run_started_at; local mode with a fake token runs
       post-persist, local mode with no token skips it and passes --assert-pass, and --require-prior exits 3 on skipped,
       unavailable or prior_checked=0, and never masks a loss code; a failed alarm filing keeps the loss code and reports
-      alarm_filing=failed; a tree collision -> 12; register and append retry at most twice on 503 before unavailable;
+      alarm_filing=failed; a tree collision -> 12; register and append retry at most twice on 429 and on 503 before unavailable, and a
+      begin_blobs BlobDeliveryError("transient", 429) -> 3; the tree visible and a sessions_window 504 -> 3 with no
+      alarm; each BlobDeliveryError kind maps as stage 3 states (transient without status -> 11, transient with a
+      status -> 3, proxy -> 11, refused -> 12, defect with a status -> 12, defect without a status -> 10);
       unavailable files nothing; the output line carries no session id, project id, ref,
       URL or row value (sentinels); the acceptance string per class, read from the acceptance function.
   - file: tests/ducklake_neon_smoke_test/test_lambda_telemetry_causal_chain_prior.py
@@ -147,11 +155,11 @@ scope:
       compare class (unexpected_in_store, column_mismatch, key_mismatch, duplicate_ref_rows, race_duplicate_rows) ->
       lost; another parser_version, another shape version, a malformed sha and an unreadable sha -> skipped and counted,
       never lost; shape_version_at reads the literal without executing the module; an Actions API failure ->
-      ActionsUnavailable, never lost; the budget cap counts the rest skipped.
+      ActionsUnavailable, never lost; a session_tree_rows 504 -> unavailable, never lost; the budget cap counts the rest skipped.
   - file: .github/workflows/telemetry-causal-chain.yml
     action: Create
     purpose: >-
-      Scheduled probe. on: schedule cron '13 */6 * * *' (every-N-hours shape, sensor_liveness derives the peer from this
+      Scheduled probe, `name: telemetry-causal-chain` (the ci_rca_taxonomy key). on: schedule cron '13 */6 * * *' (every-N-hours shape, sensor_liveness derives the peer from this
       file, Decision 62) and workflow_dispatch on main only; no push or pull_request trigger, so it can never be a
       required PR check (Decision 83). permissions {contents: read}; job permissions id-token write, contents read,
       actions read. concurrency group telemetry-causal-chain, cancel-in-progress false; timeout-minutes 40 (two warm-ups,
@@ -160,8 +168,8 @@ scope:
       need full history; a shallow clone would read every run as skewed), aws-region, Python 3.12 venv install, OIDC
       assume of agent-platform-github-ci-branch (already holds the telemetry writer and telemetry reader URL grants
       golden replay uses; no new IAM), resolve and mask the four Function URL roles golden resolves (writer, reader,
-      telemetry_writer, telemetry_reader; alarm filing goes through the ops portal's writer and reader) and their hosts
-      the same way, then `.venv/bin/python -m scripts.ducklake_smoke.lambda_telemetry_causal_chain` with GITHUB_TOKEN in env.
+      telemetry_writer, telemetry_reader; alarm filing goes through the ops portal's writer and reader) and each URL's
+      host too (golden masks URLs only), then `.venv/bin/python -m scripts.ducklake_smoke.lambda_telemetry_causal_chain` with GITHUB_TOKEN in env.
       Inline run bodies stay as small as golden's. Header comment states: alarm not gate (Decision 210 cl.2), never a
       required check (Decision 83), no terraform/apply/deploy/dispatch, counts only (Decision 101), every 6 h on
       Benjamin's word with hourly off GitHub owned by rec-4688.
@@ -170,7 +178,7 @@ scope:
     purpose: >-
       r3_workflows gains one entry per inline `run:` body of the new workflow, keyed
       "<workflow-rel-path>::<job-id>::<step-identity>" at its exactly measured effective line count, no padding and no
-      marker (registration, not a raise; precedent: golden replay's three entries, PR #1568).
+      marker (registration, not a raise; precedent: golden replay's three entries, PR #1551).
   - file: tests/test_telemetry_causal_chain_workflow.py
     action: Create
     purpose: >-
@@ -179,7 +187,8 @@ scope:
       workflow_dispatch gated to refs/heads/main; no push or pull_request trigger; job permissions include actions read
       and id-token write and nothing writes contents; checkout fetch-depth 0; the role is agent-platform-github-ci-branch;
       the URL step resolves the four roles writer, reader, telemetry_writer and telemetry_reader and masks each URL and
-      host; the run step invokes `scripts.ducklake_smoke.lambda_telemetry_causal_chain`;
+      host; the workflow name is telemetry-causal-chain; the run step invokes
+      `scripts.ducklake_smoke.lambda_telemetry_causal_chain`;
       timeout-minutes 40; no terraform, aws lambda update or workflow dispatch command appears.
   - file: config/ci_rca_taxonomy.yaml
     action: Modify
@@ -267,7 +276,8 @@ verification_plan:
       exit 0 (includes sensor_liveness peer derivation over the new schedule, the R3-workflow shell-body baseline, the
       ci_rca taxonomy coverage and the roadmap ledger checks).
     fix_if: >-
-      A failure in scope is fixed on the branch; never skip a test, relax an assertion or add a baseline. A failure
+      A failure in scope is fixed on the branch; never skip a test, relax an assertion or add a baseline entry to turn a red check green
+      (the planned r3_workflows registration excepted). A failure
       outside scope becomes a rec via scripts.ops_data_portal (Decision 59, 55).
     hermetic: false
     graduation: not-applicable
@@ -275,7 +285,7 @@ verification_plan:
     phase: pre-deploy
     action: >-
       Local leg on the implementation branch before merge, from a second identity path (agent_platform): the V3
-      merge-gate evidence and the same command every alarm's acceptance uses. Nothing is deployed by this plan, so the
+      merge-gate evidence: every alarm's acceptance command, run with the GitHub tokens unset (pre-merge only). Nothing is deployed by this plan, so the
       branch exercises the production engine as it stands.
     command: >-
       env -u GH_TOKEN -u GITHUB_TOKEN AWS_PROFILE=agent_platform bin/venv-python -m
@@ -400,7 +410,8 @@ context:
   - "Decision-scout: FLAGS_FOUND (236 NOTE on permanent probe blobs: accepted, a few tiny blobs a day, no content read; residual declared). Decisions triaged: 189 of 189; Roadmap items intersected: 2; CONFLICT: 0; RELATED: 2. CITE: 236, 210, 83, 62, 199, 207, 200, 228, 213, 55, 88, 205, 136, 101. Report: /mnt/project-files/telemetry-slice5/decision-scout-report-t3-2.md."
   - "Fable consult: /mnt/project-files/telemetry-slice5/fable-independent-advice.md (F1 b, F2 cut with corrections, F3 adopted then moved from scripts/telemetry_verify to scripts/ducklake_smoke on critique round 1)."
   - "red_overlap: verdict clear (no reds, SLO 4h) at plan write 2026-10-28."
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE after 4 round(s) (cap reached; the confirming round's single blocking fix, VP 4 token unset and prior_mode=skipped, applied verbatim at 8babf263)"
+  - "Critique: rounds 1-3 REVISE (cap); confirming round 4 REVISE with one fix applied verbatim at 8babf263; round 5 on Benjamin's word (decision card 2026-10-28 19:03Z) PROCEED, its non-blocking notes 1-4 and 10-12 folded verbatim (blob error map, non-200 reads -> unavailable, 429 tests, workflow name, host masking, precedent PR)."
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 5 round(s)"
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
