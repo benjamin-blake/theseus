@@ -9,6 +9,7 @@ import pytest
 
 from scripts.ci.terraform_plan_digest import (
     REVIEWER_PREAMBLE,
+    DigestOverflow,
     build_digest,
     load_literals,
     main,
@@ -162,14 +163,27 @@ def test_empty_plan() -> None:
 
 
 def test_preamble_survives_truncation_and_marker_is_reworded() -> None:
-    plan = {"resource_changes": [_rc("aws_x", ["update"], {"a": 1}, {"a": 2}, address=f"aws_x.r{i}") for i in range(50)]}
-    digest = build_digest(plan, size_cap=700)
+    plan = {
+        "resource_changes": [
+            _rc("aws_x", ["update"], {"a": 1}, {"a": 2}),
+            *[_rc(f"aws_t{i:03d}", ["no-op"], address=f"aws_t{i:03d}.r") for i in range(60)],
+        ]
+    }
+    full = build_digest(plan, size_cap=100_000)
+    assert "TRUNCATED" not in full
+    cap = len(full.encode("utf-8")) - 40
+    digest = build_digest(plan, size_cap=cap)
     assert digest.startswith(REVIEWER_PREAMBLE)
-    assert "[DIGEST TRUNCATED: size cap reached -- judge only what is shown]" in digest
+    assert "[DIGEST TRUNCATED: inert tail omitted -- every actionable change is listed above]" in digest
+    assert "aws_x.example" in digest
     assert "plan.json" not in digest
-    assert len(digest.encode("utf-8")) <= 700 + 10
-    assert build_digest(plan, size_cap=10).startswith(REVIEWER_PREAMBLE)
-    assert "TRUNCATED" not in build_digest(plan, size_cap=100_000)
+    assert len(digest.encode("utf-8")) <= cap
+
+
+def test_actionable_overflow_raises_instead_of_truncating() -> None:
+    plan = {"resource_changes": [_rc("aws_x", ["update"], {"a": 1}, {"a": 2}, address=f"aws_x.r{i}") for i in range(50)]}
+    with pytest.raises(DigestOverflow):
+        build_digest(plan, size_cap=700)
 
 
 def test_digest_lists_exactly_the_resources_the_guard_judged() -> None:
