@@ -39,25 +39,36 @@ scope:
       cap, build_digest raises DigestOverflow(<B>, cap) and nothing is emitted (the marker's bytes are always reserved, so a
       returned digest never exceeds the cap, exactly, at every cap); otherwise only inert-tail lines may be dropped to fit,
       with the truncation marker reworded to "[DIGEST TRUNCATED: inert tail omitted -- every
-      actionable change is listed above]". (6) main(): DigestOverflow -> stderr "terraform_plan_digest: digest overflow:
-      actionable content is <B> bytes, over the <CAP>-byte cap" and exit 3 (1 stays unreadable/non-object plan). New flag
+      actionable change is listed above]". One predicate, fits(B, cap) = B + len(marker) <= cap, is shared by build_digest and --fit-report, and <BUDGET> =
+      cap - len(marker). (6) main(): DigestOverflow -> stderr "terraform_plan_digest: digest overflow: actionable content is
+      <B> bytes, over the <BUDGET>-byte budget (cap <CAP>)" and exit 3 (1 stays unreadable/non-object plan). New flag
       --fit-report prints exactly one line and exits 0 for any readable plan: "Reviewer digest: <A> actionable of <N>
       resource change(s), <B> of <CAP> bytes." (<B> as defined in (5) in both lines; tests assert it) or "Reviewer digest OVERFLOW: actionable content is <B> bytes, over the
-      <CAP>-byte cap; the merge-time review will block this apply (STARVED: digest overflow). Split the change or raise
-      DIGEST_SIZE_CAP by PR before merging." All added text is fixed words, integers, resource type names, or already-printed
+      <BUDGET>-byte budget (cap <CAP>); the merge-time review will block this apply (STARVED: digest overflow). Split the change or raise
+      DIGEST_SIZE_CAP by PR before merging." (7) REVIEWER_PREAMBLE gains one sentence: "No-op and plain-read entries
+      are counted by type, not listed; every other change is listed in full." (digest text, not the review.sh prompt). All
+      added text is fixed words, integers, resource type names, or already-printed
       addresses.
   - file: tests/test_terraform_plan_digest.py
     action: Modify
     purpose: >-
-      Add: #1687-scale replay (5 actionable + 141 inert entries over many types) lists every actionable line, stays under the
-      cap, prints no inert address and reconciles the summary counts; every non-inert address survives at any size_cap that
-      fits the actionable set (parametrized caps); actionable overflow raises DigestOverflow and the CLI exits 3 with the
+      New cases go in tests/test_terraform_plan_digest_actionable.py (Create, below) so this file (264 SLOC) stays well
+      under 500 (Decision 128); here only the existing truncation test changes. The new file adds: #1687-scale replay (the real shape: 3 updates, 2 CI policy updates with deferred reads plus their 2
+      read_because_dependency_pending data reads as actionable lines, and ~139 no-op/plain-read entries over many types)
+      lists every actionable line, stays under the cap, prints no inert address and reconciles the summary counts; every non-inert address survives at any size_cap that
+      fits the actionable set (parametrized caps, including the marker-reservation boundary); --fit-report says OVERFLOW
+      exactly when build_digest raises at the same cap (boundary test); actionable overflow raises DigestOverflow and the CLI exits 3 with the
       overflow stderr line; only the inert tail is dropped, with the new marker; ordering (delete/replace, create, update,
       read-with-reason, outputs, tail); a read with action_reason is never counted inert; no-op outputs are counted, not
       listed; inert tail never carries an address or value (sentinel in a no-op entry's address and attributes);
-      --fit-report OK and OVERFLOW lines and exit 0. Change test_preamble_survives_truncation_and_marker_is_reworded to the
+      --fit-report OK and OVERFLOW lines and exit 0. In this file, change test_preamble_survives_truncation_and_marker_is_reworded to the
       new semantics (actionable overflow raises; a fitting plan with a large inert tail truncates only the tail and keeps
       the preamble).
+  - file: tests/test_terraform_plan_digest_actionable.py
+    action: Create
+    purpose: >-
+      Holds the new actionable-first, inert-count, overflow and --fit-report cases listed above (reusing the _rc/_policy
+      helper shapes from tests/test_terraform_plan_digest.py, copied or imported).
   - file: scripts/ci/review_verdict.py
     action: Modify
     purpose: >-
@@ -66,7 +77,8 @@ scope:
       passed through the guard's _redact (imported lazily inside revise_reason, with a sys.path insert to the repo root as
       terraform_plan_digest.py does, so the one-argument classify path gains no import-time dependency), capped at
       500 characters with a trailing "...", and "(no reason given)" when empty. CLI: "review_verdict.py --reason <file>"
-      prints that one line and exits 0 (unreadable file prints "(transcript unreadable)", exit 0). The existing one-argument
+      (matched only when args == ["--reason", <file>], so the existing usage-error test main(["a","b"]) == 1 holds) prints
+      that one line and exits 0 (unreadable file prints "(transcript unreadable)", exit 0). The existing one-argument
       form, its output and its 0/2/1 exit contract are unchanged.
   - file: tests/test_review_verdict.py
     action: Modify
@@ -116,7 +128,7 @@ scope:
       Parse terraform-apply-sandbox.yml: the speculative-plan PR-comment step's run body contains exactly one invocation of
       scripts/ci/terraform_plan_digest.py with --fit-report plan.json, on the predicted-verdict COMMENT+= line, with the
       "|| echo 'Reviewer digest: fit unavailable.'" fallback; no step in the apply-sandbox job references --fit-report.
-      Extract that COMMENT+= line and run it under bash -euo pipefail (with _NL and PREDICTED_VERDICT set) twice: with a
+      Extract that COMMENT+= line and run it under bash -euo pipefail (with _NL, PREDICTED_VERDICT and GITHUB_WORKSPACE set) twice: with a
       python3 shim that prints a fit line (the line appears in COMMENT) and with one that exits non-zero (exit 0 and the
       fallback text appears).
   - file: docs/plans/PLAN-plan-review-digest-actionable-first.yaml
@@ -153,7 +165,7 @@ verification_plan:
   - step: 1
     phase: pre-deploy
     action: Digest unit tests, including the #1687-scale replay, cap parametrization, overflow and fit-report cases.
-    command: bin/venv-python -m pytest tests/test_terraform_plan_digest.py -q
+    command: bin/venv-python -m pytest tests/test_terraform_plan_digest.py tests/test_terraform_plan_digest_actionable.py -q
     expected: exit 0; every test passes. The new cases fail before the change.
     fix_if: An actionable line is missing or a value leaks - fix the renderer, never the assertion.
     hermetic: true
@@ -221,25 +233,28 @@ verification_plan:
     phase: post-deploy
     action: >-
       After Benjamin's acknowledge-and-retry dispatch of terraform-apply-sandbox (his call; input names the red commit or
-      rec-4674), the review PROCEEDs, the apply runs and the record turns green; then rec-4674 is closed.
+      rec-4674), the review PROCEEDs, the apply runs and the record turns green; rec-4674 is closed (by the merge's Resolves
+      trailer).
     command: >-
       bin/venv-python -c "from src.common.ducklake_reader_client import fetch_recs_by_ids, make_reader;
-      r,_=fetch_recs_by_ids(make_reader(), ['rec-4674']); print(r[0]['id'], r[0]['status']); raise SystemExit(0 if r[0]['status']=='closed' else 1)"
+      r,_=fetch_recs_by_ids(make_reader(profile='agent_platform'), ['rec-4674']); print(r[0]['id'], r[0]['status']); raise SystemExit(0 if r[0]['status']=='closed' else 1)"
     expected: >-
       The dispatch run log shows "Reviewer verdict: PROCEED" and "Convergence record read-back verified: status=green";
-      the command prints rec-4674 closed and exits 0. Closure is deliberately AFTER the green record, by update_rec citing
-      the green run (Decision 84 I-4), not by a merge trailer: the red is not repaired until the record is green.
+      the command prints rec-4674 closed and exits 0. Closure is by the squash-merge's "Resolves: rec-4674" trailer
+      (git-ops.yaml resolves_trailer; Decision 201 acceptance verdict, whose oracle greps review.sh for the reason line and
+      so holds at merge). The red stays visible in the convergence record and its precondition refusal until the
+      acknowledge-and-retry turns it green.
     fix_if: >-
       REVISE again - read the new "[SUBAGENT-REVIEW] REVISE reason:" line in the log and RCA (Decision 55); STARVED digest
-      overflow - the cap is too small for this plan, fix by PR; rec still open after green - close it with update_rec
-      citing the green run.
+      overflow - the cap is too small for this plan, fix by PR; rec still open after merge - follow only the route ci.yml's
+      trailer-closure job prints (git-ops.yaml resolves_trailer), never a bare manual close.
     hermetic: false
     graduation: not-applicable
 test_obligations:
   - source: scripts/ci/terraform_plan_digest.py
     behavior: Actionable-first listing, inert counts, cap and DigestOverflow exit 3, --fit-report, names-only.
     verification_step: 1
-    test_selector: tests/test_terraform_plan_digest.py
+    test_selector: tests/test_terraform_plan_digest_actionable.py
     red_green_expectation: red before (actionable lines truncated, no overflow exit, no fit report), green after.
   - source: scripts/ci/review_verdict.py
     behavior: revise_reason is one redacted, capped, newline-free line; classify contract unchanged.
@@ -282,7 +297,7 @@ context:
   - "Decision-scout: FLAGS_FOUND (SPIRIT WARN 183 addressed above); Decisions triaged: 189 of 189; Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1. CITE: 55, 77, 101, 162, 183, 201, 226, 235, 128. Related: 154, 158, 92, 190, 126."
   - "Fable consult: /mnt/project-files/plan-review-revise-unblock/ADVICE.md (adopted Q1-Q5; Q6 adopted by Benjamin's 3b)."
   - "red_overlap: verdict clear (rec-4674 rule repairs_this_red, Track B, SLO 4h, age 14.1h at write)."
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING (round 1 REVISE: structural-size breach fixed by in-place fold-in; xN merge, inert wording, lazy import, code span, misnaming note, VP 6 applied. Round 2 PROCEED with 5 advisories applied: marker bytes reserved, <B> defined, citation fixed, --reason exit independence, closure after green)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING (round 1 REVISE: structural-size breach fixed by in-place fold-in; xN merge, inert wording, lazy import, code span, misnaming note, VP 6 applied. Round 2 PROCEED with advisories applied. Round 3 REVISE: the round-2 close-after-green advice contradicted git-ops.yaml resolves_trailer and Decision 201, reverted to the Resolves trailer at merge; advisories applied: shared overflow predicate, preamble sentence, exact --reason dispatch, real replay mix, GITHUB_WORKSPACE, reader profile)"
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -300,8 +315,8 @@ execution_steps:
     tests/test_plan_review_digest_fit_wiring.py; run VP 4.
   - Run VP 5 (full tier) to completion.
   - >-
-    Open the PR naming rec-4674 as "Refs: rec-4674" (deliberately NOT a Resolves trailer, so ci.yml's closure job does not
-    close the Critical red rec before the record is green; VP 7 closes it); merge on code review PROCEED and green CI only after Benjamin's word
+    Open the PR and squash-merge with "Resolves: rec-4674" in the SQUASH-MERGE commit body (git-ops.yaml
+    resolves_trailer); merge on code review PROCEED and green CI only after Benjamin's word
     on the final diff (security change to the auto-apply gate). Then tell the thread so Benjamin can run
     acknowledge-and-retry (VP 7); VP 6 waits for the next terraform/personal PR.
   - "Report: what was implemented, verification results, VP 6/7 status."
