@@ -23,8 +23,8 @@ scope:
   - file: scripts/ci/terraform_plan_digest.py
     action: Modify
     purpose: >-
-      (1) Partition resource_changes on the guard's _INERT_ACTIONS (imported from scripts/terraform_apply_guard.py; no
-      third copy, Decision 190), refined so a read carrying an action_reason is actionable (deliberately more conservative
+      (1) Partition resource_changes on the guard's _INERT_ACTIONS (imported from scripts/terraform_apply_guard.py, never
+      copied), refined so a read carrying an action_reason is actionable (deliberately more conservative
       than the guard, which treats every read as inert): inert = actions ["no-op"], or ["read"] with no action_reason;
       everything else is actionable. (2) Body order: the summary line; actionable lines in full, ordered delete-bearing
       (delete / replace) first, then create, then update, then read-with-reason, address-sorted within each group, keeping
@@ -34,13 +34,15 @@ scope:
       as today) and appends " Listed: <A> actionable resource(s), <C> changed output(s). Counted only: <X> no-op, <Y> read,
       <Z> unchanged output(s)." (4) Inert tail: one line per inert action kind, "- no-op by type: <type> x<n>, ..." and
       "- read by type: <type> x<n>, ...", types sorted, passed through _clean and _redact; never an address, attribute name or
-      value. (5) DIGEST_SIZE_CAP becomes 32768 bytes. If preamble + summary + actionable + changed-output lines exceed the
-      cap, build_digest raises DigestOverflow(actionable_bytes, cap) and nothing is emitted; otherwise only inert-tail lines
-      may be dropped to fit, with the truncation marker reworded to "[DIGEST TRUNCATED: inert tail omitted -- every
+      value. (5) DIGEST_SIZE_CAP becomes 32768 bytes. Define <B> = the UTF-8 bytes of the non-droppable part (preamble,
+      summary, actionable lines and changed-output lines, with their joining newlines). If <B> + len(truncation marker) >
+      cap, build_digest raises DigestOverflow(<B>, cap) and nothing is emitted (the marker's bytes are always reserved, so a
+      returned digest never exceeds the cap, exactly, at every cap); otherwise only inert-tail lines may be dropped to fit,
+      with the truncation marker reworded to "[DIGEST TRUNCATED: inert tail omitted -- every
       actionable change is listed above]". (6) main(): DigestOverflow -> stderr "terraform_plan_digest: digest overflow:
       actionable content is <B> bytes, over the <CAP>-byte cap" and exit 3 (1 stays unreadable/non-object plan). New flag
       --fit-report prints exactly one line and exits 0 for any readable plan: "Reviewer digest: <A> actionable of <N>
-      resource change(s), <B> of <CAP> bytes." or "Reviewer digest OVERFLOW: actionable content is <B> bytes, over the
+      resource change(s), <B> of <CAP> bytes." (<B> as defined in (5) in both lines; tests assert it) or "Reviewer digest OVERFLOW: actionable content is <B> bytes, over the
       <CAP>-byte cap; the merge-time review will block this apply (STARVED: digest overflow). Split the change or raise
       DIGEST_SIZE_CAP by PR before merging." All added text is fixed words, integers, resource type names, or already-printed
       addresses.
@@ -83,7 +85,9 @@ scope:
       review_retry.json). In the REVISE branch only, print one line "[SUBAGENT-REVIEW] REVISE reason: <reason>" from
       "review_verdict.py --reason <transcript>" to stderr and, when GITHUB_STEP_SUMMARY is set, append "## Subagent review
       REVISE" plus the same line with the reason inside a code span (backticks in the reason replaced by single quotes), so
-      model text cannot render markdown links or images. Outcome values, exit codes and the prompt are unchanged.
+      model text cannot render markdown links or images. The REVISE branch never depends on the --reason call's exit status
+      (REASON=$(...) || true, empty -> "(no reason given)"), so outcome and exit stay as today even if that call fails (the
+      wiring harness's python3 shim answers every review_verdict.py call with a verdict token). Outcome values, exit codes and the prompt are unchanged.
   - file: tests/test_subagent_review_overflow_and_reason.py
     action: Create
     purpose: >-
@@ -220,14 +224,15 @@ verification_plan:
       rec-4674), the review PROCEEDs, the apply runs and the record turns green; then rec-4674 is closed.
     command: >-
       bin/venv-python -c "from src.common.ducklake_reader_client import fetch_recs_by_ids, make_reader;
-      r,_=fetch_recs_by_ids(make_reader(), ['rec-4674']); print(r[0]['id'], r[0]['status'])"
+      r,_=fetch_recs_by_ids(make_reader(), ['rec-4674']); print(r[0]['id'], r[0]['status']); raise SystemExit(0 if r[0]['status']=='closed' else 1)"
     expected: >-
       The dispatch run log shows "Reviewer verdict: PROCEED" and "Convergence record read-back verified: status=green";
-      the command prints rec-4674 closed.
+      the command prints rec-4674 closed and exits 0. Closure is deliberately AFTER the green record, by update_rec citing
+      the green run (Decision 84 I-4), not by a merge trailer: the red is not repaired until the record is green.
     fix_if: >-
       REVISE again - read the new "[SUBAGENT-REVIEW] REVISE reason:" line in the log and RCA (Decision 55); STARVED digest
-      overflow - the cap is too small for this plan, fix by PR; rec still open after green - close with update_rec citing
-      the green run (Decision 84 I-4).
+      overflow - the cap is too small for this plan, fix by PR; rec still open after green - close it with update_rec
+      citing the green run.
     hermetic: false
     graduation: not-applicable
 test_obligations:
@@ -277,7 +282,7 @@ context:
   - "Decision-scout: FLAGS_FOUND (SPIRIT WARN 183 addressed above); Decisions triaged: 189 of 189; Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1. CITE: 55, 77, 101, 162, 183, 201, 226, 235, 128. Related: 154, 158, 92, 190, 126."
   - "Fable consult: /mnt/project-files/plan-review-revise-unblock/ADVICE.md (adopted Q1-Q5; Q6 adopted by Benjamin's 3b)."
   - "red_overlap: verdict clear (rec-4674 rule repairs_this_red, Track B, SLO 4h, age 14.1h at write)."
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING (round 1 REVISE: structural-size breach fixed by in-place fold-in; xN merge, inert wording, lazy import, code span, misnaming note, VP 6 applied)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING (round 1 REVISE: structural-size breach fixed by in-place fold-in; xN merge, inert wording, lazy import, code span, misnaming note, VP 6 applied. Round 2 PROCEED with 5 advisories applied: marker bytes reserved, <B> defined, citation fixed, --reason exit independence, closure after green)"
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -295,7 +300,8 @@ execution_steps:
     tests/test_plan_review_digest_fit_wiring.py; run VP 4.
   - Run VP 5 (full tier) to completion.
   - >-
-    Open the PR with "Resolves: rec-4674" in the body; merge on code review PROCEED and green CI only after Benjamin's word
+    Open the PR naming rec-4674 as "Refs: rec-4674" (deliberately NOT a Resolves trailer, so ci.yml's closure job does not
+    close the Critical red rec before the record is green; VP 7 closes it); merge on code review PROCEED and green CI only after Benjamin's word
     on the final diff (security change to the auto-apply gate). Then tell the thread so Benjamin can run
     acknowledge-and-retry (VP 7); VP 6 waits for the next terraform/personal PR.
   - "Report: what was implemented, verification results, VP 6/7 status."
