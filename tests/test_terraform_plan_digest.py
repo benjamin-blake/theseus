@@ -162,7 +162,7 @@ def test_empty_plan() -> None:
     assert "0 resource change(s), 0 output change(s)" in build_digest({})
 
 
-def test_preamble_survives_tail_truncation_and_marker_is_reworded() -> None:
+def test_preamble_survives_truncation_and_marker_is_reworded() -> None:
     plan = {
         "resource_changes": [
             _rc("aws_x", ["update"], {"a": 1}, {"a": 2}),
