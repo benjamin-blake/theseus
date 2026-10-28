@@ -8,6 +8,7 @@
 # Two roles, split by trust:
 #   branch (write) -- refs/heads/main + refs/heads/agent/*  -> main-validate / ci-rca portal writes
 #   pr (read-only)  -- refs/pull/*                          -> PR-context read queries
+#   trusted-plan    -- tf-trusted-plan Environment + job_workflow_ref -> speculative plan (oidc_trusted_plan_role.tf)
 # The account ID in ARNs comes from var.account_id (gitignored tfvars); never a committed literal.
 
 locals {
@@ -182,7 +183,9 @@ data "aws_iam_policy_document" "ci_full_refresh_read" {
       "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-pr",
       "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-apply",
       "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-planner",
-      "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-deploy"
+      "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-deploy",
+      # rec-4636: the trusted speculative-plan role (oidc_trusted_plan_role.tf).
+      "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-trusted-plan"
     ]
   }
 
