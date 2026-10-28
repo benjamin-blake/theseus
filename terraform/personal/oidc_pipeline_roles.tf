@@ -115,10 +115,11 @@ data "aws_iam_policy_document" "github_ci_planner" {
   statement {
     # From github_ci_plan: persist plan.bin keyed by PR head SHA for the apply-the-saved-plan
     # merge path (T2.21). No convergence/personal/* grant here -- ConvergenceRecordWrite below
-    # is the sole, conditioned allow on that prefix.
+    # is the sole, conditioned allow on that prefix. Write only (N3 item 3): the PR job uploads with
+    # aws s3 cp, and the merge-time fetch runs under the apply role.
     sid       = "TfplanWrite"
     effect    = "Allow"
-    actions   = ["s3:GetObject", "s3:PutObject"]
+    actions   = ["s3:PutObject"]
     resources = ["${aws_s3_bucket.data_lake.arn}/tfplan/personal/*"]
   }
 

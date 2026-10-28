@@ -2,6 +2,92 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 238: No agent-controlled identity reads Terraform state or saved plans -- the speculative plan runs from main's workflow on pull_request_target under a dedicated environment- and workflow-bound role and shows names only (amends Decisions 92 and 144) (Decided)
+
+```yaml
+number: 238
+status: Decided
+decided_date: "2026-10-28"
+amends: [92, 144]
+significance:
+  value: numbered_decision
+  justification: >-
+    Replaces the PR-sub planner session T2.49 built on Decision 92's Wave 2 direction, splits the
+    plan-plus-drift role from Decision 144 clause 7's T2.49 consolidation and retires a
+    terraform-cc-web-operations.yaml row; a note in that contract (considered) cannot amend Decision clauses.
+```
+
+**Status:** Decided
+**Date:** 2026-10-28
+**Warehouse ID:** dec-238 (per Decision 84 backfill)
+
+**Problem:** PR-run speculative plans assume the planner's PR-sub session, which reads Terraform state and
+saved plans, while the PR's own code runs in the same job. Unreviewed agent code can therefore open state. N1
+removed the Neon key from that session but not the state read, and every fix to one leak left the channel
+itself in place.
+
+**Decision:**
+1. Principle. No identity an agent can obtain without review (a role trusting pull_request, refs/pull/* or
+agent/* subjects, and PlatformDev) reads or writes Terraform state, saved plans or plan-review transcripts. A
+static check over every role's trust and policy, with iam simulate rows, enforces it.
+2. Trusted identity. The speculative plan runs under agent-platform-github-ci-trusted-plan. It carries the
+mandatory boundary (Decision 144 cl.3) and trusts one subject form: the GitHub Environment tf-trusted-plan (a
+deployment branch policy naming only main, no reviewers, no admin bypass, never destroyed) and a
+job_workflow_ref naming a trusted workflow file at refs/heads/main, exact match. No reviewer gates this
+subject, unlike Decision 94's. Its safety rests on the workflow binding, the main-only branch policy,
+code-owner review of every main path the job executes (procedural until rec-2827's non-bypass merge identity),
+and a repo check: only the named files reference the environment or combine pull_request_target with id-token
+write, and none declares workflow_call.
+3. The PR is data. The job runs main's workflow on pull_request_target, after a same-repo head check and
+before any checkout. Only the root's Terraform files come from the PR. Every script, action, provider and
+backend block and the lockfile come from main. Init is hermetic from the S3 provider mirror. The job is
+deterministic, and no LLM runs in it (Decision 205 cl.2).
+4. Containment. Secrets exist only as process environment, never as files. PR-visible output and errors are
+names only: addresses, actions, counts, attribute and output names. They carry no value, instance key or
+diagnostic text. No plan JSON is stored where an agent identity can read it, and the plan reviewer gets
+values-stripped input. Accepted residual: PR HCL is still evaluated with the job's credentials, so the shape
+of a plan (counts, success, timing) can carry a few bits. Any data source argument the PR writes can also
+carry a value out in the request it sends, even a denied one, to a resource whose owner logs it. So the
+trusted job evaluates only PR HCL that passes a main-side static screen: an allowlist of data source types,
+and no provider, backend or module source from the PR (rec-4637). Catalog passwords stay in state (accepted
+2026-10-26).
+5. Unchanged. Decision 77's same-artifact apply: plan.bin and its digest are keyed by the PR head SHA.
+Decision 154's PR-time Lambda artifact production moves out of the plan job with the cutover; it is not
+retired.
+6. Amends Decision 92's ratified Wave 2 direction: the speculative plan no longer runs under a PR-sub session,
+and the planner keeps its main-sub drift session only. Amends Decision 144 clause 7's T2.49 consolidation: the
+plan half leaves the merged planner role. terraform-cc-web-operations.yaml's PR-run speculative_plan_job row
+retires at the cutover. Later trust edits on the new role are admin split-applies (Decision 223 cl.4). A
+rename or transfer pre-stages the new job_workflow_ref values additively, as Decision 172 cl.2 does for
+subjects. This Decision records the target; it takes effect as rec-4632, rec-4635, rec-4636, rec-4637,
+rec-4638, rec-4639 and rec-4640 land, and until rec-4640 the planner's PR-sub session still reads state
+(accepted interim risk).
+
+**Rationale:** The root cause is identity, not any one secret: a job that runs PR code cannot also hold state
+read. pull_request_target runs main's definition, so the PR supplies data, never steps. Names-only output is
+the only rule that survives nonsensitive() and arbitrary string attributes. Rejected: a third trust statement
+on the planner (at the 2048-character trust limit, about 2031 of 2048, and it widens the session-name
+partition); workflow_run chaining after a secretless pull_request run, the Decision 205 cl.2 pattern (its runs
+do not report on the PR, and it adds a hop that hands data over from the untrusted run); masking values in PR
+output; GitHub OIDC subject customisation (it rewrites every subject repo-wide, and Decision 172 rejected it).
+
+**Coverage (Decision 181 cl.2):** cl.1, the principle check (rec-4640) and the branch-role and PlatformDev
+fence tests (rec-4632, rec-4635); cl.2, test_trusted_plan_identity and the trusted-environment ci_guards
+check; cl.3 and cl.4, test_terraform_plan_trusted (rec-4637) and the values-stripped review fixture
+(rec-4639); cl.5, the existing saved-plan fetch and digest tests.
+
+```yaml reversal-conditions
+decision: 238
+review_by: 2027-04-30
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: premises-change
+    kind: manual
+    description: "GitHub changes pull_request_target, environment-claim or job_workflow_ref semantics; AWS stops evaluating job_workflow_ref; names-only output proves insufficient for review in practice; a fork-safe trigger that needs no environment appears."
+```
+
+---
+
 ## Decision 237: Secrets live as SSM SecureString parameters under a separate /secret/ root -- value verbs enumerated per parameter, out-of-band values outside Terraform, no secret read by a data source (amends Decision 101 point (b), Decision 213 clause 5 and Decision 230 clause 4) (Decided)
 
 ```yaml
@@ -6427,6 +6513,10 @@ post-merge, never written directly).
 > `platform-security-*` detector resources: their non-prefix name is a deliberate exclusion from CI
 > reach, not a coverage gap. See Decision 202 clause 3.
 
+> **Amended by Decision 238 (2026-10-28):** the T2.49 consolidation its clause 7 sequenced loses its
+> plan half to a dedicated trusted-plan role; drift stays on the planner. This body is otherwise
+> unedited; see Decision 238.
+
 ---
 
 ## Decision 143: Privileged-verb Lambda decomposition -- scope identities by worst reachable verb; enforce the boundary in a primitive outside the agent merge loop (amends Decision 81 cl.1) (Decided)
@@ -9345,6 +9435,10 @@ T5.2 (teardown) was considered but excluded: it is a near-due cost-saver (grace 
 > exit code), and a benign code-behind-state delta gets a bounded, non-status
 > `pending_codification` marker instead of latching red. This body is otherwise unedited; see
 > Decision 190 for the full derivation, constraints, and reversal conditions.
+
+> **Amended by Decision 238 (2026-10-28):** the Wave 2 speculative plan ratified here as direction
+> no longer runs under a PR-sub planner session; it runs under an environment- and workflow-bound
+> role. This body is otherwise unedited; see Decision 238.
 
 **Problem:**
 CD.35 (Agent-native Terraform CI/CD) specified a five-wave architecture ratified via the log-decision
