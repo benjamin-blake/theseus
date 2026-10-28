@@ -29,7 +29,7 @@ The report includes `data_quality` (declarative check coverage and last run verd
 
 
 ## Step 2: Read Context
-Use the preflight JSON `context` field (`roadmap_phase`, `open_decisions_count`, `recent_sessions`). Read `docs/PROJECT_CONTEXT.md` fully.
+Use the preflight JSON `context` field (`roadmap_phase`, `open_decisions_count`, `recent_sessions`). `recent_sessions` comes from telemetry (sessions_window over 2 UTC days) and is null when `session_history.status` is unavailable, so read the status before relying on it; the newest entry may be the current session itself (state running). Read `docs/PROJECT_CONTEXT.md` fully.
 If the request references a recommendation ID, fetch it with the ducklake-reads `recs_by_ids` verb, read briefing files if they exist, and load dependencies.
 
 **Orientation and CI-RCA block:** see the planning skill's Platform Roadmap Eligibility section for orientation responsibility and the HARD BLOCK conditions on open ci-rca recs -- run `/orient` first if no item has been chosen yet.
