@@ -56,7 +56,8 @@ scope:
       HTTP answer (connection error, timeout, a 403/404 from the URL layer) -> transit; a non-200 from the writer on
       register, begin_blobs or append (422 row_rule or blob_not_verified, 500) -> persist. Retry policy: register and
       append are retried at most twice with backoff on 0, 429 or 503 (safe: an identical re-send is a no-op, Decision
-      207), begin_blobs keeps deliver_blobs' own retries; a 503 still standing after that -> unavailable.
+      207), begin_blobs keeps deliver_blobs' own retries; a 429 or 503 still standing after that -> unavailable, never
+      persist (Decision 215 cl.2).
       (4) query: from the last append's 200, poll session_tree_rows for the derived root session_id every 10 s until
       compare_tree(record_turn's own batches, decoded stored rows) reports no missing_in_store or SLA_SECONDS (180)
       elapse. The reader answered 200 at least once but rows stayed missing -> query; no 200 within the SLA (504
@@ -277,12 +278,13 @@ verification_plan:
       merge-gate evidence and the same command every alarm's acceptance uses. Nothing is deployed by this plan, so the
       branch exercises the production engine as it stands.
     command: >-
-      AWS_PROFILE=agent_platform bin/venv-python -m scripts.ducklake_smoke.lambda_telemetry_causal_chain --no-alarms
-      --assert-pass
+      env -u GH_TOKEN -u GITHUB_TOKEN AWS_PROFILE=agent_platform bin/venv-python -m
+      scripts.ducklake_smoke.lambda_telemetry_causal_chain --no-alarms --assert-pass
     expected: >-
-      Prints one CAUSAL_CHAIN line with stage=pass exit=0 mode=local blobs=1 real_window_hits=0 skew=0, and either
-      prior_mode=skipped (no GitHub token in the shell) or prior_checked=0 (no earlier workflow runs exist yet); exit 0.
-      The line is pasted into the PR as merge-gate evidence.
+      Prints one CAUSAL_CHAIN line with stage=pass exit=0 mode=local blobs=1 real_window_hits=0 skew=0
+      prior_mode=skipped; exit 0. The tokens are unset because before merge the workflow is not on the default branch,
+      so its runs endpoint answers 404 (ActionsUnavailable), not an empty list. The line is pasted into the PR as
+      merge-gate evidence.
     fix_if: >-
       3 unavailable on a cold reader - re-run once (the first call warms it); still 3 - read the class and RCA (Decision
       55), rec-4652's cold-start deadline is the known suspect. skew=1 - main moved on a deploy path since the last
@@ -398,7 +400,7 @@ context:
   - "Decision-scout: FLAGS_FOUND (236 NOTE on permanent probe blobs: accepted, a few tiny blobs a day, no content read; residual declared). Decisions triaged: 189 of 189; Roadmap items intersected: 2; CONFLICT: 0; RELATED: 2. CITE: 236, 210, 83, 62, 199, 207, 200, 228, 213, 55, 88, 205, 136, 101. Report: /mnt/project-files/telemetry-slice5/decision-scout-report-t3-2.md."
   - "Fable consult: /mnt/project-files/telemetry-slice5/fable-independent-advice.md (F1 b, F2 cut with corrections, F3 adopted then moved from scripts/telemetry_verify to scripts/ducklake_smoke on critique round 1)."
   - "red_overlap: verdict clear (no reds, SLO 4h) at plan write 2026-10-28."
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<pending> after 3 round(s)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<pending> after 4 round(s)"
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
