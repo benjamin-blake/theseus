@@ -199,6 +199,22 @@ ENTRIES: tuple[Entry, ...] = (
         full_segment="full_after_lint",
     ),
     Entry(
+        name="validate_trusted_plan_environment",
+        module="scripts.checks.ci_guards.validate_trusted_plan_environment",
+        attr="validate_trusted_plan_environment",
+        pre=True,
+        pre_globs=(
+            ".github/workflows/**",
+            "terraform/github/**",
+            "scripts/checks/ci_guards/validate_trusted_plan_environment.py",
+            "scripts/verify_ci_workflow/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+            ".github/CODEOWNERS",
+        ),
+        full_segment="full_after_lint",
+    ),
+    Entry(
         name="validate_dispatch_gated_apply_topology",
         module="scripts.checks.ci_guards.validate_dispatch_gated_apply_topology",
         attr="validate_dispatch_gated_apply_topology",

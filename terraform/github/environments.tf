@@ -50,3 +50,32 @@ resource "github_repository_environment" "tf_gated_apply" {
     prevent_destroy = true
   }
 }
+
+# GitHub Environment: tf-trusted-plan (Decision for PLAN-trusted-plan-identity, rec-4636).
+#
+# No reviewer gates this Environment. Its safety is the main-only deployment policy below, the
+# trusted role's job_workflow_ref binding in terraform/personal, and the repo check
+# validate_trusted_plan_environment. Never "protected branches only": GitHub defines that by classic
+# branch protection rules, this repo protects main by a ruleset, and with no classic rule every branch
+# can deploy. The explicit branch_pattern policy is matched against GITHUB_REF (refs/heads/main under
+# pull_request_target). Destroying this Environment fails open for the same reason as tf_gated_apply.
+resource "github_repository_environment" "tf_trusted_plan" {
+  repository        = github_repository.this.name
+  environment       = "tf-trusted-plan"
+  can_admins_bypass = false
+
+  deployment_branch_policy {
+    protected_branches     = false
+    custom_branch_policies = true
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "github_repository_environment_deployment_policy" "tf_trusted_plan_main" {
+  repository     = github_repository.this.name
+  environment    = github_repository_environment.tf_trusted_plan.environment
+  branch_pattern = "main"
+}

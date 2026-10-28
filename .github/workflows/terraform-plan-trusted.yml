@@ -1,0 +1,83 @@
+name: terraform-plan-trusted
+
+# Claims-only skeleton for the trusted speculative plan (PLAN-trusted-plan-identity, rec-4636). The
+# job_workflow_ref claim carries this file's path, so the final filename is fixed now; rec-4637 replaces
+# the body. Runs main's definition on pull_request_target: the PR is data, never steps, so no job checks
+# out the PR head or merge ref. Never workflow_call. validate_trusted_plan_environment polices this file.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'terraform/personal/**'
+  workflow_dispatch: {}
+
+permissions: {}
+
+concurrency:
+  group: terraform-plan-trusted-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  claims-probe:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: tf-trusted-plan
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Print the allowlisted OIDC claims
+        run: python3 -I scripts/ci/oidc_claims_probe.py --audience sts.amazonaws.com --require job_workflow_ref
+
+  # TEMPORARY: rec-4637 deletes this job. It answers whether a bare pull_request_target token carries ref:refs/heads/main.
+  claims-probe-no-env:
+    if: github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Print the allowlisted OIDC claims
+        run: python3 -I scripts/ci/oidc_claims_probe.py --audience sts.amazonaws.com
+
+  live-assume:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: tf-trusted-plan
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/aws-region
+
+      - name: Configure AWS credentials (OIDC -- trusted plan role)
+        uses: aws-actions/configure-aws-credentials@v6
+        env:
+          MASK_AWS_ROLE_ID_ACCOUNT_PART: ${{ secrets.AWS_ROLE_ID_ACCOUNT_PART }}
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-trusted-plan
+          role-session-name: tf-trusted-plan
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Print the assumed identity without the account id
+        run: aws sts get-caller-identity --query Arn --output text | sed -E 's#^arn:aws:sts::[0-9]+:##'
