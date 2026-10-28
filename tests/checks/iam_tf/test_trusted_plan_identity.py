@@ -164,12 +164,30 @@ def resolved_policy_problems(texts: list[str]) -> list[str]:
     return problems
 
 
-def _policy_docs(oidc_text: str, role_text: str) -> list[str]:
-    return [
-        _block(role_text, "data", "aws_iam_policy_document", "github_ci_trusted_plan"),
-        _block(oidc_text, "data", "aws_iam_policy_document", "ci_full_refresh_read"),
-        _block(oidc_text, "data", "aws_iam_policy_document", "ci_ssm_refresh_read"),
-    ]
+def _policy_docs(texts: list[str], root: str = "github_ci_trusted_plan") -> list[str]:
+    """The root document and every document it sources, followed recursively across texts."""
+    docs: dict[str, str] = {}
+    pending = [root]
+    while pending:
+        name = pending.pop()
+        if name in docs:
+            continue
+        body = next(
+            (
+                _block(t, "data", "aws_iam_policy_document", name)
+                for t in texts
+                if re.search(rf'^data\s+"aws_iam_policy_document"\s+"{name}"\s*\{{', _strip_comments(t), re.M)
+            ),
+            None,
+        )
+        assert body is not None, f"policy document {name} not found"
+        docs[name] = body
+        pending += re.findall(r"data\.aws_iam_policy_document\.(\w+)\.json", _strip_comments(body))
+    return list(docs.values())
+
+
+def _personal_texts(role_text: str | None = None) -> list[str]:
+    return [role_text if role_text is not None and p == _ROLE_FILE else _read(p) for p in sorted(_PERSONAL.glob("*.tf"))]
 
 
 def attachment_counts(texts: list[str]) -> tuple[int, int]:
@@ -222,7 +240,7 @@ def test_policy_sids_are_exactly_the_four() -> None:
 
 
 def test_resolved_policy_reads_no_saved_plan_and_writes_no_state() -> None:
-    assert resolved_policy_problems(_policy_docs(_read(_PERSONAL / "oidc.tf"), _read(_ROLE_FILE))) == []
+    assert resolved_policy_problems(_policy_docs(_personal_texts())) == []
 
 
 def test_role_has_one_inline_policy_and_no_attachments() -> None:
@@ -269,7 +287,7 @@ def test_red_added_ducklake_build_inputs_read() -> None:
 def test_red_get_object_on_tfplan() -> None:
     text = _read(_ROLE_FILE).replace('actions   = ["s3:PutObject"]', 'actions   = ["s3:GetObject", "s3:PutObject"]')
     assert own_sid_problems(text)
-    assert resolved_policy_problems(_policy_docs(_read(_PERSONAL / "oidc.tf"), text)) == ["TfplanPersonalWrite reads tfplan/*"]
+    assert resolved_policy_problems(_policy_docs(_personal_texts(text))) == ["TfplanPersonalWrite reads tfplan/*"]
 
 
 def test_red_state_write_and_wildcards_in_sourced_document() -> None:
@@ -301,3 +319,16 @@ def test_red_boundary_and_planner_get_object() -> None:
         'sid       = "TfplanWrite"\n    effect    = "Allow"\n    actions   = ["s3:GetObject", "s3:PutObject"]',
     )
     assert _planner_tfplan_actions(planner) != ["s3:PutObject"]
+
+
+def test_resolved_policy_follows_nested_sources() -> None:
+    texts = _personal_texts()
+    assert len(_policy_docs(texts)) == 3
+    nested = (
+        'data "aws_iam_policy_document" "nested_extra" {\n  statement {\n    sid       = "Nested"\n'
+        f'    actions   = ["s3:GetObject"]\n    resources = ["{_BUCKET}/tfplan/*"]\n  }}\n}}\n'
+    )
+    ssm = "data.aws_iam_policy_document.ci_ssm_refresh_read.json"
+    oidc = _read(_PERSONAL / "oidc.tf").replace(f"[{ssm}]", f"[{ssm}, data.aws_iam_policy_document.nested_extra.json]", 1)
+    assert oidc != _read(_PERSONAL / "oidc.tf")
+    assert resolved_policy_problems(_policy_docs([_read(_ROLE_FILE), oidc, nested])) == ["Nested reads tfplan/*"]
