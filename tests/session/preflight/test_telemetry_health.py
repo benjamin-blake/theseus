@@ -20,7 +20,6 @@ _CATALOG = "ducklake_smoke"
 _CONTEXT = {
     "roadmap_phase": "unknown",
     "open_decisions_count": 0,
-    "recent_sessions": [],
     "strategic_review_due": False,
     "recommendations_count": 0,
 }
@@ -129,7 +128,10 @@ def _run_main(tmp_path: Path, *, creds: str, reader: MagicMock) -> tuple[dict, M
         patch("scripts.preflight.aws_infra.check_terraform_pending", return_value=False),
         patch("scripts.preflight.aws_infra.check_credentials", return_value=creds),
         patch("scripts.preflight.aws_infra._handle_credentials_startup", return_value=creds),
-        patch("scripts.preflight.context_docs.parse_last_session", return_value=""),
+        patch(
+            "scripts.preflight.session_history.read_session_history",
+            return_value={"status": "empty", "window_days": 2, "recent_sessions": [], "last_session": ""},
+        ),
         patch("scripts.preflight.context_docs.print_data_quality_health"),
         patch("scripts.preflight.context_docs.read_context_files", return_value=_CONTEXT),
         patch("scripts.preflight.context_docs.check_data_quality_coverage", return_value={}),

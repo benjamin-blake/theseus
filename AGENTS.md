@@ -65,7 +65,7 @@ You are a Lead Software Developer writing production-quality Python. Primary dev
   Lambda-packaged. See the planning skill for the affected-artifact detection method.
 
 ## Memory policy - CLAUDE.md is canonical persistence
-Do **not** write to the auto-memory system (`~/.claude/projects/.../memory/`) in this project. The user's persistence model is git-tracked CLAUDE.md files (root + per-directory) plus structured logs (`docs/SESSION_LOG.md`, `docs/DECISIONS.md`).
+Do **not** write to the auto-memory system (`~/.claude/projects/.../memory/`) in this project. The user's persistence model is git-tracked CLAUDE.md files (root + per-directory) plus the structured log (`docs/DECISIONS.md`).
 
 - When you learn something durable, **propose** adding it to the appropriate CLAUDE.md and let the user approve. Do not silently save.
 - When the user says "remember this", propose a CLAUDE.md edit - don't reach for auto-memory.
