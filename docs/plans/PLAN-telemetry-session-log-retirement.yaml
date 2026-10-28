@@ -29,8 +29,10 @@ scope:
       daemon thread and records its start time; result() joins it for whatever remains of SESSION_HISTORY_DEADLINE_S = 60
       counted from that start (measured cold first reads: 28.5 s and 34.6 s; warm 4-6 s), so a cold reader (rec-4474
       class) never holds preflight open past the deadline; a timeout, any exception, or a 504/503 answer returns status
-      unavailable. The thread writes nothing to stderr and runs with the reader client's logging silenced, so a read
-      that outlives the deadline cannot print during interpreter shutdown. Returns {"status": "ok"|"empty"|"unavailable", "window_days": int,
+      unavailable. The thread writes nothing to stderr, and a logging.Filter on the src.common.ducklake_reader_client
+      logger keyed to the worker thread's ident drops only that thread's records (never logger.disabled, setLevel or
+      logging.disable, which are process-global and would swallow the main thread's reader warnings), so a read that
+      outlives the deadline cannot print during interpreter shutdown. Returns {"status": "ok"|"empty"|"unavailable", "window_days": int,
       "recent_sessions": list[str] | None, "last_session": str | None, "reason"?: str}: on ok the newest `limit` rows by
       session_started_at DESCENDING (the verb orders ascending, so selection is client-side, never via `limit`), each
       rendered as one line "<session_started_at UTC, minute precision> state=<state> outcome=<outcome or -> duration=<s or
@@ -51,7 +53,8 @@ scope:
       from start, with a fake clock) and on a typed deadline error
       (both fields None, never [] or ""), exact verb and params passed (sessions_window; day_from/day_to span
       window_days UTC days ending today; as_of set), no `limit` argument passed, running rendered as-is, format_history
-      lines for each status.
+      lines for each status; a fake reader that logs through the reader-client logger from inside the worker produces
+      no output while a main-thread warning on the same logger still appears, and the filter is removed afterwards.
   - file: scripts/session/preflight.py
     action: Modify
     purpose: >-
@@ -545,7 +548,7 @@ context:
   - "Decision-scout: FLAGS_FOUND (176 WARN -> git mv to deprecated; 235 NOTE -> append_jsonl tests moved; 117 NOTE -> residuals named; 127 WARN and 174 NOTE -> deletion). Decisions triaged: 189 of 189; Roadmap items intersected: 7; CONFLICT: 0; RELATED: 6. CITE: 236, 84, 215, 199, 228, 181, 201. Report: /mnt/project-files/telemetry-slice5/decision-scout-report-c6.md."
   - "Fable consult: /mnt/project-files/telemetry-slice5/fable-independent-advice.md (F4 a, F5 delete, F6 two plans; adopted)."
   - "red_overlap: verdict clear (no reds, SLO 4h) at plan write 2026-10-28."
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<pending> after 3 round(s)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 4 round(s)"
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
