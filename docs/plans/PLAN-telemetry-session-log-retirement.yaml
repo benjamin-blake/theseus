@@ -30,18 +30,19 @@ scope:
       "recent_sessions": list[str] | None, "last_session": str | None, "reason"?: str}: on ok the newest `limit` rows by
       session_started_at DESCENDING (the verb orders ascending, so selection is client-side, never via `limit`), each
       rendered as one line "<session_started_at UTC, minute precision> state=<state> outcome=<outcome or -> duration=<s or
-      ->s session=<first 8 chars of session_id>", last_session = the first of them; on empty (the reader answered with no
+      ->s last=<last_event_timestamp UTC, minute precision> session=<first 8 chars of session_id>" (last= shows recent
+      activity on a session that still reads running), last_session = the first of them; on empty (the reader answered with no
       row) [] and "" ; on unavailable both None (Decision 215 cl.2: never [] or "" for an unknown). State and outcome
       are printed as the reader derived them, never re-derived (Decision 199); a session reads running for up to 24 h
       after its last turn (Decision 228), which is not an error. format_history(result) -> one stderr line in the
       telemetry gauge's shape: "Session history: <status> (<n> root session(s) in <window_days> UTC day(s))" or
-      "Session history: unavailable (<reason>)". Never raises. No row value other than the four rendered fields and
+      "Session history: unavailable (<reason>)". Never raises. No row value other than the five rendered fields and
       the short id is printed.
   - file: tests/session/preflight/test_session_history.py
     action: Create
     purpose: >-
-      Fake-reader cases: ok (rows out of order -> newest 5 descending, last_session = newest, rendered line shape, null
-      outcome and duration render as -), empty (reader returns [] -> [] and "" with status empty), unavailable on
+      Fake-reader cases: ok (rows out of order -> newest 5 descending, last_session = newest, rendered line shape incl.
+      last=, null outcome and duration render as -), empty (reader returns [] -> [] and "" with status empty), unavailable on
       exception, on a reader that sleeps past timeout_s (returns within timeout_s + 1 s) and on a typed deadline error
       (both fields None, never [] or ""), exact verb and params passed (sessions_window; day_from/day_to span
       window_days UTC days ending today; as_of set), no `limit` argument passed, running rendered as-is, format_history
@@ -51,11 +52,12 @@ scope:
     purpose: >-
       Replace context_docs.parse_last_session() with session_history.read_session_history(), creds-gated exactly like the
       telemetry gauge (creds_status != "ok" -> unavailable "credentials unavailable" with no reader call) and submitted to
-      the existing Phase B pool so it overlaps the other reader calls. Report: last_session = result["last_session"],
-      context.recent_sessions = result["recent_sessions"], and a new top-level key session_history = {status,
-      window_days, reason?} (additive). Print format_history to stderr beside the telemetry gauge line. If this file would
-      cross its SLOC limit, move the wiring into scripts/preflight/session_history.py rather than raise a budget
-      (Decision 128).
+      the existing Phase B pool, which starts after the serial telemetry gauge call has already woken the same routed
+      reader, so the read sees warm latency. Report: last_session = result["last_session"], context.recent_sessions =
+      result["recent_sessions"], and a new top-level key session_history = {status, window_days, reason?} (additive).
+      Print format_history to stderr beside the telemetry gauge line. The facade re-exports of SESSION_LOG_FILE (import
+      list near line 55) and parse_last_session (near line 120) go. If this file would cross its SLOC limit, move the
+      wiring into scripts/preflight/session_history.py rather than raise a budget (Decision 128).
   - file: scripts/preflight/context_docs.py
     action: Modify
     purpose: >-
@@ -102,21 +104,29 @@ scope:
   - file: tests/session/preflight/test_context_docs.py
     action: Modify
     purpose: >-
-      Drop SESSION_LOG_FILE patches and recent_sessions assertions on read_context_files; keep the other cases. Add
-      test_session_log_surface_is_retired: _common has no SESSION_LOG_FILE, context_docs has no parse_last_session or
-      _read_session_blocks, and read_context_files returns no recent_sessions key.
+      Drop SESSION_LOG_FILE patches and recent_sessions assertions on read_context_files (test_recent_sessions_extracted
+      is removed: its subject moved to session_history, planned-change under acceptance_criteria[0]); keep the other
+      cases. Add TestReadContextFiles::test_read_context_files_has_no_recent_sessions (the returned dict has no
+      recent_sessions key).
   - file: tests/session/preflight/test_context_docs_resilience.py
     action: Modify
-    purpose: The recent_sessions == [] assertion on read_context_files goes (the key moved to preflight.py).
+    purpose: >-
+      In test_read_context_files_over_a_bare_root the SESSION_LOG_FILE monkeypatch (near line 286) and the
+      recent_sessions == [] assertion go (the key moved to preflight.py).
   - file: tests/session/preflight/test_recs_cache.py
     action: Modify
     purpose: The parse_last_session-on-a-missing-log case is retired; patches of context_docs.parse_last_session become patches of session_history.read_session_history.
   - file: tests/session/preflight/test_main_report.py
     action: Modify
     purpose: >-
-      Patches move to session_history.read_session_history; required_keys gains session_history; add a case that an
-      unavailable history writes last_session null and context.recent_sessions null (never "" or []), and one that a
-      creds-degraded run makes no reader call for it.
+      Patches move to session_history.read_session_history and required_keys gains session_history; nothing else is
+      added here (the file is near its 500-SLOC limit, so the new main()-level cases live in the next row).
+  - file: tests/session/preflight/test_main_session_history.py
+    action: Create
+    purpose: >-
+      main()-level cases: an unavailable history writes last_session null and context.recent_sessions null (never "" or
+      []) with session_history.status unavailable; an ok history fills both from the result; a creds-degraded run makes
+      no reader call for it.
   - file: tests/session/preflight/test_main_branches.py
     action: Modify
     purpose: Patches of context_docs.parse_last_session become patches of session_history.read_session_history.
@@ -146,7 +156,10 @@ scope:
     purpose: Patch of context_docs.parse_last_session moves to session_history.read_session_history; mocked read_context_files drops recent_sessions.
   - file: tests/test_session_preflight_decomposition.py
     action: Modify
-    purpose: The decomposition symbol lists drop parse_last_session (context_docs) and gain read_session_history (session_history); the stubbed read_context_files return drops recent_sessions.
+    purpose: >-
+      FROZEN_REPORT_KEYS gains session_history and both report-key count pins move from 54 to 55 (near lines 142 and
+      386); FROZEN_EXPORTS drops SESSION_LOG_FILE and parse_last_session; the decomposition symbol lists gain
+      read_session_history (session_history); the stubbed read_context_files return drops recent_sessions.
   - file: scripts/north_star_tracker.py
     action: Delete
     purpose: >-
@@ -160,8 +173,11 @@ scope:
   - file: tests/s3_log_store/test_append_jsonl_local.py
     action: Create
     purpose: >-
-      The two append_jsonl local-mode tests moved verbatim from tests/test_north_star_tracker.py
-      (test_appends_to_local_log, test_creates_parent_dirs_if_missing), with a neutral log name; no assertion changed.
+      The TestAppendJsonlLocalMode class (test_appends_to_local_log, test_creates_parent_dirs_if_missing) moved from
+      tests/test_north_star_tracker.py with every statement byte-identical, including the ".north-star-log.jsonl" literal
+      (a renamed literal would change an assertion and raise a test-moved-weaker candidate); only the class docstring is
+      reworded so it no longer names the deleted tracker. Same bare names re-added, so no weakening candidate arises
+      (Decision 181/235 refactor; rec-3613's intent).
   - file: scripts/prompt_compliance.py
     action: Modify
     purpose: >-
@@ -170,7 +186,12 @@ scope:
       called it, so no validate gate changes.
   - file: tests/test_prompt_compliance.py
     action: Modify
-    purpose: Remove the check_plan_compliance alias and its test class (retirement).
+    purpose: >-
+      Remove the check_plan_compliance alias and its test class (retirement). Add test_main_prompt_mode_reports_no_violations:
+      main() with --prompt over a tmp skill file carrying a Behavioural Invariants block and redirected retro-lite and
+      execution-state paths exits 0 with the "no violations" line. The deletion removes about 14 covered statements and
+      would leave the per-file coverage below its 63.7 floor in config/coverage_baseline.yaml; main() is uncovered
+      today, so this case keeps measured coverage above the floor. The baseline is never lowered.
   - file: config/agent/verification_registry/entries/session-log-last-session-is-newest.yaml
     action: Delete
     purpose: >-
@@ -180,9 +201,6 @@ scope:
   - file: config/agent/verification_registry/entries/deprecated/session-log-last-session-is-newest.yaml
     action: Create
     purpose: The moved registry entry, content unchanged.
-  - file: config/agent/fast_tier/module_costs.json
-    action: Modify
-    purpose: Drop the tests/test_north_star_tracker.py key (and add the new test files only if the cost check requires it).
   - file: docs/contracts/file-router.yaml
     action: Modify
     purpose: >-
@@ -190,7 +208,8 @@ scope:
       north-star-log runtime route, north_star_tracker.py from scripts_root_allowlist, and "SESSION_LOG.md" /
       "docs/SESSION_LOG.md" from both grandfathered_globs lists (ratchet-only shrink, Decision 168); the
       SESSION_LOG_ARCHIVE.md entries stay. Add a route for scripts/preflight/session_history.py beside the
-      telemetry_health one if the preflight package has per-module routes.
+      telemetry_health one if the preflight package has per-module routes. file-router.yaml is a Class D contract, so
+      the edit adds one amendment_log entry (validate_contract_drift's check_amendment_log_for_class_d).
   - file: scripts/checks/contracts/_retired_identity.py
     action: Modify
     purpose: Drop "docs/SESSION_LOG.md" from _EXEMPT_FILES (the file no longer exists); the archive exemption stays.
@@ -199,7 +218,10 @@ scope:
     purpose: Its exempt-list expectation drops docs/SESSION_LOG.md.
   - file: AGENTS.md
     action: Modify
-    purpose: Memory policy line names docs/DECISIONS.md as the structured log git keeps; docs/SESSION_LOG.md is removed from it.
+    purpose: >-
+      Memory policy line names docs/DECISIONS.md as the structured log git keeps; docs/SESSION_LOG.md is removed from it.
+      AGENTS.md is on the hard always-ask list (public surface): Benjamin's word on the final hunk before merge, with
+      README.md.
   - file: docs/CLAUDE.md
     action: Modify
     purpose: The grandfathered-prose list drops SESSION_LOG.md and keeps SESSION_LOG_ARCHIVE.md.
@@ -208,6 +230,22 @@ scope:
     purpose: >-
       Line 48's session-log cell: the session log is retired (T3.20 c6); session history is read from telemetry through
       the telemetry reader. Public-surface artefact: Benjamin's word on the final diff before merge.
+  - file: docs/PROJECT_CONTEXT.md
+    action: Modify
+    purpose: >-
+      The Source-of-truth paragraph's "Session log remains on its legacy path pending disposition" becomes "The session
+      log is retired (T3.20 c6); preflight reads recent sessions from production telemetry through the telemetry
+      reader."
+  - file: tests/session/test_session_log_surface_retired.py
+    action: Create
+    purpose: >-
+      Standing absence guard for the retired surface (the one test file that names the retired symbols; VP 5's sweep
+      excludes it): test_session_log_file_is_deleted (docs/SESSION_LOG.md absent, docs/SESSION_LOG_ARCHIVE.md present),
+      test_preflight_session_log_reader_is_gone (_common has no SESSION_LOG_FILE; context_docs has no parse_last_session
+      or _read_session_blocks; the preflight facade re-exports neither), test_north_star_tracker_is_gone
+      (importlib.util.find_spec("scripts.north_star_tracker") is None), test_prompt_compliance_has_no_session_log_proxy
+      (no check_plan_compliance attribute), test_retired_identity_does_not_exempt_the_deleted_log (_EXEMPT_FILES lacks
+      docs/SESSION_LOG.md and keeps docs/SESSION_LOG_ARCHIVE.md). Every case is red before the change.
   - file: .claude/commands/plan.md
     action: Modify
     purpose: >-
@@ -227,7 +265,14 @@ scope:
 bundled_recommendations:
   - rec-4598
 followon_recs: []
-infrastructure_dependencies: []
+infrastructure_dependencies:
+  - >-
+    LAMBDA-DEPLOY NOT OWED (CD.16 / Decision 79): compute_affected_artifacts(<this plan's scope>) returns
+    {'data-pipeline': ['docs/ROADMAP-PLATFORM.yaml']}: the live roadmap is a packaged asset of the active data-pipeline
+    artifact. The change to that asset is bookkeeping data only (one criterion flip with re-grounded text and one CD.40
+    realization note; no packaged code) and the asset refreshes with the artifact's next governed deploy, so no build,
+    deploy or smoke test is owed. No other scope file is Lambda-packaged and no .tf file is in scope. Precedent:
+    PLAN-project-alignment.
 acceptance_criteria:
   - >-
     T3.20:c6 -- docs/SESSION_LOG.md is gone (SESSION_LOG_ARCHIVE.md unchanged) and preflight's last_session and
@@ -280,11 +325,14 @@ verification_plan:
     graduation_waiver_reason: rec-4598's acceptance node and the postflight suite run in every tier.
   - step: 4
     phase: pre-deploy
-    action: Moved append_jsonl tests, prompt_compliance, retired-identity and file-router suites.
+    action: Moved append_jsonl tests, prompt_compliance, retired-identity and the retired-surface absence guard.
     command: >-
-      bin/venv-python -m pytest tests/s3_log_store/ tests/test_prompt_compliance.py tests/checks/contracts/test__retired_identity.py -q
-    expected: exit 0; tests/s3_log_store/test_append_jsonl_local.py holds both moved tests unchanged.
-    fix_if: A moved test changed or is missing - restore it verbatim.
+      bin/venv-python -m pytest tests/s3_log_store/ tests/test_prompt_compliance.py tests/checks/contracts/test__retired_identity.py
+      tests/session/test_session_log_surface_retired.py -q
+    expected: >-
+      exit 0; tests/s3_log_store/test_append_jsonl_local.py holds both moved tests with byte-identical statements; the
+      absence guard is red before the change.
+    fix_if: A moved test changed or is missing - restore it verbatim; an absence case fails - finish the deletion it names.
     hermetic: true
     expected_literals: ["passed"]
     graduation: waive
@@ -296,21 +344,30 @@ verification_plan:
       named residuals.
     command: >-
       test ! -e docs/SESSION_LOG.md && git diff --quiet origin/main -- docs/SESSION_LOG_ARCHIVE.md &&
+      test -e config/agent/verification_registry/entries/deprecated/session-log-last-session-is-newest.yaml &&
+      test ! -e config/agent/verification_registry/entries/session-log-last-session-is-newest.yaml &&
       ! git grep -n -E "SESSION_LOG\.md|SESSION_LOG_FILE|parse_last_session|north_star_tracker|check_plan_compliance|_read_session_blocks" --
       . ':!docs/plans/' ':!audits/' ':!docs/audit-prompts/' ':!docs/SESSION_LOG_ARCHIVE.md' ':!docs/DECISIONS.md'
       ':!docs/DECISIONS_ARCHIVE.md' ':!docs/ROADMAP-PLATFORM-ARCHIVE.yaml' ':!docs/ROADMAP-PLATFORM.yaml'
       ':!config/agent/executor/instructions/' ':!.claude/hooks/session_start_deepen_history.sh'
       ':!config/agent/verification_registry/entries/deprecated/' ':!tests/fixtures/fast_tier_calibration_series.json'
+      ':!config/agent/fast_tier/module_costs.json' ':!tests/session/test_session_log_surface_retired.py'
     expected: >-
-      exit 0: the log is deleted, the archive is unchanged and the grep finds nothing. Excluded paths are the named
-      residuals: historical records (plans, audits, Decisions, archives, the roadmap's re-grounded text), the frozen
-      executor-supervisor instructions (Decision 117 boundary, executor frozen by Decision 67), the deepen-history hook's
-      dated worked example, the deprecated registry entry and the historical calibration series.
+      exit 0: the log is deleted, the archive is unchanged, the registry entry sits only under deprecated/ and the grep
+      finds nothing. Excluded paths are the named residuals: historical records (plans, audits, Decisions, archives, the
+      roadmap's re-grounded text), the frozen executor-supervisor instructions (Decision 117 boundary, executor frozen by
+      Decision 67; owner T4.18 c3, which deletes them), the deepen-history hook's dated worked example, the deprecated
+      registry entry, the historical calibration series, the generated fast-tier cost table (regenerated by its own
+      tooling, never hand-edited; a stale key fails no check) and the absence guard that names the retired symbols.
     fix_if: A live hit remains - rewire or remove it in scope; a hit outside scope escalates to the coordinator (scope rule).
     hermetic: true
     expected_literals: []
     graduation: waive
-    graduation_waiver_reason: A one-time retirement sweep; the deleted symbols cannot be imported back without failing the unit suites.
+    graduation_waiver_reason: >-
+      A one-time retirement sweep over prose and code; the standing guard is
+      tests/session/test_session_log_surface_retired.py, which runs in every tier and fails if the log file,
+      SESSION_LOG_FILE, parse_last_session, _read_session_blocks, north_star_tracker, check_plan_compliance or the
+      retired-identity exemption comes back.
   - step: 6
     phase: pre-deploy
     action: Discharge the handoff obligation with a full-tier run to completion.
@@ -327,12 +384,14 @@ verification_plan:
       Live read after merge (no deploy is involved; the verb and reader are already deployed): preflight on main under
       the agent_platform profile reports the history from production.
     command: >-
-      AWS_PROFILE=agent_platform bin/venv-python -m scripts.session.preflight && bin/venv-python -c "import json;
-      r=json.load(open('logs/.preflight-report.json')); h=r['session_history']; s=r['context']['recent_sessions'];
-      print('SESSION_HISTORY', h['status'], len(s or []), r['last_session'][:16] if r['last_session'] else None);
-      raise SystemExit(0 if h['status']=='ok' and s and r['last_session'] else 1)"
+      AWS_PROFILE=agent_platform bin/venv-python -m scripts.session.preflight && bin/venv-python -c "import json,
+      datetime as d; r=json.load(open('logs/.preflight-report.json')); h=r['session_history'];
+      s=r['context']['recent_sessions']; ls=r['last_session'] or '';
+      floor=(d.datetime.now(d.UTC).date()-d.timedelta(days=1)).isoformat(); print('SESSION_HISTORY', h['status'],
+      len(s or []), ls[:16]); raise SystemExit(0 if h['status']=='ok' and s and len(s)<=5 and ls[:10]>=floor else 1)"
     expected: >-
-      Prints SESSION_HISTORY ok <n> <timestamp> with n between 1 and 5 and a timestamp within the last 2 UTC days; exit 0.
+      Prints SESSION_HISTORY ok <n> <timestamp> with n between 1 and 5 and a timestamp within the last 2 UTC days; exit 0
+      (the recency and count are asserted, not only printed).
     fix_if: >-
       unavailable on a cold reader - re-run once (the first call warms it); unavailable twice - read the reason and RCA
       (Decision 55); empty - check that capture is enabled and that real sessions ran in the window before suspecting
@@ -350,6 +409,22 @@ verification_plan:
     fix_if: Still open - follow only the route ci.yml's trailer-closure job prints (git-ops.yaml resolves_trailer), never a bare manual close.
     hermetic: false
     graduation: not-applicable
+  - step: 9
+    phase: post-deploy
+    action: >-
+      Recs mooted by the deletion read superseded, and rec-3614 is re-scoped to drop its north_star_tracker half.
+    command: >-
+      bin/venv-python -c "from src.common.ducklake_reader_client import fetch_recs_by_ids, make_reader;
+      ids=['rec-3613','rec-3652','rec-3657','rec-3658','rec-3614']; r,_=fetch_recs_by_ids(make_reader(profile='agent_platform'),
+      ids); m={x['id']: x for x in r}; print({i: m[i]['status'] for i in ids}); ok=all(m[i]['status']=='superseded' for i in
+      ids[:4]) and m['rec-3614']['status']=='open' and 'north' not in (m['rec-3614'].get('acceptance') or '');
+      raise SystemExit(0 if ok else 1)"
+    expected: Prints the five statuses (four superseded, rec-3614 open); exit 0.
+    fix_if: >-
+      A rec still open or rec-3614 still naming north-star-tracker - run the update_rec call from execution step 7 through
+      scripts.ops_data_portal (Single Portal Invariant), never a direct write.
+    hermetic: false
+    graduation: not-applicable
 test_obligations:
   - source: scripts/preflight/session_history.py
     behavior: Telemetry-backed recent sessions with ok/empty/unavailable status, null on unavailable, bounded wait, newest-first.
@@ -359,17 +434,17 @@ test_obligations:
   - source: scripts/session/preflight.py
     behavior: last_session and context.recent_sessions come from session_history; additive session_history key; creds gate.
     verification_step: 2
-    test_selector: tests/session/preflight/test_main_report.py
+    test_selector: tests/session/preflight/test_main_session_history.py
     red_green_expectation: red before (no session_history key, SESSION_LOG source), green after.
   - source: scripts/preflight/context_docs.py
     behavior: read_context_files no longer reads docs/SESSION_LOG.md or returns recent_sessions.
     verification_step: 2
-    test_selector: tests/session/preflight/test_context_docs.py
+    test_selector: tests/session/preflight/test_context_docs.py::TestReadContextFiles::test_read_context_files_has_no_recent_sessions
     red_green_expectation: red before (recent_sessions key present), green after.
   - source: scripts/preflight/_common.py
     behavior: SESSION_LOG_FILE is gone, so nothing can read the deleted log through it.
-    verification_step: 2
-    test_selector: tests/session/preflight/test_context_docs.py::test_session_log_surface_is_retired
+    verification_step: 4
+    test_selector: tests/session/test_session_log_surface_retired.py::test_preflight_session_log_reader_is_gone
     red_green_expectation: red before (SESSION_LOG_FILE and parse_last_session exist), green after.
   - source: scripts/session/postflight.py
     behavior: --close and --auto report only performed effects (rec-4598).
@@ -379,26 +454,22 @@ test_obligations:
   - source: scripts/prompt_compliance.py
     behavior: No SESSION_LOG proxy check; retro-lite and layer checks unchanged.
     verification_step: 4
-    test_selector: tests/test_prompt_compliance.py
+    test_selector: tests/session/test_session_log_surface_retired.py::test_prompt_compliance_has_no_session_log_proxy
     red_green_expectation: red before (check_plan_compliance still present), green after.
   - source: scripts/checks/contracts/_retired_identity.py
-    behavior: Exempt list no longer names the deleted log.
+    behavior: Exempt list no longer names the deleted log; the archive exemption stays.
     verification_step: 4
-    test_selector: tests/checks/contracts/test__retired_identity.py
-    red_green_expectation: red before (expectation lists docs/SESSION_LOG.md), green after.
+    test_selector: tests/session/test_session_log_surface_retired.py::test_retired_identity_does_not_exempt_the_deleted_log
+    red_green_expectation: red before (_EXEMPT_FILES lists docs/SESSION_LOG.md), green after.
   - source: config/agent/verification_registry/entries/deprecated/session-log-last-session-is-newest.yaml
-    behavior: The retired registry entry sits under entries/deprecated/ and no live entry guards a deleted symbol.
-    verification_step: 6
-    command: bin/venv-python -m scripts.validate
+    behavior: The retired registry entry sits only under entries/deprecated/.
+    verification_step: 5
+    command: >-
+      test -e config/agent/verification_registry/entries/deprecated/session-log-last-session-is-newest.yaml &&
+      test ! -e config/agent/verification_registry/entries/session-log-last-session-is-newest.yaml
     waiver_reason: >-
-      A data move, not behavior: the full tier's verification-registry validators fail on a live entry whose guard_symbol
-      no longer resolves, so the move is proven by the full-tier run, not a new test.
-  - source: config/agent/fast_tier/module_costs.json
-    behavior: The cost table names no deleted test module.
-    verification_step: 6
-    command: bin/venv-python -m scripts.validate
-    waiver_reason: >-
-      Data only; the fast-tier cost-table check in the full tier already fails on a key naming a missing test module.
+      A data move, not behavior: graduated registry rows are not re-executed and guard_symbol resolution is not checked
+      today (deferred to T3.7), so no validator would catch a stale live entry; VP 5's existence checks are the proof.
   - source: docs/contracts/file-router.yaml
     behavior: No route or grandfather glob names a deleted file; the archive glob stays.
     verification_step: 6
@@ -414,15 +485,9 @@ test_obligations:
       Bookkeeping data written by /implement's bookkeeping walk; validate_platform_roadmap and the exit-criteria ledger
       checks in the full tier guard the closes_criteria flip and met_by.
 weakening_dispositions:
-  - candidate: "[test-removed] tests/session/postflight/test_close.py::test_session_log_entry_template_generated"
-    disposition: retirement
-    cite: scripts/session/postflight.py::run_close
-  - candidate: "[test-removed] tests/test_north_star_tracker.py::TestAppendJsonlLocalMode::test_appends_to_local_log"
-    disposition: refactor
-    cite: tests/s3_log_store/test_append_jsonl_local.py::test_appends_to_local_log
-  - candidate: "[test-removed] tests/test_north_star_tracker.py::TestAppendJsonlLocalMode::test_creates_parent_dirs_if_missing"
-    disposition: refactor
-    cite: tests/s3_log_store/test_append_jsonl_local.py::test_creates_parent_dirs_if_missing
+  - candidate: "[test-removed] tests/session/postflight/test_close.py::TestCloseMode::test_session_log_entry_template_generated"
+    disposition: planned-change
+    cite: "acceptance_criteria[2]"
 constraints:
   - >-
     No reader or writer Lambda change, no src/common/ducklake_*.py or config/lambda/ducklake/** edit (either would start
@@ -433,47 +498,57 @@ constraints:
     call, window <= 2 UTC days, well inside MAX_WINDOW_DAYS).
   - An unknown is null, never [] or "" (Decision 215 cl.2); state and outcome are the reader's derivation, never re-derived (Decision 199, 228).
   - >-
-    Weakening dispositions: the three entries above are known; every other candidate validate_weakening_candidates lists is
-    a test whose subject is deleted in this diff (the SESSION_LOG reader, check_plan_compliance, north_star_tracker,
-    session_log_entry) and is recorded at the bookkeeping commit as retirement with the deleted symbol as cite; anything
-    else stops and escalates (Decision 181, 235).
-  - README.md is a public-surface artefact; Benjamin's word on the final diff before merge (project always-ask list).
+    Weakening dispositions are recorded at the bookkeeping commit from validate_weakening_candidates' actual list
+    (Decision 181, 235): a test whose subject file or symbol is deleted in this diff (tests/test_north_star_tracker.py,
+    tests/session/preflight/test_context_docs_session_log.py, the check_plan_compliance class) is retirement citing the
+    deleted path or symbol; a removed or changed test whose subject survives (run_close, run_auto, read_context_files:
+    the intent and session_log_entry cases in test_close.py and test_auto.py, test_recent_sessions_extracted) is
+    planned-change citing the acceptance_criteria[N] or test_obligations[N] that replaces it. The moved append_jsonl
+    tests raise no candidate (byte-identical statements). Any other candidate stops and escalates.
+  - >-
+    README.md and AGENTS.md are on the hard always-ask list (public surface); Benjamin's word on the final hunks,
+    pasted inline in the thread, before merge.
   - "SLOC: decompose rather than raise any budget (Decision 128)."
   - No rescue agents or workaround loops (Decision 55).
 context:
   - "Approval: Benjamin 'write the plan on that basis' 2026-10-28 16:17Z (cmsg_012XgaFy8VaDQbxP5D8nC958S6yP7MU3omMGX7Ard61PoF) on the presentation /mnt/project-files/telemetry-slice5/step6b-presentation.md, which named the registry-check retirement as needing his Decision 235 confirmation; that message is the confirmation."
   - "Slice 5 = this plan (T3.20 c6) + PLAN-telemetry-causal-chain-probe (T3.2). T2.36 c2 closes in the production flip's bookkeeping PR; both touch docs/ROADMAP-PLATFORM.yaml only in bookkeeping, so the second to land rebases."
   - "Why deletion, not archive: Decision 127 (no standing human-audience artefact; the archive would grow 43%) and Decision 174 (retirement is by deletion). CD.40's pending detail says 'archived ..., not deleted outright'; a pending CD does not outrank Decided 127/174, and the bookkeeping walk records the realization note on CD.40 (no ratification)."
-  - "Measured 2026-10-28 via PlatformDev: sessions_window over 1/3/7 days -> 3/23/25 rows in 5-12 s (production holds rows since 2026-10-27); 17 of 25 read running (Decision 228's 24 h idle threshold)."
-  - "Recs moot by deletion, superseded (not Resolves, since their acceptance nodes live in deleted test files, Decision 201): rec-3652, rec-3657, rec-3658 -- /implement sets status superseded via update_rec with this plan's slug in the resolution; rec-3630 (umbrella) is unchanged."
-  - "Named residuals of the sweep: config/agent/executor/instructions/executor-supervisor-*.instructions.md (Decision 117 executor boundary; executor frozen per Decision 67) still tell the executor to append to SESSION_LOG.md; .claude/hooks/session_start_deepen_history.sh keeps its dated 2026-08-18 worked example."
+  - "Measured 2026-10-28 via PlatformDev: sessions_window over 1/3/7 days -> 3/23/25 rows in 5-12 s (production holds rows since 2026-10-27); 17 of 25 read running (Decision 228's 24 h idle threshold). Critique re-measure over 2 UTC days: 28.5 s cold, 4-6 s warm. The serial telemetry gauge call wakes the same routed reader before Phase B, so session_history sees the warm figure; timeout_s=30 bounds the cold case."
+  - "Recs moot by deletion, superseded (not Resolves, since their acceptance nodes live in deleted or rewritten test files, Decision 201): rec-3652, rec-3657, rec-3658 (SESSION_LOG parsing defects) and rec-3613 (the append_jsonl relocation this plan performs; its acceptance greps the deleted tests/test_north_star_tracker.py) -- /implement sets status superseded via update_rec with this plan's slug in the resolution. rec-3614 (High) is re-scoped via update_rec: its north_star_tracker coverage-floor half is dropped (the module is deleted), the lambda_manifest floor and checker-assertion halves stay open. rec-3630 (umbrella) is unchanged."
+  - "Named residuals of the sweep: config/agent/executor/instructions/executor-supervisor-*.instructions.md (Decision 117 executor boundary; executor frozen per Decision 67) still tell the executor to append to SESSION_LOG.md -- owner T4.18 c3, which deletes both files; .claude/hooks/session_start_deepen_history.sh keeps its dated 2026-08-18 worked example; config/agent/fast_tier/module_costs.json keeps its generated keys for the deleted test modules until its own regeneration."
   - "Decision-scout: FLAGS_FOUND (176 WARN -> git mv to deprecated; 235 NOTE -> append_jsonl tests moved; 117 NOTE -> residuals named; 127 WARN and 174 NOTE -> deletion). Decisions triaged: 189 of 189; Roadmap items intersected: 7; CONFLICT: 0; RELATED: 6. CITE: 236, 84, 215, 199, 228, 181, 201. Report: /mnt/project-files/telemetry-slice5/decision-scout-report-c6.md."
   - "Fable consult: /mnt/project-files/telemetry-slice5/fable-independent-advice.md (F4 a, F5 delete, F6 two plans; adopted)."
   - "red_overlap: verdict clear (no reds, SLO 4h) at plan write 2026-10-28."
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<pending> after 0 round(s)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<pending> after 1 round(s)"
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
-  - Only the plan-cited decision sections (84, 127, 174, 176, 181, 199, 201, 215, 228, 235, 236)
+  - Only the plan-cited decision sections (79, 84, 127, 128, 174, 176, 181, 199, 201, 215, 228, 235, 236)
   - All files in scope located and readable
   - Acceptance criteria understood and verifiable
 execution_steps:
   - >-
     Create scripts/preflight/session_history.py and its tests; run VP 1. Post: all cases green, no network in tests.
+    Create tests/session/test_session_log_surface_retired.py first and confirm every case is red.
   - >-
     Rewire scripts/session/preflight.py, strip the SESSION_LOG reader from context_docs.py and _common.py, and move every
     test patch (grep -rln "parse_last_session\|SESSION_LOG_FILE" tests/); run VP 2.
   - Edit postflight.py and its tests, create the rec-4598 acceptance file; run VP 3.
   - >-
-    Move the two append_jsonl tests first, then delete north_star_tracker.py and its test; delete check_plan_compliance;
-    git mv the registry entry to entries/deprecated/; edit module_costs.json, file-router.yaml, _retired_identity.py and
-    its test, AGENTS.md, docs/CLAUDE.md, README.md and .claude/commands/plan.md; git rm docs/SESSION_LOG.md; run VP 4 and VP 5.
+    Move the two append_jsonl tests first, then delete north_star_tracker.py and its test; delete check_plan_compliance
+    and add the main() --prompt case; git mv the registry entry to entries/deprecated/; edit file-router.yaml (with its
+    amendment_log entry), _retired_identity.py and its test, AGENTS.md, docs/CLAUDE.md, docs/PROJECT_CONTEXT.md, README.md
+    and .claude/commands/plan.md; git rm docs/SESSION_LOG.md; run VP 4 and VP 5.
   - Run VP 6 (full tier) to completion.
   - >-
-    Open the PR; paste the README.md hunk inline in the thread for Benjamin's word (public surface); merge on code review
+    Open the PR; paste the README.md and AGENTS.md hunks inline in the thread for Benjamin's word (public surface); merge on code review
     PROCEED, green CI and his word, squash with "Resolves: rec-4598" in the squash body. Bookkeeping commit: roadmap rows
     above and the recorded weakening_dispositions.
-  - Run VP 7 and VP 8 after merge; set rec-3652, rec-3657, rec-3658 to superseded via update_rec citing this plan.
+  - >-
+    After merge: set rec-3613, rec-3652, rec-3657, rec-3658 to superseded and re-scope rec-3614 (drop the
+    north_star_tracker half of its title and acceptance) via scripts.ops_data_portal update_rec citing this plan; run VP 7,
+    VP 8 and VP 9.
   - "Report: what was implemented, verification results, the residuals left in place."
 rollback: >-
   Revert the PR: the log, its reader, the tracker and the postflight fields come back exactly as before; nothing in AWS
