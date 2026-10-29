@@ -8,6 +8,7 @@ from typing import Any
 
 import yaml
 
+from scripts.platform_roadmap_state import load as load_roadmap
 from src.common.ducklake_telemetry_blobstore import BLOB_COMMIT_MAX_AGE_DAYS
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -106,9 +107,8 @@ def test_ports_content_blobs_row() -> None:
 
 
 def test_t2_36_c2_c4_name_the_claim_check() -> None:
-    roadmap = load("docs/ROADMAP-PLATFORM.yaml")
-    item = next(i for i in roadmap["tier_items"] if i["id"] == "T2.36")
-    criteria = {c["id"]: norm(c["text"]) for c in item["exit_criteria"]}
+    item = next(i for i in load_roadmap(ROOT / "docs/ROADMAP-PLATFORM.yaml").tier_items if i.id == "T2.36")
+    criteria = {c.id: norm(c.text) for c in item.exit_criteria}
     prefix = "[Re-grounded 2026-10-12, PLAN-telemetry-blob-route:"
     c4_tail = "rg 'ops-outbox' finds no active write callers"
     for name, original in (("c2", "no telemetry producer stages to S3"), ("c4", c4_tail)):
