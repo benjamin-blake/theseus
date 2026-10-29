@@ -31,26 +31,38 @@ scope:
       the ARN replaced), reusing _iam_roles_read_resources' approach from tests/checks/iam_tf/test_trusted_plan_identity.py.
       PR 2 extends it (rec-4420 acceptance node test_every_declared_principal_class_holds_exactly_its_grant): load the
       writer contract through scripts.contracts.load_contract; for every class in governance.principal_admission.classes,
-      resolve its role's policy from its terraform_root (terraform/personal: the data aws_iam_policy_document named by
-      policy_document, following source_policy_documents, via the parse helpers of
-      tests/checks/iam_tf/test_telemetry_writer_invoke_grants.py; terraform/bootstrap: the jsonencode statements of the
-      resource named by policy_document via tests/checks/iam_tf/_ci_platform_role_iam.py's _jsonencode_statement_blocks)
-      and assert, per telemetry function (production writer, smoke twin): the set of invoke-class actions
-      (lambda:InvokeFunctionUrl, lambda:GetFunctionUrlConfig, lambda:InvokeFunction, lambda:InvokeAsync, IAM-wildcard
-      matched) it holds equals url_only_invoke exactly for each function its row lists and is empty for every other one;
-      InvokeFunction only under Bool lambda:InvokedViaFunctionUrl = true; both ARN forms (bare and :*). For a dedicated
-      class, the role's WHOLE policy is exactly the three Sids of the approved text (TelemetryWriterUrlParameterRead with
-      ssm:Get* on the writer-URL parameter only, TelemetryWriterInvokeCapture, TelemetryWriterInvokeCaptureViaUrlOnly), no
-      statement on the telemetry reader (reads: none), exactly one aws_iam_role_policy and zero attachments target it, its
-      trust is one statement, StringEquals only, aud sts.amazonaws.com and sub iterating local.github_repos with
-      ":ref:refs/heads/main" only (no agent/, pull_request, refs/pull, environment or StringLike), and its
-      permissions_boundary is the apply boundary. Completeness: every aws_iam_role in terraform/personal and every role
-      policy in terraform/bootstrap holding an invoke-class action on the production writer is a registered class (an
-      unregistered holder is red; github_ci_pr, github_ci_planner, github_ci_deploy and PlatformAdmin hold none). Both
-      read lists name the role (IAMRolesRead in bootstrap, IAMCIRolesRead in personal oidc.tf). Red cases on synthetic
-      HCL: a dedicated role gaining an s3 statement, a registered class with a direct (unconditioned) InvokeFunction, an
-      unregistered role with InvokeFunctionUrl on the writer, a trust with an agent/* sub, a registry row naming a function
-      the HCL does not grant.
+      resolve the role's identity policy from its terraform_root and policy_document (terraform/personal: the data
+      aws_iam_policy_document of that name, following source_policy_documents; terraform/bootstrap: the jsonencode held by
+      the local of that name, resolving the local.*_function names) through the helpers module below. INVOKE set =
+      lambda:InvokeFunctionUrl, lambda:InvokeFunction, lambda:InvokeAsync (IAM-wildcard matched, so lambda:* and
+      lambda:Invoke* count). Per class, over the four telemetry functions (production writer, writer smoke twin, telemetry
+      reader, reader smoke if it exists): the functions on which the policy holds any INVOKE action equal functions plus
+      reads exactly, for EVERY class (not only dedicated ones); on each of them it holds lambda:InvokeFunctionUrl and holds
+      lambda:InvokeFunction only under Bool lambda:InvokedViaFunctionUrl = true (url_only_invoke), never InvokeAsync, on
+      both ARN forms (bare and :*); lambda:GetFunctionUrlConfig is permitted alongside, never required. For a dedicated
+      class: the WHOLE inline policy is exactly the three Sids of the approved text (TelemetryWriterUrlParameterRead with
+      ssm:Get* on the writer-URL parameter only, TelemetryWriterInvokeCapture, TelemetryWriterInvokeCaptureViaUrlOnly),
+      exactly one aws_iam_role_policy and zero attachments target the role, its trust is one statement, StringEquals only,
+      aud sts.amazonaws.com and sub iterating local.github_repos with ":ref:refs/heads/main" only (no agent/, pull_request,
+      refs/pull, environment or StringLike), and its permissions_boundary is the apply boundary. Completeness: every
+      aws_iam_role_policy and every customer-managed aws_iam_policy attached to a role, in terraform/personal and
+      terraform/bootstrap, that holds an INVOKE action matching the production writer belongs to a registered class or to
+      the one named exclusion PlatformAdmin (EXCLUDED_UNBOUNDED = {"platform_admin": "Decision 144 cl.3 unbounded operator;
+      Decision 213 residual rec-4204"}), pinned by its own assertion that the exclusion still holds exactly that grant
+      shape (Resource "*") and is not in principal_classes. Permissions boundaries and aws_lambda_permission resources are
+      out of the completeness scan (a boundary grants nothing; no aws_lambda_permission names a telemetry function, asserted).
+      Both read lists name the role (IAMRolesRead in bootstrap, IAMCIRolesRead in personal oidc.tf). Red cases on synthetic
+      HCL: a dedicated role gaining an s3 statement, a registered class with an unconditioned InvokeFunction, an unregistered
+      role with InvokeFunctionUrl on the writer, an unregistered role with lambda:* on function:agent-platform-*, a trust
+      with an agent/* sub, a registry row naming a reads function the HCL does not grant, and a class holding the reader
+      that its row omits. A role holding only lambda:Get* (the planner's LambdaRead) is NOT a holder (stays green).
+  - file: tests/checks/iam_tf/_telemetry_principals.py
+    action: Create
+    purpose: >-
+      PR 2. Helpers for test_telemetry_writer_principals.py so neither file nears the 500-SLOC gate: HCL resolution of a
+      class's policy (data aws_iam_policy_document with source_policy_documents; bootstrap jsonencode locals with local.*
+      name substitution), reusing the parse helpers of test_telemetry_writer_invoke_grants.py and _ci_platform_role_iam.py
+      by import, never by copy; the INVOKE-set wildcard matcher; and the completeness scan.
   - file: config/agent/verification_registry/entries/telemetry-writer-principals.yaml
     action: Create
     purpose: >-
@@ -79,10 +91,14 @@ scope:
     action: Modify
     purpose: >-
       PR 2. Add two closed models (extra="forbid"): PrincipalClassSpec {role: str, terraform_root: Literal["terraform/personal",
-      "terraform/bootstrap"], policy_document: str, functions: list[str] (min 1), dedicated: bool, writer_url_parameter:
-      bool, reads: list[str], trust: str, tenant_scope: str, project_scope: str, project_scope_enforcement:
-      Literal["producer", "writer"], audit_handle: str, purpose: str} and PrincipalAdmission {procedure: str, grant_shape:
-      Literal["url_only_invoke"], classes: dict[str, PrincipalClassSpec]}; ContractGovernance gains principal_admission:
+      "terraform/bootstrap"], policy_document: str, functions: list[str] (min 1), reads: list[str], dedicated: bool,
+      trust: str, tenant_scope: str, project_scope: str, project_scope_enforcement: Literal["producer", "writer"],
+      audit_handle: str, purpose: str}, each field with a docstring: policy_document is the HCL symbol holding the role's
+      identity policy (a data aws_iam_policy_document name under terraform/personal, a local name under
+      terraform/bootstrap); functions are the telemetry WRITE functions the class invokes; reads the telemetry READ
+      functions it invokes ([] = none); both under grant_shape; dedicated means the role exists only for this class and
+      its whole policy is the admitted grant and PrincipalAdmission {procedure: str, grant_shape:
+      Literal["url_only_invoke"], grant_shape_definition: str, classes: dict[str, PrincipalClassSpec]}; ContractGovernance gains principal_admission:
       PrincipalAdmission | None = None and a model_validator: when principal_admission is set, principal_classes is set and
       its entries equal the classes keys as a set, with no duplicates.
   - file: config/agent/verification_registry/entries/contracts-schema-principal-admission.yaml
@@ -98,8 +114,8 @@ scope:
     action: Modify
     purpose: >-
       PR 2. Apply execution step 3's APPROVED-SHAPE text: principal_classes gains github_ci_telemetry_capture; a new
-      governance.principal_admission block (procedure, grant_shape, three class rows); the ratification plan's
-      "Principal classes:" audit invariant is amended in place to name the registry; one amendment_log entry (field_add,
+      governance.principal_admission block (procedure, grant_shape, grant_shape_definition, three class rows); the
+      ratification plan's "Declared residual (principal classes):" audit invariant is amended in place to name the registry; one amendment_log entry (field_add,
       semantic_break false). contract_version and status stay as the ratification left them. No verb, request, response or
       typed error changes.
   - file: docs/contracts/tenant-id.yaml
@@ -124,19 +140,27 @@ scope:
   - file: .github/workflows/terraform-apply-sandbox.yml
     action: Modify
     purpose: >-
-      PR 3. Append execution step 6's two steps as the LAST steps of job apply-sandbox (after "Self-dispatch ci-rca on
-      re-run failure"): capture_creds (configure-aws-credentials, capture role, output-credentials true,
+      PR 3. Append execution step 6's three steps as the LAST steps of job apply-sandbox (after "Self-dispatch ci-rca on
+      re-run failure"): capture_env (a venv at the workspace root from requirements.txt; the job has setup-python 3.12 but
+      only pip-installs boto3 and requests, so without it bin/venv-python finds no interpreter importing pydantic and the
+      adapter's capture.sh skips), capture_creds (configure-aws-credentials, capture role, output-credentials true,
       output-env-credentials false) and the capture step (./.github/actions/telemetry-ci-capture, its one manifests input
-      carrying the newline-separated terraform/personal/review.json.sessions.jsonl and
-      terraform/personal/review_retry.json.sessions.jsonl, so ci-pass runs once per job over every manifest). No other
-      step, output, condition or job changes; speculative-plan, advisory-status and gated-apply are untouched.
+      carrying the newline-separated ${{ github.workspace }}/terraform/personal/review.json.sessions.jsonl and
+      ${{ github.workspace }}/terraform/personal/review_retry.json.sessions.jsonl, so ci-pass runs once per job over
+      every manifest). The job's timeout-minutes goes 30 -> 45 so the apply keeps its full 30 minutes ahead of the
+      capture trio's 12-minute ceiling. No other step, output, condition or job changes; speculative-plan,
+      advisory-status and gated-apply are untouched.
   - file: .github/workflows/reconcile.yml
     action: Modify
     purpose: >-
-      PR 3. Append the same two steps as the LAST steps of job apply-reconcile (after the best-effort wake), the capture
-      step using ./.dispatch-tooling/.github/actions/telemetry-ci-capture (main's tooling; the root checkout is the red
-      commit) with the same two manifest paths under terraform/personal (review and review_fresh share review.json, and the
-      adapter's manifest appends). resolve-target, gated-apply-reconcile and file-reconcile-starved-rec are untouched.
+      PR 3. Append the same three steps as the LAST steps of job apply-reconcile (after the best-effort wake), with
+      capture_env building .dispatch-tooling/.venv from .dispatch-tooling/requirements.txt (the adapter's capture.sh
+      resolves its root from github.action_path, which here is the side checkout) and the capture step using
+      ./.dispatch-tooling/.github/actions/telemetry-ci-capture (main's tooling; the root checkout is the red commit) with
+      the same two ${{ github.workspace }}-anchored manifest paths (review.sh writes them under the ROOT checkout's
+      terraform/personal, so a relative glob resolved from .dispatch-tooling would match nothing; review and review_fresh
+      share review.json, and the adapter's manifest appends). timeout-minutes 30 -> 45 as in apply-sandbox.
+      resolve-target, gated-apply-reconcile and file-reconcile-starved-rec are untouched.
   - file: .github/workflows/ci-rca.yml
     action: Modify
     purpose: >-
@@ -173,12 +197,18 @@ scope:
       sign-in step in any workflow names CAPTURE_ROLE without being such a pair; (d) the capture step passes exactly
       steps.<that id>.outputs.aws-access-key-id / aws-secret-access-key / aws-session-token to its three credential inputs,
       has if containing always() and steps.<that id>.outcome == 'success', continue-on-error true and timeout-minutes <= 5;
-      (e) the sign-in and capture steps are the job's last two steps, in that order; (f) no job outputs expression and no
+      (e) the job's last steps are, in order, an optional capture_env step, the sign-in step and the capture step, where
+      capture_env (when present) has id capture_env, if always(), continue-on-error true, timeout-minutes <= 5, a run
+      body that only creates <root>/.venv and pip-installs <root>/requirements.txt into it, and no aws, GITHUB_OUTPUT or
+      GITHUB_ENV; (f) no job outputs expression and no
       later job references either step id; (g) the capture action's own action.yml contains no
       aws-actions/configure-aws-credentials (R4 restated for this action) and writes no GITHUB_OUTPUT; (h) every workflow
       with a job whose steps use .github/actions/subagent-plan-review has a config/telemetry/capture.yaml ci_workflows entry
       with key plan-review and content_policy withheld (Decision 238 cl.1: flipping it to full is a visible guard edit,
-      never a config-only change). Predicates take parsed data so red cases run on synthetic input. Vacuous (examined 0)
+      never a config-only change); (i) the job can run the capture: <root>/.venv is created by some step of the job
+      (root = the workspace for ./.github/actions/..., .dispatch-tooling for ./.dispatch-tooling/...); (j) a capture step
+      whose action comes from a side checkout (uses not starting ./.github/) has every manifests line starting
+      ${{ github.workspace }}/. Predicates take parsed data so red cases run on synthetic input. Vacuous (examined 0)
       until PR 3 wires a job.
   - file: tests/checks/ci_guards/test_validate_ci_capture_identity.py
     action: Create
@@ -186,8 +216,9 @@ scope:
       PR 3. Real tree green with the three wired jobs (apply-sandbox, apply-reconcile, rca) examined; one red case per
       predicate (a)-(g) on synthetic workflows, including a capture step after it a further step, output-env-credentials
       true, a capture step using the job's apply-role env (no credential inputs), a second job assuming the capture role
-      for anything else, timeout-minutes 10, a job output reading steps.capture_creds, runs-on self-hosted, and a
-      plan-review workflow entry with content_policy full.
+      for anything else, timeout-minutes 10, a job output reading steps.capture_creds, runs-on self-hosted, a
+      plan-review workflow entry with content_policy full, a capture job with no venv-creating step (i), a capture_env
+      step that runs aws (e), and a .dispatch-tooling capture step with a relative manifest path (j).
   - file: scripts/checks/ci_guards/_manifest.py
     action: Modify
     purpose: >-
@@ -236,14 +267,14 @@ infrastructure_dependencies:
   - "PR 1 (terraform/bootstrap): admin-only root; read-only ADMIN pre-merge plan, then the admin apply on Benjamin's own words naming it (CI-first rule), BEFORE PR 2 merges."
   - "PR 2 (terraform/personal): a new aws_iam_role plus trust routes to tf-gated-apply (guard exit 2); Benjamin approves the gated-apply job in Actions. The planner/trusted-plan policy updates from IAMCIRolesRead ride the same gated apply."
   - "PR 3 (workflows, capture config, check): no Terraform; opens only after PR 2's gated apply converges green, so the capture role exists before any workflow assumes it."
-  - "No Lambda artifact is affected (compute_affected_artifacts over the scope is empty); the writer handler does not change."
+  - "LAMBDA-DEPLOY NOT OWED (CD.16 / Decision 79): compute_affected_artifacts over the scope returns only data-pipeline <- docs/ROADMAP-PLATFORM.yaml, roadmap bookkeeping data the pipeline bundles but never reads at run time; no handler or packaged code changes, and the telemetry writer handler does not change."
 acceptance_criteria:
-  - IAMRolesRead (bootstrap, applied live) and IAMCIRolesRead (personal) both list the capture role ARN exactly once.
-  - agent-platform-github-ci-telemetry-capture exists live with the apply boundary, one main-only trust statement and exactly the three approved Sids; a live IAM simulation shows URL invoke on the production writer and the writer-URL parameter read allowed, and the smoke twin, the telemetry reader, a direct (non-URL) invoke, another SSM parameter and tfstate denied.
-  - The writer contract's principal_admission registry declares github_ci_branch, PlatformDev and github_ci_telemetry_capture; test_every_declared_principal_class_holds_exactly_its_grant passes and reddens on each synthetic breach.
-  - In apply-sandbox, apply-reconcile and ci-rca the capture runs under the capture role only, as the job's last two steps, never exported to the job environment, and validate_ci_capture_identity is green in the fast tier.
-  - A plan-review session from a live apply-sandbox run on main reads back through the telemetry reader as a top-level run with workflow plan-review, usage and turn rows present, and every transcript row a withheld_by_policy omission with no content.
-  - T3.22 c4 and T3.20 c9 are met in docs/ROADMAP-PLATFORM.yaml; T3.20 stays in_progress pending CD.40; rec-4420 and rec-4415 are closed.
+  - T3.22:c4 -- IAMRolesRead (bootstrap, applied live) and IAMCIRolesRead (personal) both list the capture role ARN exactly once.
+  - T3.22:c4 -- agent-platform-github-ci-telemetry-capture exists live with the apply boundary, one main-only trust statement and exactly the three approved Sids and no attached policy; a live IAM simulation shows URL invoke on the production writer and the writer-URL parameter read allowed, and the smoke twin, the telemetry reader, a direct (non-URL) invoke, another SSM parameter and tfstate denied.
+  - T3.22:c4 -- The writer contract's principal_admission registry declares github_ci_branch, PlatformDev and github_ci_telemetry_capture; test_every_declared_principal_class_holds_exactly_its_grant passes and reddens on each synthetic breach.
+  - T3.20:c9 -- In apply-sandbox, apply-reconcile and ci-rca the capture runs under the capture role only, as the job's last two steps, never exported to the job environment, and validate_ci_capture_identity is green in the fast tier.
+  - T3.20:c9 -- A plan-review session from a live apply-sandbox run on main reads back through the telemetry reader as a top-level run with workflow plan-review, usage and turn rows present, and every transcript row a withheld_by_policy omission with no content.
+  - Closure bookkeeping -- T3.22 c4 and T3.20 c9 are met in docs/ROADMAP-PLATFORM.yaml; T3.20 stays in_progress pending CD.40; rec-4415's acceptance is re-pointed to this plan's nodes; rec-4420 and rec-4415 are closed.
 verification_plan:
   - step: 1
     phase: pre-deploy
@@ -404,19 +435,27 @@ verification_plan:
       subs = st[0]["Condition"]["StringEquals"]["token.actions.githubusercontent.com:sub"]; subs = [subs] if isinstance(subs, str)
       else subs; print("TRUST", len(st), list(st[0]["Condition"]), all(x.endswith(":ref:refs/heads/main") for x in subs)); print("LIVE",
       got); assert len(st) == 1 and list(st[0]["Condition"]) == ["StringEquals"] and all(x.endswith(":ref:refs/heads/main") for x in
-      subs); assert got[:2] == ("allowed", "allowed") and got[5] == "allowed" and all(x != "allowed" for x in got[2:5] + got[6:]),
+      subs); pn = iam.list_role_policies(RoleName="agent-platform-github-ci-telemetry-capture")["PolicyNames"]; att =
+      iam.list_attached_role_policies(RoleName="agent-platform-github-ci-telemetry-capture")["AttachedPolicies"]; sids =
+      sorted(x["Sid"] for x in iam.get_role_policy(RoleName="agent-platform-github-ci-telemetry-capture",
+      PolicyName=pn[0])["PolicyDocument"]["Statement"]) if len(pn) == 1 else None; print("POLICY", len(pn), len(att), sids);
+      assert len(pn) == 1 and att == [] and sids == ["TelemetryWriterInvokeCapture", "TelemetryWriterInvokeCaptureViaUrlOnly",
+      "TelemetryWriterUrlParameterRead"]; assert got[:2] == ("allowed", "allowed") and got[5] == "allowed" and all(x != "allowed" for x in got[2:5] + got[6:]),
       got; print("CAPTURE_ROLE_GRANTS_LIVE_OK")'
     expected: >-
-      a TRUST line (1 statement, StringEquals only, every sub ending :ref:refs/heads/main), one LIVE tuple of decisions (no
+      a TRUST line (1 statement, StringEquals only, every sub ending :ref:refs/heads/main), a POLICY line (1 inline
+      policy, 0 attached, the three approved Sids), one LIVE tuple of decisions (no
       ARN or account id printed), then CAPTURE_ROLE_GRANTS_LIVE_OK; posted on PR 2
     fix_if: any mismatch -- stop and RCA; an explicitDeny where allowed is expected may be the boundary -- show the planner before changing anything; read the region from config/aws-region if it is not eu-west-2
     hermetic: false
   - step: 14
     phase: post-deploy
     action: >-
-      PR 3 live run -- after PR 3 merges, dispatch terraform-apply-sandbox on main with a blank input (the routine no-op
+      PR 3 live run -- after PR 3 merges, dispatch terraform-apply-sandbox on main with a blank input (the routine
       apply path; refused if the convergence record is red, in which case wait for the next push run), and read the
-      apply-sandbox job's last two steps
+      apply-sandbox job's last three steps. Precondition: the latest terraform-apply-sandbox run on main concluded success
+      and the latest drift run found no drift, because a dispatch plans fresh at main HEAD and applies whatever is
+      outstanding; otherwise wait for the next push run that touches terraform/personal
     command: >-
       echo 'VIA MCP: actions_run_trigger run_workflow terraform-apply-sandbox.yml ref main (no inputs) after telling Benjamin
       in the thread it is a no-op routine apply for the capture proof; then get the job log of apply-sandbox and read the
@@ -456,10 +495,16 @@ verification_plan:
     phase: post-deploy
     action: ci-rca under the capture role -- on the first ci-rca run after PR 3 merges, its capture signs as the capture role
     command: >-
-      echo 'VIA MCP: get the job log of the first ci-rca run on main after PR 3; read the capture_creds and capture steps;
-      then FilterLogEvents on the production writer log group under --profile agent_platform for that run window and count C6
-      lines whose caller_role is agent-platform-github-ci-telemetry-capture'
-    expected: capture_creds succeeded and at least one C6 line with the capture role as caller_role; none with the branch role from that run
+      test -n "$RUN_START_MS" && test -n "$RUN_END_MS" && RUN_START_MS="$RUN_START_MS" RUN_END_MS="$RUN_END_MS"
+      bin/venv-python -c 'import os, boto3; c = boto3.Session(profile_name="agent_platform").client("logs"); g =
+      "/aws/lambda/agent-platform-ducklake-telemetry-writer"; kw = dict(logGroupName=g, startTime=int(os.environ["RUN_START_MS"]),
+      endTime=int(os.environ["RUN_END_MS"])); n = lambda role: sum(len(p["events"]) for p in
+      c.get_paginator("filter_log_events").paginate(filterPattern="\"caller_role\" \"" + role + "\"", **kw)); cap =
+      n("agent-platform-github-ci-telemetry-capture"); br = n("agent-platform-github-ci-branch"); print("C6_CAPTURE", cap,
+      "C6_BRANCH", br)'
+    expected: >-
+      RUN_START_MS and RUN_END_MS are the capture step's start and end (epoch ms) from the first ci-rca job log on main
+      after PR 3, read via MCP; capture_creds succeeded; C6_CAPTURE at least 1 and C6_BRANCH 0 for that capture step's window (deploy smoke runs signing as the branch role in the same minutes would be the only other source; widen nothing, re-run on a quiet window if C6_BRANCH is non-zero)
     fix_if: >-
       no ci-rca run before the build hands off -- record that in the handoff and leave this step to the next telemetry
       thread that sees one (not a blocker for the c9 flip, which steps 14-15 evidence); a branch-role C6 line from the run
@@ -490,6 +535,29 @@ verification_plan:
     hermetic: false
     graduation: waive
     graduation_waiver_reason: A whole full-tier run; graduate steps may not invoke scripts.validate (recursion), and steps 1-5 carry the durable regressions.
+  - step: 20
+    phase: pre-deploy
+    action: rec-4415's re-pointed acceptance passes at the PR 4 head, so the Resolves trailer's acceptance evaluation closes it
+    command: bin/venv-python -m pytest tests/telemetry_capture/test_plan_review_text_withheld.py tests/checks/ci_guards/test_validate_ci_capture_identity.py -q
+    expected: all pass; the same command is rec-4415's acceptance as read back by recs_by_ids
+    fix_if: the rec's acceptance differs from this command -- update_rec it again before merging PR 4
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: Re-runs graduated steps 3 and 5 as the rec's acceptance; no new regression.
+  - step: 21
+    phase: post-deploy
+    action: >-
+      Reconcile capture, non-blocking -- on the first apply-reconcile run after PR 3 whose red commit carries the adapter's
+      manifest writer, the capture reads the root checkout's manifests from the .dispatch-tooling action
+    command: >-
+      echo 'VIA MCP: get the job log of that apply-reconcile run; read capture_env, capture_creds and the capture step
+      counts line'
+    expected: capture_env and capture_creds succeeded and the counts line shows at least 1 session, zero failures
+    fix_if: >-
+      zero sessions with a manifest present on the root checkout -- the anchoring predicate (j) missed a path form: RCA;
+      no such run before handoff -- record the unproven reconcile path in the handoff (a red commit older than the adapter
+      writes no manifest by design), not a blocker for the c9 flip
+    hermetic: false
 test_obligations:
   - source: terraform/bootstrap/github_ci_apply_reads.tf
     behavior: IAMRolesRead lists the capture role ARN exactly once
@@ -647,30 +715,35 @@ execution_steps:
     on the exact text); (3) for a role terraform/personal creates, pre-stage its ARN in terraform/bootstrap IAMRolesRead
     (admin apply, Decision 98) and add it to ci_full_refresh_read's IAMCIRolesRead (Decision 129) in the create PR, which
     routes to tf-gated-apply (Decision 144 cl.4); (4) tests/checks/iam_tf/test_telemetry_writer_principals.py holds every
-    class to exactly its row and fails on any unregistered role holding an invoke-class action on the production writer.
+    class to exactly its row and fails on any unregistered role holding an invoke action on the production writer;
+    PlatformAdmin, the unbounded operator (Decision 144 cl.3), is the one named exclusion, never a class.
     The handler does not change: the tenant is the signed caller's account (tenant-id.yaml), so every class in this account
     writes the house tenant, and caller_role is logged in the C6 line, never consulted. A principal outside this account
-    needs a per-tenant role first (tenant-id.yaml)."; grant_shape url_only_invoke; classes: github_ci_branch {role
+    needs a per-tenant role first (tenant-id.yaml)."; grant_shape url_only_invoke, with a grant_shape_definition line "url_only_invoke: lambda:InvokeFunctionUrl on the
+    function and its qualifiers, and lambda:InvokeFunction only under Bool lambda:InvokedViaFunctionUrl = true (Decision
+    213); lambda:GetFunctionUrlConfig may ride alongside; never lambda:InvokeAsync or an unconditioned InvokeFunction.
+    functions are the telemetry write functions a class invokes, reads the telemetry read functions; dedicated means
+    the role exists only for this class and its whole policy is this grant." (a str field grant_shape_definition on
+    PrincipalAdmission); classes: github_ci_branch {role
     agent-platform-github-ci-branch, terraform_root terraform/personal, policy_document github_ci_branch, functions
-    [agent-platform-ducklake-telemetry-writer, agent-platform-ducklake-telemetry-writer-smoke], dedicated false,
-    writer_url_parameter false, reads [], trust "main and agent/* pushes and workflow_run (rec-4480 owns agent/*)",
+    [agent-platform-ducklake-telemetry-writer, agent-platform-ducklake-telemetry-writer-smoke], reads
+    [agent-platform-ducklake-telemetry-reader], dedicated false, trust "main and agent/* pushes and workflow_run (rec-4480 owns agent/*)",
     tenant_scope "house (signed account)", project_scope "the deploy pipeline's smoke and production gates (synthetic: and
     drill: refs, ontheloop)", project_scope_enforcement producer, audit_handle "C6 caller_role
     agent-platform-github-ci-branch", purpose "deploy-pipeline telemetry gates"}; PlatformDev {role PlatformDev,
-    terraform_root terraform/bootstrap, policy_document platform_dev, functions [agent-platform-ducklake-telemetry-writer],
-    dedicated false, writer_url_parameter false, reads [agent-platform-ducklake-telemetry-reader], trust "the agent_static
+    terraform_root terraform/bootstrap, policy_document platform_dev_runtime_policy_json, functions
+    [agent-platform-ducklake-telemetry-writer], reads [agent-platform-ducklake-telemetry-reader], dedicated false, trust "the agent_static
     IAM user through the ExternalId-conditioned chain (Decision 113)", tenant_scope "house (signed account)", project_scope
     "ontheloop and the operator's registered projects", project_scope_enforcement producer, audit_handle "C6 caller_role
     PlatformDev", purpose "interactive Claude Code turn capture and operator verbs"}; github_ci_telemetry_capture {role
     agent-platform-github-ci-telemetry-capture, terraform_root terraform/personal, policy_document
-    github_ci_telemetry_capture, functions [agent-platform-ducklake-telemetry-writer], dedicated true,
-    writer_url_parameter true, reads [], trust "repo main branch only (ref:refs/heads/main over local.github_repos), never
+    github_ci_telemetry_capture, functions [agent-platform-ducklake-telemetry-writer], reads [], dedicated true, trust "repo main branch only (ref:refs/heads/main over local.github_repos), never
     agent/*, pull_request or an Environment", tenant_scope "house (signed account)", project_scope "ontheloop only
     (ci-pass reads the repository's one registered project.ref, Decision 224)", project_scope_enforcement producer, audit_handle "C6 caller_role agent-platform-github-ci-telemetry-capture", purpose
     "claude -p sessions in allow-listed Actions workflows: ci-rca with text, plan review with text withheld (Decision 238
     cl.1)"}. The class rows' function lists and booleans are what test_every_declared_principal_class_holds_exactly_its_grant
     checks: if the live HCL of github_ci_branch or PlatformDev differs from them, STOP and report rather than edit either side.
-    The ratification's "Principal classes:" audit invariant: replace its last sentence "Admitting another producer identity
+    The ratification's "Declared residual (principal classes):" audit invariant: replace its last sentence "Admitting another producer identity
     follows rec-4420 (T3.22 c4)." with "Every admitted class, its grant and its scope are governance.principal_admission;
     github_ci_telemetry_capture is the main-only capture role for claude -p in Actions." amendment_log entry: date the
     build date, semantic_break false, change_class field_add, summary "PLAN-telemetry-producer-admission-plan-review-capture
@@ -682,7 +755,7 @@ execution_steps:
     4. tenant-id.yaml note replacement: "The production writer's admitted principals are the principal_admission registry
     in ducklake_telemetry_writer.yaml (github_ci_branch, PlatformDev and the main-only github_ci_telemetry_capture), each
     URL-only (Decision 213), with github_ci_branch's agent/* trust owned by rec-4480; a new producer identity is admitted by
-    that registry's procedure, and a principal outside this account needs a per-tenant role first." amendment_log: date the
+    that registry's procedure (T3.22 c4, rec-4420), and a principal outside this account needs a per-tenant role first." amendment_log: date the
     build date, semantic_break false, change_class governance_note_add, summary "PLAN-telemetry-producer-admission-plan-review-capture:
     the producer identity note points at the writer's principal_admission registry (rec-4420)."
   - >-
@@ -695,7 +768,11 @@ execution_steps:
     VP 1, 2, 6, 7, 18, 19; open PR; VP 11; paste the contract and roadmap diff inline for Benjamin; merge with the trailer
     Resolves: rec-4420 on PROCEED + green + his word; VP 12 (he approves the gated apply), VP 13, VP 17 (rec-4420).
   - >-
-    6. PR 3 (after PR 2's gated apply converges): the sign-in step text for each job is: name "Assume the telemetry capture
+    6. PR 3 (after PR 2's gated apply converges and withheld_by_policy is live): in apply-sandbox and apply-reconcile
+    the capture_env step comes first: name "Prepare the claude -p capture environment", id capture_env, if always(),
+    continue-on-error true, timeout-minutes 5, run python -m venv <root>/.venv then <root>/.venv/bin/pip install --quiet
+    -r <root>/requirements.txt (root ${{ github.workspace }} or ${{ github.workspace }}/.dispatch-tooling); ci-rca already
+    builds .venv and gets none. The sign-in step text for each job is: name "Assume the telemetry capture
     role (claude -p capture only, never exported)", id capture_creds, if always(), continue-on-error true,
     timeout-minutes 2, uses aws-actions/configure-aws-credentials@v6 (the repo's pinned version), with role-to-assume
     arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-telemetry-capture, role-session-name
@@ -703,13 +780,19 @@ execution_steps:
     expression (reconcile), output-credentials true, output-env-credentials false, and MASK_AWS_ROLE_ID_ACCOUNT_PART per R3
     (workflow env where already hoisted, else step env). Capture step: name "Capture claude -p telemetry (<plan review,
     text withheld | ci-rca>)", if "always() && steps.capture_creds.outcome == 'success'", continue-on-error true,
-    timeout-minutes 5, uses the capture action, with the adapter's single manifests input (newline-separated) and the three
+    timeout-minutes 5, uses the capture action, with the adapter's single manifests input (newline-separated, each line
+    ${{ github.workspace }}-anchored in the two apply jobs) and the three
     steps.capture_creds.outputs.* credentials. Then capture.yaml, source_registry.yaml, the check and its registrations,
-    the withheld-text test; VP 3-6, 18, 19; open PR; merge on PROCEED + green +
-    code-owner review; VP 14, 15, 16.
+    the withheld-text test, the two job timeouts; VP 3-6, 18, 19; open PR; merge on PROCEED + green + code-owner
+    review; VP 14, 15, 16, 21.
   - >-
-    PR 4 (after VP 15 passes): roadmap T3.20 c9 met with the re-grounding note and the CD.40 progress note; VP 18, 19;
-    merge with the trailer Resolves: rec-4415 on PROCEED + green; VP 17 (rec-4415).
+    PR 4 (after VP 15 passes): first re-point rec-4415's acceptance (its current node
+    tests/telemetry_capture/test_ci_capture.py::test_allow_listed_ci_workflow_is_captured_and_marked and its grep for
+    'scripts.telemetry_capture pass' exist in no merged design; the adapter plan hands this to this plan) by
+    get_rec_write_guidance() then update_rec(rec-4415, acceptance = "bin/venv-python -m pytest
+    tests/telemetry_capture/test_plan_review_text_withheld.py tests/checks/ci_guards/test_validate_ci_capture_identity.py
+    -q"); then roadmap T3.20 c9 met with the re-grounding note and the CD.40 progress note; VP 20, 18, 19; merge with the
+    trailer Resolves: rec-4415 on PROCEED + green; VP 17 (rec-4415).
   - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
   - 'Report: what was implemented, verification results, VP 16 status, and the CD.40 gate on T3.20 completion'
 rollback: >-
