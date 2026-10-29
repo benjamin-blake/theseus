@@ -115,10 +115,12 @@ verification_plan:
     graduation_waiver_reason: Whole-file run of a test file this plan creates, always inside the --pre affected-test selection; step 2 graduates the registration node.
   - step: 2
     phase: pre-deploy
-    action: The three verbs are registered as agent-facing 7-day window verbs and the CLI knows them.
-    command: bin/venv-python -m pytest tests/test_telemetry_usage.py::test_usage_verbs_are_registered_agent_facing_window_verbs -q
-    expected: exit 0. Before the change the node does not exist.
-    fix_if: Fix the EVENT_READS entries; never the test.
+    action: The three verbs are registered as agent-facing 7-day window verbs and the serving contract declares them.
+    command: >-
+      bin/venv-python -m pytest tests/test_telemetry_usage.py::test_usage_verbs_are_registered_agent_facing_window_verbs
+      tests/test_telemetry_usage.py::test_reader_contract_declares_the_usage_verbs -q
+    expected: exit 0 with 2 passed. Before the change the nodes do not exist.
+    fix_if: Fix the EVENT_READS entries or the contract text; never the test.
     hermetic: true
     expected_literals:
       - passed
@@ -185,16 +187,17 @@ verification_plan:
     graduation_waiver_reason: Whole-file and directory runs of already-registered suites plus duckdb-gated files; steps 2-6 cover the new behaviour.
   - step: 8
     phase: pre-deploy
-    action: Contract and repo guards (read-engine verbs, contract drift, SLOC) and the fast tier.
+    action: Contract and repo guards (read-engine verbs, contract drift, SLOC), then the fast and full tiers.
     command: >-
-      bin/venv-python -c "from scripts.checks.contracts.validate_read_engine_verbs import validate_read_engine_verbs as a;
-      from scripts.checks.contracts.validate_contract_drift import validate_contract_drift as b;
-      from scripts.checks.sloc.sloc_limits import validate_sloc_limits as c; f=[]; [x(f) for x in (a, b, c)];
-      print('GUARD_FAILS', len(f)); assert not f, f" && bin/venv-python -m scripts.validate --pre
-    expected: GUARD_FAILS 0, then the fast tier exits 0.
-    fix_if: Fix the named contract or decompose the file per scope[0]; never raise a budget.
+      bin/venv-python -c "from scripts.checks.contracts.validate_read_engine_verbs import validate_read_engine_verbs as a; f=[]; a(f); print('READ_ENGINE_FAILS', len(f)); assert not f, f"
+      && bin/venv-python -c "from scripts.checks.contracts.validate_contract_drift import validate_contract_drift as b;
+      from scripts.checks.sloc.sloc_limits import validate_sloc_limits as c; f=[]; [x(f) for x in (b, c)];
+      print('GUARD_FAILS', len(f)); assert not f, f" && bin/venv-python -m scripts.validate --pre && bin/venv-python -m scripts.validate
+    expected: READ_ENGINE_FAILS 0 and GUARD_FAILS 0, then the fast tier and the full tier (Decision 163) each exit 0.
+    fix_if: Fix the named contract or decompose the file per scope[0]; never raise a budget. Out-of-scope failures become recs (Decisions 59, 55).
     hermetic: false
-    graduation: not-applicable
+    graduation: waive
+    graduation_waiver_reason: 'vp-red-before.yaml recursion_refusal: a graduated step may not invoke scripts.validate; the full tier runs post-merge on main in every case.'
   - step: 9
     phase: post-deploy
     action: >-
@@ -270,6 +273,17 @@ test_obligations:
     verification_step: 3
     test_selector: tests/test_telemetry_usage.py::test_a_failed_chunk_prints_no_total_and_exits_1
     red_green_expectation: red before (module absent), green after
+  - source: docs/contracts/ducklake_telemetry_reader.yaml
+    behavior: The serving function's contract declares the three usage verbs and records the field_add.
+    verification_step: 2
+    test_selector: tests/test_telemetry_usage.py::test_reader_contract_declares_the_usage_verbs
+    red_green_expectation: red before (no invariant names the verbs), green after
+  - source: docs/contracts/read-engine.yaml
+    behavior: The read-engine verb grouping equals the registries grouped by first table, the three verbs included.
+    verification_step: 8
+    command: >-
+      bin/venv-python -c "from scripts.checks.contracts.validate_read_engine_verbs import validate_read_engine_verbs as a; f=[]; a(f); print('READ_ENGINE_FAILS', len(f)); assert not f, f"
+    red_green_expectation: red after the registry change alone (three verbs missing from the grouping), green once read-engine.yaml lists them
   - source: scripts/ducklake_smoke/lambda_telemetry_reader_gates.py
     behavior: The deploy gate reads the usage verbs and checks their columns.
     verification_step: 7
@@ -383,7 +397,7 @@ execution_steps:
     call wins over a later larger one, the 1h/5m split is carried, a sub-agent row carries its agent_name, a session with
     no call reads 0 and NULLs); test_verb_matches_oracle_on_every_golden_tree. test_telemetry_usage.py (fake reader):
     test_usage_verbs_are_registered_agent_facing_window_verbs (binding window, max_window_days 7, agent_facing, params
-    day_from/day_to, VERB_FIELDS present), test_twenty_days_make_three_exact_chunks, test_chunk_sums_equal_a_single_window_sum,
+    day_from/day_to, VERB_FIELDS present), test_reader_contract_declares_the_usage_verbs (ducklake_telemetry_reader.yaml audit_invariants name all three verbs and the latest amendment_log entry is a field_add naming them), test_twenty_days_make_three_exact_chunks, test_chunk_sums_equal_a_single_window_sum,
     test_a_failed_chunk_prints_no_total_and_exits_1 (504 and 503 cases, stderr names the window), test_413_halves_the_window,
     test_max_windows_refused_before_any_call, test_cache_read_ratio_null_on_zero_denominator, test_branch_prefix_literal.
     The smoke-gate node per scope.
