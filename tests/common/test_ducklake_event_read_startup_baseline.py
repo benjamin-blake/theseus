@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-duckdb = pytest.importorskip("duckdb")
+duckdb = pytest.importorskip("duckdb", reason="env: duckdb is not installed in the fast-tier venv")
 
 from scripts.telemetry_verify import derive_usage  # noqa: E402
 from tests.fixtures import telemetry_golden_chain as chain  # noqa: E402
