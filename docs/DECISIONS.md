@@ -699,7 +699,7 @@ conditions:
     description: "The catalog provider refuses the owner-role membership, ownership transfer or session-role default for a non-superuser owner: the shared owner login owns ducklake_telemetry with default privileges to its logins, dated on Decision 216."
   - id: measured-grants-drift
     kind: manual
-    description: "A DuckLake extension bump changes the statements a writer verb issues: re-measure clause 3's grants before the bump merges."
+    description: "A DuckLake extension bump changes the statements a writer verb issues: re-measure clause 3's grants first."
   - id: boundary-headroom
     kind: manual
     description: "The boundary's minified size passes 5,632 bytes: re-decide where clause 5's fence lives."
@@ -708,8 +708,8 @@ conditions:
 **Related:** Decision 216, 213, 81, 214, 222, 204, 143, 144, 202, 126, 88, 181.
 
 [Amendment 2026-10-27, Decision 237: cl.4 logins live in /secret/.]
+[See Decision 239.]
 
-[Amendment 2026-10-29, Decision 239: cl.3's telemetry reader login is shared with the content reader, its connection limit summed across both; cl.5's fence exceptions add the content reader's role.]
 
 ---
 
