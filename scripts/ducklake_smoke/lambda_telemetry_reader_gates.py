@@ -13,7 +13,7 @@ response body, an error message, an ARN, an account id or a URL (Decision 101).
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, cast
 
 from scripts.ducklake_smoke import core, lambda_ec_gates, lambda_telemetry_gates
 from src.common.ducklake_event_read_verbs import EVENT_READS
@@ -129,7 +129,9 @@ def _check_reads(url: str, profile: str | None, region: str) -> None:
     for verb in _USAGE_VERBS:
         body = _expect_ok(_invoke(url, {"action": "named_read", "verb": verb, "params": window}, profile, region), verb)
         usage_rows = body.get("rows")
-        if not isinstance(usage_rows, list) or any(set(row) != set(VERB_FIELDS[verb]) for row in usage_rows):
+        if not isinstance(usage_rows, list) or any(
+            set(row) != set(cast(tuple[str, ...], VERB_FIELDS[verb])) for row in usage_rows
+        ):
             raise _fail(f"{verb} rows do not carry exactly the declared columns")
 
 
