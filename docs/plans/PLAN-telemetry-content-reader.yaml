@@ -446,16 +446,29 @@ verification_plan:
       selection; steps 1, 2 and 4 graduate the acceptance and reassembly nodes.
   - step: 4
     phase: pre-deploy
-    action: Whole-session reassembly against a real DuckDB catalog over the golden chain.
+    action: The session SQL's ORDER BY keys and their order, asserted without a catalog so the fast tier can replay it.
+    command: >-
+      bin/venv-python -m pytest
+      tests/common/test_ducklake_content_read_verbs.py::test_session_transcript_orders_by_the_declared_keys_in_order -q
+    expected: exit 0 with the node not skipped.
+    fix_if: The order keys drifted from the declared conversation order -- fix the SQL; never relax the assertion.
+    hermetic: true
+    expected_literals: ["passed"]
+    graduation: graduate
+    graduation_check_id: telemetry-content-session-reassembly
+  - step: 10
+    phase: pre-deploy
+    action: Whole-session reassembly against a real DuckDB catalog over the golden chain (full tier; duckdb is not in the fast venv).
     command: >-
       bin/venv-python -m pytest
       tests/lambdas/ducklake_telemetry_content_reader/test_session_reassembly.py::test_every_golden_tree_reassembles -q
     expected: exit 0 with the node not skipped (duckdb importable in the venv).
     fix_if: A tree differs from the oracle -- fix the SQL or assembly; never relax the comparison.
-    hermetic: true
-    expected_literals: ["passed"]
-    graduation: graduate
-    graduation_check_id: telemetry-content-session-reassembly
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Needs duckdb, which the fast tier excludes by design (requirements-fast.txt heavy-exclusion, Decision 104); the
+      node runs in the full tier's test sweep and step 4 graduates the order keys it exercises.
   - step: 5
     phase: pre-deploy
     action: Decision, annotations, index, contracts, substrate row, and no live text naming rec-4481.
@@ -553,8 +566,13 @@ test_obligations:
     red_green_expectation: red before (package missing), green after.
   - source: src/common/ducklake_content_read_verbs.py
     behavior: Window decided from the ULID prefix; ordered, deduped, tree-scoped reassembly.
-    verification_step: 4
+    verification_step: 10
     test_selector: tests/lambdas/ducklake_telemetry_content_reader/test_session_reassembly.py::test_every_golden_tree_reassembles
+    red_green_expectation: red before (module missing), green after.
+  - source: src/common/ducklake_content_read_verbs.py
+    behavior: The session SQL orders by root first, first event time, session, event time, ordinal, block index, role, purpose rank and grain key.
+    verification_step: 4
+    test_selector: tests/common/test_ducklake_content_read_verbs.py::test_session_transcript_orders_by_the_declared_keys_in_order
     red_green_expectation: red before (module missing), green after.
   - source: src/common/ducklake_content_read_verbs.py
     behavior: Entry params and bindings, rendered SQL, registry disjointness, the 89/90/91-day window, version stability.
@@ -661,7 +679,7 @@ test_obligations:
   - source: config/agent/verification_registry/entries/telemetry-content-session-reassembly.yaml
     behavior: Graduates VP step 4's node.
     verification_step: 4
-    test_selector: tests/lambdas/ducklake_telemetry_content_reader/test_session_reassembly.py::test_every_golden_tree_reassembles
+    test_selector: tests/common/test_ducklake_content_read_verbs.py::test_session_transcript_orders_by_the_declared_keys_in_order
     waiver_reason: Registry data shape-checked by validate_verification_registry in every tier; the guarded behaviour is this node, obligated above.
   - source: docs/contracts/file-router.yaml
     behavior: scripts/telemetry_content.py is an allowed scripts-root file.
@@ -812,7 +830,7 @@ execution_steps:
     DECISION 91 (after its last annotation line):
     [Amendment 2026-10-29, Decision 239: the telemetry content reader serves its own verb set, transcript_row_masked and
     session_transcript_masked.]
-  - Content verbs module and its unit test; the real-DuckDB reassembly test (VP step 4).
+  - Content verbs module and its unit test; the real-DuckDB reassembly test (VP step 10).
   - The package (handler, masked, access_log, manifest) and its tests; data-pipeline excludes.
   - Read route, CLI and their tests.
   - >-
