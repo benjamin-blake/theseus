@@ -43,6 +43,10 @@ PROTECTED = (
     "scripts/checks/misc/sensitive_value_*.py",
     "tests/sensitive_values/",
     "tests/checks/misc/test_sensitive_value_*.py",
+    "src/lambdas/ducklake_telemetry_content_reader/",
+    "src/common/ducklake_content_read_verbs.py",
+    "docs/contracts/ducklake_telemetry_content_reader.yaml",
+    "tests/lambdas/ducklake_telemetry_content_reader/",
 )
 
 

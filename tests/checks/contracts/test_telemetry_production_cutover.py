@@ -8,8 +8,8 @@ skipped). After the cleanup PR the shared reader's contract routes the event ver
 deadline row, the telemetry reader's contract carries the moved deadline and threads invariants, read-engine and PC-01 name
 the telemetry reader, PC-06 names no content server, and no live code keeps the smoke-pin read surface. After the narrow
 PR no live ducklake_reader.yaml or read-engine.yaml text says the shared reader reads telemetry-blobs/. After the bookkeeping
-PR no live contract (history skipped), src/, scripts/, terraform/ or .github/ text names the closed rec-4292. Each predicate
-has red cases on synthetic input.
+PR no live contract (history skipped), src/, scripts/, terraform/ or .github/ text names the closed rec-4292,
+and after the content reader build none names the closed rec-4481. Each predicate has red cases on synthetic input.
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ _SHARED_READER_DEADLINE = re.compile(r"deadline_ms|\b504\b|read_deadline_exceede
 _SMOKE_DEFERRAL = re.compile(r"smoke catalog only|until slice 2c")
 _SHARED_READER_BLOB = re.compile(r"TelemetryBlobRead|telemetry-blobs/")
 _REC_4292 = re.compile(r"\brec-4292\b")
+_REC_4481 = re.compile(r"\brec-4481\b(?! plan [123]\b)")
 
 
 def writer_contract_problems(doc: dict) -> list[str]:
@@ -264,8 +265,8 @@ def ports_problems(doc: dict) -> list[str]:
     problems = []
     if "to the telemetry reader's own Function URL only" not in pc01 or "to the shared reader on the smoke catalog" in pc01:
         problems.append("PC-01 must route event reads to the telemetry reader only")
-    if "served by no deployed function" not in pc06_text or "rec-4481" not in pc06_text:
-        problems.append("PC-06 must say no deployed function serves transcript content, owner rec-4481")
+    if "served by no deployed function" not in pc06_text or "rec-4696" not in pc06_text:
+        problems.append("PC-06 must say no deployed function serves transcript content, owner rec-4696")
     if pc06.get("status") != "open" or pc06.get("owning_item") != "T4.23:c7":
         problems.append("PC-06 stays open under T4.23:c7")
     return problems
@@ -316,19 +317,23 @@ def test_no_contract_names_the_shared_reader_blob_grant() -> None:
     assert [h.split(":")[0] for h in hits] == ["after_history.yaml", "ducklake_reader.yaml", "rationale.yaml"], hits
 
 
-def rec_4292_hits(contracts: dict[str, str], code: dict[str, str]) -> list[str]:
+def closed_rec_hits(pattern: re.Pattern[str], contracts: dict[str, str], code: dict[str, str]) -> list[str]:
     hits = [
         f"{name}:{number}"
         for name, text in sorted(contracts.items())
         for number, line in live_lines(text, skip_history=True)
-        if _REC_4292.search(line)
+        if pattern.search(line)
     ]
     return hits + [
         f"{name}:{number}"
         for name, text in sorted(code.items())
         for number, line in enumerate(text.splitlines(), 1)
-        if _REC_4292.search(line)
+        if pattern.search(line)
     ]
+
+
+def rec_4292_hits(contracts: dict[str, str], code: dict[str, str]) -> list[str]:
+    return closed_rec_hits(_REC_4292, contracts, code)
 
 
 def test_no_live_text_names_rec_4292() -> None:
@@ -340,3 +345,14 @@ def test_no_live_text_names_rec_4292() -> None:
     red_contracts = {**green, "after_history.yaml": history + "production_column_set:\n  rec: rec-4292\n"}
     red_code = {"d.py": '"""Residual owned by rec-4292."""\n', "e.tf": "amendment_log:\n  - rec-4292\n"}
     assert rec_4292_hits(red_contracts, red_code) == ["after_history.yaml:7", "d.py:1", "e.tf:2"]
+
+
+def test_no_live_text_names_rec_4481() -> None:
+    contracts = {str(p.relative_to(_ROOT)): p.read_text(encoding="utf-8") for p in sorted(_CONTRACTS.glob("*.yaml"))}
+    assert closed_rec_hits(_REC_4481, contracts, _code_files()) == []
+    history = "contract:\n  id: x\namendment_log:\n  - summary: >-\n      transcript content, owner rec-4481\n"
+    green = {"a.yaml": history, "b.yaml": "notes: rec-44810 and rec-4481 plan 1 are other text\n"}
+    assert closed_rec_hits(_REC_4481, green, {"c.py": "# rec-44811 and rec-4481 plan 2\n"}) == []
+    red_contracts = {**green, "after_history.yaml": history + "invariant: owner rec-4481\n"}
+    red_code = {"d.py": '"""Content owned by rec-4481."""\n', "e.tf": "# rec-4481\n"}
+    assert closed_rec_hits(_REC_4481, red_contracts, red_code) == ["after_history.yaml:6", "d.py:1", "e.tf:1"]

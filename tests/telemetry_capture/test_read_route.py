@@ -275,3 +275,42 @@ def test_the_read_clients_import_where_fcntl_is_absent() -> None:
         [sys.executable, "-c", code], cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False
     )
     assert (done.returncode, done.stdout.strip()) == (0, SMOKE), done.stderr[-2000:]
+
+
+CONTENT_VERB = sorted(read_route.CONTENT_VERBS)[0]
+
+
+def test_content_route_resolves_env_then_ssm_then_the_function_url(aws: Aws, monkeypatch: pytest.MonkeyPatch) -> None:
+    reader = read_route.content_reader("a-profile")
+    assert aws.calls == []
+    monkeypatch.setenv(read_route.CONTENT_READER_URL_ENV, "https://env.example/")
+    assert reader._reader_url() == "https://env.example" and aws.calls == []
+    monkeypatch.delenv(read_route.CONTENT_READER_URL_ENV)
+    aws.answers[("ssm", read_route.CONTENT_READER_URL_PARAMETER)] = "https://ssm.example/\n"
+    assert reader._reader_url() == "https://ssm.example"
+    aws.answers[("ssm", read_route.CONTENT_READER_URL_PARAMETER)] = None
+    aws.answers[("lambda", read_route.CONTENT_READER_FUNCTION)] = "https://fn.example/"
+    assert reader._reader_url() == "https://fn.example"
+
+
+def test_content_route_errors_name_a_source_never_a_value(aws: Aws) -> None:
+    with pytest.raises(RuntimeError) as raised:
+        read_route.content_reader()._reader_url()
+    assert read_route.CONTENT_READER_URL_ENV in str(raised.value) and DENIED not in str(raised.value)
+
+
+def test_content_and_event_verbs_never_cross_routes(aws: Aws, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert read_route.CONTENT_VERBS.isdisjoint(read_route.EVENT_VERBS)
+    monkeypatch.setenv(read_route.CATALOG_ENV, PROD)
+    ops = Ops()
+    routed = read_route.make_routed_reader(ops=ops)
+    with pytest.raises(read_route.WrongRoute):
+        routed.named(CONTENT_VERB, session_id="x")
+    assert ops.calls == [] and Events.built == 0
+    sent: list[Any] = []
+    monkeypatch.setattr(read_route.DuckLakeReader, "named", lambda self, verb, **p: sent.append(verb) or [])
+    with pytest.raises(read_route.WrongRoute):
+        read_route.content_reader().named(EVENT_VERB)
+    with pytest.raises(read_route.WrongRoute):
+        read_route.content_reader().named(OPS_VERB)
+    assert sent == [] and read_route.content_reader().named(CONTENT_VERB) == [] and sent == [CONTENT_VERB]
