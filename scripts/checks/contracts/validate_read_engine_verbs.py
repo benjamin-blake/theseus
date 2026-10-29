@@ -79,8 +79,12 @@ def validate_read_engine_verbs(failed: list[str], *, contracts_dir: Path | None 
     registry.examined(total, unit="verbs")
     if declared != live:
         failed.append(
-            f"Read-engine verb parity: {_CONTRACT_NAME} declares {declared} but NAMED_READS, EVENT_READS and CONTENT_READS derive {live}"
+            f"Read-engine verb parity: {_CONTRACT_NAME} declares {declared} "
+            f"but NAMED_READS, EVENT_READS and CONTENT_READS derive {live}"
         )
         return
 
-    print(f"  PASS: {_CONTRACT_NAME} matches NAMED_READS, EVENT_READS and CONTENT_READS ({total} verbs across {len(live)} table(s)).")
+    print(
+        f"  PASS: {_CONTRACT_NAME} matches NAMED_READS, EVENT_READS and CONTENT_READS "
+        f"({total} verbs across {len(live)} table(s))."
+    )

@@ -51,7 +51,8 @@ SESSION_TRANSCRIPT_SQL = compose(
     "tr.parser_version AS parser_version, tr.event_timestamp AS event_timestamp, tr.source_ordinal AS source_ordinal, "
     "tr.purpose AS purpose, tr.origin AS origin, tr.content AS content, tr.content_uri AS content_uri, "
     "tr.content_sha256 AS content_sha256, tr.content_bytes AS content_bytes, "
-    "tr.content_omitted_reason AS content_omitted_reason, count(*) OVER () AS total_rows, "
+    "tr.content_omitted_reason AS content_omitted_reason, tr.session_started_at AS tree_started_at, "
+    "count(*) OVER () AS total_rows, "
     "coalesce((SELECT conflicted_grain_keys FROM tree_conflicts), []) AS conflicted_grain_keys "
     "FROM tree tr JOIN first_ev fe USING (session_id) "
     "ORDER BY (tr.session_id = $session_id) DESC, fe.first_ts, tr.session_id, tr.event_timestamp, "
@@ -101,6 +102,13 @@ def in_read_window(session_id: str, now: datetime) -> bool:
     """Whether the session's ULID time prefix is at most READ_WINDOW_DAYS before *now* (a future prefix is inside)."""
     started = decode_time_prefix(session_id)
     return now - started <= timedelta(days=READ_WINDOW_DAYS)
+
+
+def tree_in_read_window(tree_started_at: datetime, now: datetime) -> bool:
+    """Whether the session tree's shared start is at most READ_WINDOW_DAYS before *now* (a naive timestamp is UTC)."""
+    if tree_started_at.tzinfo is None:
+        tree_started_at = tree_started_at.replace(tzinfo=timezone.utc)
+    return now - tree_started_at <= timedelta(days=READ_WINDOW_DAYS)
 
 
 def utc_now() -> datetime:

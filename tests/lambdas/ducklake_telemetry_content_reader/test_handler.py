@@ -40,6 +40,7 @@ SESSION_COLUMNS = [
     "content_sha256",
     "content_bytes",
     "content_omitted_reason",
+    "tree_started_at",
     "total_rows",
     "conflicted_grain_keys",
 ]
@@ -366,6 +367,7 @@ def test_every_served_byte_is_masked(wiring: dict[str, Any], capsys: pytest.Capt
         "content_sha256": "0" * 64,
         "content_bytes": len(text),
         "content_omitted_reason": None,
+        "tree_started_at": datetime.now(timezone.utc) - timedelta(days=1),
         "total_rows": 1,
         "conflicted_grain_keys": [],
     }
@@ -379,3 +381,44 @@ def test_every_served_byte_is_masked(wiring: dict[str, Any], capsys: pytest.Capt
         "[REDACTED:GITHUB_TOKEN]" in item["text"]
         and item["masked_sha256"] == hashlib.sha256(item["text"].encode()).hexdigest()
     )
+
+
+def _tree_row(started: datetime) -> dict[str, Any]:
+    return {
+        "session_id": ulid_aged(1),
+        "producer": "claude_code",
+        "event_id": _EVENT_ID,
+        "parser_version": 3,
+        "event_timestamp": "2026-10-01T00:00:00+00:00",
+        "source_ordinal": 1,
+        "purpose": "prompt",
+        "origin": "user",
+        "content": "hello",
+        "content_uri": None,
+        "content_sha256": "0" * 64,
+        "content_bytes": 5,
+        "content_omitted_reason": None,
+        "tree_started_at": started,
+        "total_rows": 1,
+        "conflicted_grain_keys": [],
+    }
+
+
+def test_a_recent_session_in_an_old_tree_is_404(wiring: dict[str, Any]) -> None:
+    now = datetime.now(timezone.utc)
+    wiring["columns"] = SESSION_COLUMNS
+    wiring["rows"] = [_tree_row(now - timedelta(days=100))]
+    status, body = _call(_session_read(ulid_aged(1)))
+    assert status == 404 and body["error_type"] == "outside_read_window"
+    wiring["rows"] = [_tree_row((now - timedelta(days=5)).replace(tzinfo=None))]
+    rt.reset_warm_connection()
+    assert _call(_session_read(ulid_aged(1)))[0] == 200
+
+
+def test_runtime_and_version_faults_carry_no_exception_text(wiring: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(**_: Any) -> Any:
+        raise rt.DuckLakeRuntimeError("dsn secret-id arn:aws:x /private/path")
+
+    monkeypatch.setattr(rt, "open_connection", boom)
+    status, body = _call(_row_read(ulid_aged(1)))
+    assert status == 500 and body == {"ok": False, "error_type": "runtime"}

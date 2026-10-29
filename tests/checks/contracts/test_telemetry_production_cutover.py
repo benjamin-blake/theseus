@@ -8,8 +8,8 @@ skipped). After the cleanup PR the shared reader's contract routes the event ver
 deadline row, the telemetry reader's contract carries the moved deadline and threads invariants, read-engine and PC-01 name
 the telemetry reader, PC-06 names no content server, and no live code keeps the smoke-pin read surface. After the narrow
 PR no live ducklake_reader.yaml or read-engine.yaml text says the shared reader reads telemetry-blobs/. After the bookkeeping
-PR no live contract (history skipped), src/, scripts/, terraform/ or .github/ text names the closed rec-4292, and after the content reader build none names the closed rec-4481. Each predicate
-has red cases on synthetic input.
+PR no live contract (history skipped), src/, scripts/, terraform/ or .github/ text names the closed rec-4292,
+and after the content reader build none names the closed rec-4481. Each predicate has red cases on synthetic input.
 """
 
 from __future__ import annotations

@@ -84,8 +84,8 @@ def fetch_session(reader: Any, session_id: str, include_tool_output: bool) -> tu
         last = env
         for row in env["rows"]:
             if row["too_large"]:
-                text, _ = fetch_row(reader, row["session_id"], row["producer"], row["event_id"], row["parser_version"])
-                row = {**row, "text": text, "too_large": False}
+                text, renv = fetch_row(reader, row["session_id"], row["producer"], row["event_id"], row["parser_version"])
+                row = {**row, "text": text, "too_large": False, "mask_counts": renv["mask_counts"]}
             elif row["text"] is not None and _sha256(row["text"].encode("utf-8")) != row["masked_sha256"]:
                 raise HashMismatch("masked_sha256 mismatch")
             rows.append(row)
@@ -120,11 +120,15 @@ def run(args: argparse.Namespace, reader: Any, out: TextIO) -> int:
     nonce = secrets.token_hex(8)
     if args.command == "session":
         rows, last = fetch_session(reader, args.session_id, args.include_tool_output)
+        conflicts = last.get("conflicts") or []
         lines: list[str] = []
         for row in rows:
             lines.append(f"[row {row['purpose']} {row['event_timestamp']} {row['event_id']}]")
             lines.extend((row["text"] or "").splitlines())
-        header = f"session={args.session_id} rows={len(rows)} mask_counts={_totals(rows)} detector={last.get('detector')}"
+        header = (
+            f"session={args.session_id} rows={len(rows)} mask_counts={_totals(rows)} detector={last.get('detector')} "
+            f"conflicted_grain_keys={len(conflicts)}"
+        )
         _framed(lines, nonce, header, out)
         return 0
     text, env = fetch_row(reader, args.session_id, args.producer, args.event_id, args.parser_version)

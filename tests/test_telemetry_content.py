@@ -155,3 +155,18 @@ def test_exit_codes_and_value_free_errors(capsys: pytest.CaptureFixture[str]) ->
     err = capsys.readouterr().err
     assert "outside_read_window" in err and "grain_conflict" in err and "RuntimeError" in err
     assert "secret" not in err and "leak.example" not in err
+
+
+def test_conflicts_and_too_large_mask_counts_reach_the_header() -> None:
+    class Conflicted(Fake):
+        def named(self, verb: str, **p: Any) -> list[dict[str, Any]]:
+            if verb == "transcript_row_masked":
+                (env,) = super().named(verb, **p)
+                return [{**env, "mask_counts": {"GITHUB_TOKEN": 7}}]
+            (env,) = super().named(verb, **p)
+            return [{**env, "conflicts": [{"table_name": "transcripts"}]}]
+
+    fake = Conflicted([_item(0, None, too_large=True, mask_counts={})], row_texts={"E0": "a long row of text"})
+    code, out = _run(["session", SID], fake)
+    header = out.splitlines()[1]
+    assert code == 0 and "conflicted_grain_keys=1" in header and "'GITHUB_TOKEN': 7" in header

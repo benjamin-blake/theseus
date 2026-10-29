@@ -17,7 +17,13 @@ from src.common import ducklake_event_reads as ev
 from src.common import ducklake_handler_errors as handler_errors
 from src.common import ducklake_read_deadline as deadline
 from src.common import ducklake_runtime as rt
-from src.common.ducklake_content_read_verbs import CONTENT_READS, content_read_version, in_read_window, utc_now
+from src.common.ducklake_content_read_verbs import (
+    CONTENT_READS,
+    content_read_version,
+    in_read_window,
+    tree_in_read_window,
+    utc_now,
+)
 from src.common.ducklake_metrics import log_invocation
 from src.lambdas.ducklake_telemetry_content_reader import access_log, masked
 
@@ -140,6 +146,9 @@ def _named_read(payload: dict[str, Any], meta: dict[str, Any], remaining_ms: Cal
             meta.update(connect_ms=conn_meta["connect_ms"], connect_reused=conn_meta["reused"], reopened=True)
             rows = under_deadline(con, lambda: ev.execute_entry(con, entry, params))
         if verb == SESSION_VERB:
+            started = rows[0].get("tree_started_at") if rows else None
+            if started is not None and not tree_in_read_window(started, utc_now()):
+                return _response(404, {"ok": False, "error_type": "outside_read_window", "verb": verb})
             served_rows, served = masked.serve_session(rows, values, include_tool_output, remaining_ms)
         else:
             served_rows, served = masked.serve_row(rows, values)
@@ -155,10 +164,10 @@ def _named_read(payload: dict[str, Any], meta: dict[str, Any], remaining_ms: Cal
                 "error": handler_errors.redact(str(exc)),
             },
         )
-    except rt.VersionMismatchError as exc:
-        return _response(500, {"ok": False, "error_type": "version_mismatch", "error": str(exc)})
-    except rt.DuckLakeRuntimeError as exc:
-        return _response(500, {"ok": False, "error_type": "runtime", "error": str(exc)})
+    except rt.VersionMismatchError:
+        return _response(500, {"ok": False, "error_type": "version_mismatch"})
+    except rt.DuckLakeRuntimeError:
+        return _response(500, {"ok": False, "error_type": "runtime"})
     meta["served"] = served
     return _response(
         200,

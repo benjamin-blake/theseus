@@ -168,6 +168,8 @@ def serve_session(
         if row["purpose"] == "tool_output" and not include_tool_output:
             consumed += 1
             continue
+        if out_rows and used + int(row["content_bytes"] or 0) > SESSION_BUDGET_BYTES:
+            break
         item = _row_out(row)
         if row["content"] is None and row["content_uri"] is not None:
             if remaining_ms is not None and consumed and remaining_ms() < MIN_REMAINING_MS:

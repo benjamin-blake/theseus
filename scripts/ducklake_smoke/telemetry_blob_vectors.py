@@ -1,6 +1,7 @@
 """Vector data for the --lambda-telemetry-smoke blob gate (the twin; T2.36, slice 2a-2). Data and pure builders only: no I/O
 and imports nothing from src.telemetry beyond the shared blob protocol constants. The content read-back's chunk vectors left
-with the read-back (no deployed function serves transcript_content after slice 2c, Decision 236; rec-4699 owns the blob-tier read-back).
+with the read-back (no deployed function serves transcript_content after slice 2c, Decision 236;
+rec-4699 owns the blob-tier read-back).
 
 A fresh above-threshold payload per run (a uuid4 inside, so every deploy creates a new content-addressed key) as one
 transcript row in the append vectors' golden wire shape, and the negative cases as (name, build, expected status, error_type,
