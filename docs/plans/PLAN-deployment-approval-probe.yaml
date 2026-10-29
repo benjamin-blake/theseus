@@ -1,0 +1,345 @@
+schema_version: 5
+implementation_declared: true
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "deployment-approval-probe"
+intent: >-
+  Prove or disprove, against GitHub's own record, that no credential an agent session can reach can approve a pending
+  deployment that waits on the operator as the required reviewer of a GitHub Environment. Reviewer-gated Environments
+  are the binding control behind tf-gated-apply (Decisions 92/94) and the planned telemetry content-reader deploy lock
+  (rec-4481 plan 3); both wait on this result (rec-4695). The probe uses an arbitrary inert Environment and workflow and
+  never touches a real gate. It only reports: a remedy, if one is needed, is the operator's call.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-deployment-approval-probe.yaml
+phase: >-
+  ad_hoc_rec (rec-4695, High): premise check for T2.22's reviewer gate (Decision 94) and the rec-4481 content-reader
+  deploy lock. No tier_item criterion is closed (closes_criteria empty: the premise is not a roadmap exit criterion).
+scope:
+  - file: terraform/github/environments.tf
+    action: Modify
+    purpose: >-
+      Add resource github_repository_environment.deployment_approval_probe, environment "deployment-approval-probe",
+      mirroring tf_gated_apply exactly so the result transfers to the control in use: reviewers.users =
+      var.gated_apply_reviewer_user_ids (no new variable, no literal id), prevent_self_review = false (required: the
+      agent dispatches as the operator's identity, and self-review blocking would make every leg a structural refusal),
+      can_admins_bypass left at the provider default as on tf_gated_apply, deployment_branch_policy protected_branches =
+      true / custom_branch_policies = false. No prevent_destroy (it is not a control). The operator creates the
+      Environment in the GitHub UI first (infrastructure_dependencies); this resource codifies it and is adopted through
+      the import block below on the next operator apply of this root, with no change. A header comment says: inert probe
+      target for rec-4695, created in the UI and imported, never referenced by any OIDC trust, never by a job holding
+      id-token or secrets. Also correct tf_gated_apply's stale header lines that say the apply role
+      trust is "pinned to refs/heads/main" and "the sub is still refs/heads/main": Decision 94 made the trust list both
+      ref:refs/heads/main and environment:tf-gated-apply (comment-only; no attribute changes).
+  - file: terraform/github/imports.tf
+    action: Modify
+    purpose: >-
+      Add `import { to = github_repository_environment.deployment_approval_probe, id =
+      "${var.repository_name}:deployment-approval-probe" }`, the tf_gated_apply block's shape, so the UI-created
+      Environment is adopted into state and the rec-3136 re-key path stays whole
+      (tests/checks/iam_tf/test_terraform_github_import_blocks.py requires one import block per managed resource and
+      needs no EXEMPT entry). The Environment must exist before the PR-time plan runs, or the plan fails on a missing
+      import target.
+  - file: .github/workflows/deployment-approval-probe.yml
+    action: Create
+    purpose: >-
+      Inert probe target, `name: deployment-approval-probe`. on: workflow_dispatch only, with one boolean input bot_leg
+      (default false); no push, pull_request or schedule trigger. Top-level permissions {}. Job `gated`: environment
+      deployment-approval-probe, permissions {}, timeout-minutes 5, no checkout, no secrets, one step echoing that the
+      gate opened. Job `bot-attempt`: if inputs.bot_leg, no environment, permissions exactly {contents: read, actions:
+      read, deployments: write}, timeout-minutes 10; checkout, then `python3 -m scripts.session.deployment_approval_probe
+      --leg ci-bot --run-id "$GITHUB_RUN_ID" --wait-pending 180` with GITHUB_TOKEN from secrets.GITHUB_TOKEN; the step
+      writes the verdict line to $GITHUB_STEP_SUMMARY and the job fails when the verdict is APPROVED or PROBE_INVALID. No
+      id-token permission anywhere, no other secret, no setup-python install (the module is stdlib-only, so
+      validate_workflow_dependency_install needs no install step). Header comment: inert, alarm-free manual probe for
+      rec-4695; never a required check (Decision 83); never add id-token or secrets.
+  - file: scripts/session/deployment_approval_probe.py
+    action: Create
+    purpose: >-
+      Stdlib-only session probe (urllib, subprocess, json, argparse, os; repo name from scripts.repo_identity), run as
+      `python -m scripts.session.deployment_approval_probe`. Three modes.
+      (1) `--leg L --run-id N [--wait-pending S]`: one approval attempt with one credential leg against one run.
+      Legs (fixed list, nothing discovered): proxy (no Authorization header; the agent proxy substitutes the session
+      credential), gh-cli (subprocess `gh api` with --include, using gh's own auth), env:GH_TOKEN, env:GITHUB_TOKEN,
+      env:GITHUB_PERSONAL_ACCESS_TOKEN (Bearer from that variable), token-file (~/.config/gh-mcp/token unless missing or
+      the literal placeholder proxy-injected), git-credential (`git credential fill` for https/github.com with
+      GIT_TERMINAL_PROMPT=0, password used as Bearer), ci-bot (GITHUB_TOKEN inside Actions; classified apart from the
+      session legs). A leg whose credential is absent -> UNAVAILABLE with the reason; no request is sent.
+      Precheck with the leg's credential, falling back to the proxy leg for reads only: GET the run (its path must be
+      .github/workflows/deployment-approval-probe.yml and status waiting, polling up to --wait-pending seconds), GET
+      pending_deployments (the only pending environment must be named deployment-approval-probe; record
+      current_user_can_approve and the reviewer logins). Any failure -> PROBE_INVALID and no POST. The POST body is
+      {environment_ids: [that id], state: approved, comment: "rec-4695 probe leg <L>"}; the environment name, the
+      workflow path and the state are module constants, there is no parameter that names another environment, run
+      filter or state, and no reusable approve function is exported (Decision 233 cl.4 scout note).
+      Classification of the POST: 2xx -> APPROVED; no X-GitHub-Request-Id header -> PROXY_BLOCKED; 403 whose message is
+      "Resource not accessible by integration", or any X-Accepted-GitHub-Permissions header -> TOKEN_LACKS_PERMISSION;
+      401 -> UNAVAILABLE (credential rejected); other 4xx with a request id -> NOT_REVIEWER; 5xx or transport error ->
+      UNAVAILABLE. Exit 0 for NOT_REVIEWER, TOKEN_LACKS_PERMISSION, PROXY_BLOCKED, UNAVAILABLE; 1 for APPROVED; 2 for
+      PROBE_INVALID.
+      (2) `--capability --leg L`: read-only, no run needed: GET /repos/{repo} (permissions.admin, permissions.maintain),
+      GET /user/installations (each installation's app_slug and permission map, for user-to-server tokens), GET
+      /repos/{repo}/environments/deployment-approval-probe (reviewers, prevent_self_review, can_admins_bypass, branch
+      policy, protection rule types). Records the X-OAuth-Scopes and X-Accepted-GitHub-Permissions header values.
+      (3) `--observe --run-id N`: read-only: GET /actions/runs/{N}/approvals (each review's state and user login) and
+      the run's jobs (gated job status and conclusion).
+      Output: one JSON line per invocation with the leg, run id, HTTP statuses, request-id presence, the allowlisted
+      headers above, GitHub's error message (truncated to 200 characters) and the verdict. Never a token value, an
+      Authorization header or a credential-helper field other than presence; tokens are held only in local variables
+      and are never in an exception message (Decision 101: public repo).
+  - file: tests/test_session_deployment_approval_probe.py
+    action: Create
+    purpose: >-
+      Fake HTTP opener and fake subprocess (no network): each POST classification (200 -> APPROVED; 422 with request id
+      -> NOT_REVIEWER; 403 integration message -> TOKEN_LACKS_PERMISSION; X-Accepted-GitHub-Permissions ->
+      TOKEN_LACKS_PERMISSION; response without X-GitHub-Request-Id -> PROXY_BLOCKED; 401 -> UNAVAILABLE; 503 ->
+      UNAVAILABLE) with its exit code; a run whose path is another workflow, a run not waiting after the wait, a pending
+      deployment for another environment (tf-gated-apply) and two pending environments each -> PROBE_INVALID with no POST
+      sent; the POST body carries only the probe environment's id; an absent env variable, a placeholder token file, an
+      empty `git credential fill` answer -> UNAVAILABLE with no request sent; the proxy leg sends no Authorization
+      header; a sentinel token value never appears in stdout, stderr or a raised exception's text for any leg; the module
+      exposes no public function that takes an environment name or state; --capability and --observe send GET only.
+  - file: tests/test_deployment_approval_probe_workflow.py
+    action: Create
+    purpose: >-
+      Parse the workflow (scripts.verify_ci_workflow._load) and environments.tf: workflow_dispatch is the only trigger
+      and bot_leg is its only input; top-level permissions {}; job gated declares environment deployment-approval-probe,
+      permissions {}, no uses/checkout and no `secrets.` reference; job bot-attempt has no environment, exactly the three
+      permissions above, is conditioned on inputs.bot_leg, and references no secret other than GITHUB_TOKEN; no job has
+      id-token; the run step invokes scripts.session.deployment_approval_probe with --leg ci-bot. The Terraform resource
+      exists with environment "deployment-approval-probe", reviewers users = var.gated_apply_reviewer_user_ids,
+      prevent_self_review = false, protected_branches = true, and no literal numeric id. No file under
+      terraform/bootstrap or terraform/personal names deployment-approval-probe (never an OIDC subject).
+  - file: config/ci_rca_taxonomy.yaml
+    action: Modify
+    purpose: >-
+      Add deployment-approval-probe: tier not_a_gate, ci_rca excluded, owner platform; rationale: manual inert probe
+      target for rec-4695, dispatched only by an agent running the probe with the operator's go-ahead; its waiting and
+      cancelled runs are expected states, not failures.
+  - file: terraform/github/CLAUDE.md
+    action: Modify
+    purpose: >-
+      Add a short "deployment-approval-probe Environment" section: what it is (inert rec-4695 probe target mirroring
+      tf-gated-apply), that it was created in the GitHub UI and is adopted by its import block on the next run of the
+      existing apply runbook (same gated_apply_reviewer_user_ids var, no new variable),
+      that dispatches must come from main (protected_branches), and that no OIDC trust or secret may ever reference it.
+bundled_recommendations: []
+followon_recs: []
+infrastructure_dependencies:
+  - >-
+    The operator creates the Environment in the GitHub UI before the implementation PR opens (Settings, Environments, New
+    environment "deployment-approval-probe"; required reviewer: the operator only; Prevent self-review off; Allow
+    administrators to bypass left at its default, as tf-gated-apply; deployment branches: protected branches only; no
+    wait timer, no secrets or variables). No CloudShell apply is needed for the probe: the PR codifies it with an import
+    block (PR-time terraform-github-plan must show 1 to import, 0 to add, 0 to change, 0 to destroy) and the next
+    operator apply of terraform/github adopts it. A dispatch before the Environment exists would let GitHub auto-create a
+    rule-free environment and run the gated job at once, so VP 5 verifies the protection rule before any dispatch.
+  - >-
+    The workflow must be on main and dispatched with ref main (protected_branches = true refuses other refs, and
+    workflow_dispatch needs the file on the default branch).
+  - No IAM, no OIDC trust, no secret, no Lambda, no Neon resource is created or changed.
+acceptance_criteria:
+  - The deployment-approval-probe Environment exists with the operator as its only required reviewer and
+    prevent_self_review false, read back from GitHub, and no Terraform or OIDC trust outside terraform/github names it.
+  - A positive-control run approved by the operator in the Actions UI shows an approved review by the operator and the
+    gated job concluding success, so a refusal elsewhere is not vacuous; a rerun of that run waits for approval again.
+  - Every session credential leg (proxy, gh-cli, the three env variables, token-file, git-credential) has a recorded
+    verdict from its own freshly dispatched run, and the ci-bot leg has one from a bot_leg run.
+  - For every probe run other than the positive control, GitHub's approvals record is empty and the gated job never
+    started, confirmed by --observe and by the operator in the Actions UI (GitHub's server-side record is the authority;
+    the script's JSON is supporting evidence, Decision 202 spirit note).
+  - The result (premise HOLDS only if every available leg is NOT_REVIEWER, TOKEN_LACKS_PERMISSION, PROXY_BLOCKED or
+    UNAVAILABLE, none is APPROVED or PROBE_INVALID, the proxy leg was available, and no capability read shows
+    environment write access) is recorded on rec-4695 and reported to the content-reader planning thread.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: Unit tests for the probe's classification, pinning and secret hygiene.
+    command: bin/venv-python -m pytest tests/test_session_deployment_approval_probe.py -q
+    expected: All tests pass; they fail before the module exists.
+    fix_if: Any classification, pin or sentinel-leak test fails.
+    hermetic: true
+    expected_literals: [passed]
+    graduation: waive
+    graduation_waiver_reason: >-
+      The step is a pytest selector already run by the full test tier on every merge to main; a registry row would
+      duplicate that standing guard.
+  - step: 2
+    phase: pre-deploy
+    action: Static tests for the workflow, the Terraform resource and the import-block guard.
+    command: >-
+      bin/venv-python -m pytest tests/test_deployment_approval_probe_workflow.py
+      tests/checks/iam_tf/test_terraform_github_import_blocks.py tests/checks/ci_guards/test_validate_ci_rca_taxonomy.py -q
+    expected: All tests pass.
+    fix_if: A permission, trigger, secret, environment or import-block assertion fails.
+    hermetic: true
+    expected_literals: [passed]
+    graduation: waive
+    graduation_waiver_reason: >-
+      The step is a pytest selector already run by the full test tier on every merge to main; a registry row would
+      duplicate that standing guard.
+  - step: 3
+    phase: pre-deploy
+    action: Provider-free format check of the edited root (Decision 119; no local init or plan).
+    command: terraform fmt -check -diff terraform/github
+    expected: Exit 0, no diff.
+    fix_if: Any formatting diff.
+    hermetic: true
+    graduation: not-applicable
+  - step: 4
+    phase: pre-deploy
+    action: >-
+      Read the PR's terraform-github-plan result (the authoritative plan for this root): exactly one
+      github_repository_environment.deployment_approval_probe to import and nothing else.
+    command: >-
+      mcp__github__pull_request_read(method="get_check_runs", owner="otl-labs", repo="ontheloop", pullNumber=<PR>)
+      then mcp__github__get_job_logs for the terraform-github-plan job
+    expected: Plan line reads 1 to import, 0 to add, 0 to change, 0 to destroy.
+    fix_if: >-
+      An import error (the Environment was not created first: ask the operator), or any add, change or destroy (a UI
+      setting differs from the resource: align the resource to the mirror settings, or ask the operator); stop on any
+      change to another address.
+    hermetic: false
+  - step: 5
+    phase: post-deploy
+    action: After the operator creates the Environment in the UI, read its settings back before any dispatch.
+    command: bin/venv-python -m scripts.session.deployment_approval_probe --capability --leg proxy
+    expected: >-
+      The environment answers 200 with one required_reviewers rule naming the operator only, prevent_self_review false;
+      the JSON also records permissions.admin and any installation permission map for the proxy credential.
+    fix_if: 404 or no reviewer rule (the Environment is missing or misconfigured); do not dispatch.
+    hermetic: false
+  - step: 6
+    phase: post-deploy
+    action: >-
+      Positive control: dispatch one run (bot_leg false) via mcp__github__actions_run_trigger run_workflow on ref main;
+      the operator approves it in the Actions UI; observe it; then rerun it and confirm it waits again, and cancel.
+    command: bin/venv-python -m scripts.session.deployment_approval_probe --observe --run-id <control run>
+    expected: >-
+      approvals lists one approved review by the operator; the gated job concluded success; after rerun_workflow_run the
+      gated job is waiting again.
+    fix_if: No approval recorded or the job never ran (the probe cannot see an approval; stop).
+    hermetic: false
+  - step: 7
+    phase: post-deploy
+    action: >-
+      One fresh run per session leg (bot_leg false), dispatched on main; run the leg; cancel the run with
+      mcp__github__actions_run_trigger cancel_workflow_run.
+    command: >-
+      for L in proxy gh-cli env:GH_TOKEN env:GITHUB_TOKEN env:GITHUB_PERSONAL_ACCESS_TOKEN token-file git-credential; do
+      bin/venv-python -m scripts.session.deployment_approval_probe --leg "$L" --run-id "<run for $L>" --wait-pending 180;
+      done
+    expected: >-
+      One JSON line per leg; no verdict is APPROVED or PROBE_INVALID; the proxy leg is not UNAVAILABLE.
+    fix_if: >-
+      APPROVED on any leg: stop dispatching, cancel, record which leg, and bring the remedy to the operator.
+      PROBE_INVALID: fix the run selection and re-run that leg on a fresh run.
+    hermetic: false
+  - step: 8
+    phase: post-deploy
+    action: CI-bot leg on its own run (bot_leg true).
+    command: >-
+      mcp__github__actions_run_trigger(method="run_workflow", owner="otl-labs", repo="ontheloop",
+      workflow_id="deployment-approval-probe.yml", ref="main", inputs={"bot_leg": true}) then
+      bin/venv-python -m scripts.session.deployment_approval_probe --observe --run-id <bot run>
+    expected: >-
+      bot-attempt concluded success with a NOT_REVIEWER or TOKEN_LACKS_PERMISSION summary; approvals empty; gated job
+      still waiting (then cancelled).
+    fix_if: bot-attempt failed with APPROVED (stop, report) or PROBE_INVALID (fix and re-run).
+    hermetic: false
+  - step: 9
+    phase: post-deploy
+    action: >-
+      Server-side record for every probe run except the control, plus the hosted GitHub MCP surface check (it exposes no
+      raw-API tool, so it is a tool-surface leg, not an HTTP leg).
+    command: >-
+      for R in <every leg run id>; do bin/venv-python -m scripts.session.deployment_approval_probe --observe --run-id "$R";
+      done; ToolSearch(query="+github deployment review approve pending")
+    expected: >-
+      Every approvals list empty and every gated job cancelled without starting; no mcp__github__ tool approves or
+      reviews a deployment. The operator confirms the same in the Actions UI.
+    fix_if: Any approval recorded on a leg run (premise fails; report).
+    hermetic: false
+  - step: 10
+    phase: post-deploy
+    action: Record the result.
+    command: >-
+      bin/venv-python -m scripts.ops_data_portal --profile agent_platform --update-rec rec-4695 --context "<existing
+      context plus the per-leg verdicts and run ids>" (plus --status closed --resolution "<verdict>" when the premise
+      HOLDS); result JSON written to /mnt/project-files/deployment-approval-probe/RESULT.json
+    expected: >-
+      rec-4695 carries the verdict. HOLDS: rec-4695 closed with the evidence, and one follow-on rec filed for re-running
+      the probe after any change to the GitHub App grant, ownership or reviewer set. FAILS: rec-4695 stays open,
+      re-scoped to the remedy, and the operator is asked.
+    fix_if: Portal write fails loudly; restore connectivity and re-file (Decision 84 I-4).
+    hermetic: false
+test_obligations:
+  - source: scripts/session/deployment_approval_probe.py
+    behavior: Classification, environment and workflow pinning, GET-only modes, and no token value in any output.
+    verification_step: 1
+    test_selector: tests/test_session_deployment_approval_probe.py
+    red_green_expectation: red before (module absent), green after.
+  - source: .github/workflows/deployment-approval-probe.yml
+    behavior: Inert gated job (permissions {}, no secrets), bot job's exact permissions and input gate, no id-token.
+    verification_step: 2
+    test_selector: tests/test_deployment_approval_probe_workflow.py
+    red_green_expectation: red before (workflow absent), green after.
+  - source: terraform/github/environments.tf
+    behavior: Probe environment mirrors tf_gated_apply's reviewer variable and self-review setting with no literal id.
+    verification_step: 2
+    test_selector: tests/test_deployment_approval_probe_workflow.py
+    red_green_expectation: red before (resource absent), green after.
+  - source: terraform/github/imports.tf
+    behavior: The re-key path covers the new resource (one import block per managed resource).
+    verification_step: 2
+    test_selector: tests/checks/iam_tf/test_terraform_github_import_blocks.py
+    red_green_expectation: red with the resource added and no import block, green with the block.
+  - source: config/ci_rca_taxonomy.yaml
+    behavior: The new workflow has its taxonomy row.
+    verification_step: 2
+    test_selector: tests/checks/ci_guards/test_validate_ci_rca_taxonomy.py
+    red_green_expectation: red before (the new workflow has no taxonomy row), green after.
+constraints:
+  - Do not approve anything real. The only approval in this plan is the operator's own click on the positive-control run
+    of the inert probe Environment. Never point the script at tf-gated-apply, tf-trusted-plan or any run of another
+    workflow.
+  - Session credential legs, probe dispatches and the conditional throwaway-environment edit check run under the
+    operator's go-ahead (message cmsg_012XgaFy8VaDQbxP5D8nC958FPB3hao7EcZcmdHLojyBFb, answering the setup posted in
+    cmsg_012XgaFy8VaDQbxP5D8nC958H1VRVd9VnJnPVBS91S6K5W); relay both ids to the implementation thread.
+  - Never print, log, commit or store a token value or Authorization header (Decision 101, public repo).
+  - terraform/github is applied by the operator only (Decision 126 admin tier; never CI, never an agent). The probe needs
+    no apply; the operator's UI creation is the only setting change, and the import block adopts it later.
+  - No IAM, OIDC trust, secret, Neon or Lambda change. No id-token permission in the probe workflow.
+  - The probe reports; it does not remediate. If any leg approves, the remedy (a reviewer identity agents never hold) is
+    brought to the operator.
+  - No rescue agents or workaround loops (Decision 55).
+context:
+  - "Decision-scout verdict: FLAGS_FOUND (Decisions triaged: 190 of 190; Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1). CITE: Decision 92, 94, 143, 126, 233, 24."
+  - "Scout flags handled: 233 NOTE (approve call pinned to the probe environment, no exported approve verb, tested); 202 SPIRIT NOTE (GitHub's approvals record and the operator's UI check are the authority, script JSON supporting); 24 (admin bypass default inherited by the mirror)."
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<pending>"
+  - "red_overlap: clear (no open reds, slo_hours 4)."
+  - "Fable advice: /mnt/project-files/deployment-approval-probe/fable-independent-advice.md (forks F1-F6 adopted)."
+  - "Known limits stated in the result: admin bypass via REST is untestable while the reviewer is also the admin; a clean result depends on the GitHub App's permission grant, which can change; github_ci_apply also trusts ref:refs/heads/main (terraform/bootstrap/github_ci_apply.tf), so any ungated main job can assume the apply role and the Environment gate is not the role boundary (Decision 94)."
+  - "protected_branches=true with a ruleset-only main may let any branch deploy (environments.tf tf_trusted_plan note); the probe dispatches from main either way and records the branch policy it reads."
+  - "gh is installed at /usr/local/bin/gh in cloud sessions although AGENTS.md says it is not; the gh-cli leg covers it."
+  - "Related, not this plan: rec-4700 (Fargate agents get a GitHub App installation identity and a separate credential broker; operator's question 2026-10-29)."
+  - "Consumers waiting on the result: content-reader planning thread (rec-4481 plan 3 lock), tf-gated-apply premise."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - Decisions 92, 94, 126, 233 read
+  - All files in scope located and readable
+  - The operator's go-ahead message id for the credential legs is in hand
+execution_steps:
+  - Write the script, both test files, the workflow, the Terraform resource, import block and comment fix, the
+    taxonomy row and the CLAUDE.md section; run VP 1-3 and the fast tier; open the PR.
+  - VP 4 on the PR; merge under the standing rule once code review is PROCEED and CI is green (no DuckLake deploy).
+  - Run VP 5 (the operator created the Environment in the UI before the PR). Do not dispatch before VP 5 passes.
+  - Run VP 6 (positive control; the operator approves one run in the Actions UI).
+  - Run VP 7, 8 and 9, one fresh run per leg, cancelling each run after its leg.
+  - Run VP 10; report the result to the operator and the content-reader planning thread.
+  - 'Report: what was implemented, verification results'
+rollback: >-
+  Revert the PR; the operator deletes the Environment in the GitHub UI. The Environment and workflow are inert, so
+  leaving them in place has no effect on any real gate.
