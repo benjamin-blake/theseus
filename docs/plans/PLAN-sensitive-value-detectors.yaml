@@ -8,9 +8,10 @@ intent: >-
   (seeded from the six existing redactors) and named profiles over them, so the production content reader (plan 2 of
   the rec-4481 program) masks transcript text with the same shapes the write-time scrubber uses, and the security
   project's rec-4657 widens one library instead of a seventh copy. The write-time scrubber becomes a byte-identical
-  adapter (no parser bump). A corpus ratchet with a Decision-gated loosening marker makes any weakening of a profile
-  fail the PR unless a Decision approves it (Decision 235 class). The redactors that cannot import the package stay as
-  copies, pinned by tests to be no stronger than the read profile.
+  adapter (no parser bump). A corpus ratchet with a Decision-gated loosening marker fails any PR that lets a protected corpus
+  case through unless a Decision names that case (Decision 235 class), and code-owned fingerprint pins make every other
+  detector change a reviewed edit. The redactors that cannot import the package stay as copies, their pattern sets
+  derived from their own code and pinned by tests to be no stronger than the read profile.
 plan_type: IMPLEMENTATION
 verification_tier: V2
 plan_path: docs/plans/PLAN-sensitive-value-detectors.yaml
@@ -30,8 +31,8 @@ scope:
     action: Create
     purpose: >-
       Frozen DetectorClass(id, family, pattern, kind, accept) rows, stdlib re only, compiled at import with no other
-      import-time work. kind is whole (replace the match), keep_prefix (keep group 1, replace the rest) or keep_affixes
-      (keep groups 1 and 3, replace group 2). accept is None or a declared predicate spec (name, params) resolved by the
+      import-time work. kind is whole (replace the match) or keep_prefix (keep group 1, replace the rest); no other kind until a row
+      needs one. accept is None or a declared predicate spec (name, params) resolved by the
       engine, never a lambda, so the fingerprint can hash it: BEARER_TOKEN carries ("long_or_digit", min_len 32), scrub.py's
       heuristic. Every replaced part refuses to start at a marker ((?!\[REDACTED:) or a charset without "["), so a second
       pass counts nothing (scrub.py's idempotence semantics, tests/turn_capture/test_scrub.py). Rows,
@@ -111,8 +112,10 @@ scope:
       planted_value) per case, at least two per class and including scrub.py's JSON, export and Bearer-boundary shapes,
       ARNs in quoted, comma-terminated and AccessDenied contexts (planted value = the account field), 17-character unique
       IDs, credential-bearing URLs and DSNs, keep-prefix values, and hub profile names; NEGATIVES, Case(case_id, None, text, None) texts no
-      read_masked class may touch (40-hex SHAs, sha256 and md5 digests, 13-digit epoch milliseconds, UUIDs whose last
-      group holds a letter, ISO timestamps, `token = get_token()`, a public s3:// path, short Bearer words);
+      read_masked class may touch (40-hex SHAs, sha256 and md5 digests, a hex digest holding an exactly-12-digit run
+      bounded by hex letters (the PR #975 shape), 13-digit epoch milliseconds, UUIDs whose last group holds a letter,
+      ISO timestamps, `token = get_token()`, a public s3:// path, an account-less ARN (the arn:aws:s3:::<bucket>
+      shape), short Bearer words);
       KNOWN_FALSE_POSITIVES, the all-digit-last-group UUID with the class that hits it. A duplicate case_id raises at
       call time, never at import.
   - file: scripts/checks/misc/sensitive_value_detectors.py
@@ -121,7 +124,7 @@ scope:
       Two registered checks collocated with the registry's semantics (coverage_baseline.py shape). The registry's grain
       is one row per profile and POSITIVES case (Decision 187 cl.1: the population the ratchet protects is itself
       ratcheted, so a PR cannot loosen a class and swap the cases it now misses for ones it still catches).
-      validate_detector_ratchet: (a) every live key -- "<profile>/<CLASS>/<case_id>@<first 8 hex of sha256(text)>" for
+      validate_detector_ratchet: (a) every live key -- "<profile>.<CLASS>.<case_id>@<first 8 hex of sha256(text)>" for
       each POSITIVES case whose class is in the profile -- is registered, and every other registered key has value 0
       (a tombstone: a case or class retired by a marked drop, deletable later; the text digest re-keys an in-place case
       edit); (b) each live key's measured value -- 1 when the planted value is absent from mask(text, profile).text AND
@@ -135,18 +138,21 @@ scope:
       PROTECTED (ast.literal_eval of the base blob), and every base CODEOWNERS line and boundary_patterns entry that
       covers a base PROTECTED path is still present at HEAD; a base without the module (this plan's own PR) constrains
       nothing, and an unreachable base skips (e) alone with a printed SKIP line: (a)-(d) always run, and the check
-      declares registry.examined over the keys and paths it checked. validate_detector_registry_edits: _marker_guard.check_state_diff plus check_present_markers
+      declares registry.examined over the keys and paths it checked, its unit text naming leg (e) as skipped when it was
+      (Decision 170: a partial run never reads as complete). validate_detector_registry_edits: _marker_guard.check_state_diff plus check_present_markers
       on a RegistrySpec with token detector-loosening-approved, gated_direction down, weakened = head value < base value,
       gates_deletion = base value > 0 (a case or class leaves only after a marked drop to a 0 tombstone, which (a)
-      admits), mention_candidates = the exact key only (the approving Decision names each case key), reason_required
-      true. Wired like scripts/checks/ci_guards/validate_schedule_removal_markers.py:
+      admits), mention_candidates = the exact key only (the approving Decision names each case key; the "/"-free grammar keeps
+      authorization at case level), reason_required true. Wired like scripts/checks/ci_guards/validate_schedule_removal_markers.py:
       SKIP (registry.skipped) when origin/main is unreachable or `git cat-file --batch` fails, the batched base reader
       (validate_schedule_removal_markers._batched_base_reader, reused by import, no third copy) returning "" for a file
       absent at the base (every entry new, so the plan's own PR passes), and registry.examined over the entry count.
   - file: config/sensitive_value_detectors.yaml
     action: Create
     purpose: >-
-      The ratchet registry: one entry per profile and POSITIVES case, keyed "<profile>/<CLASS>/<case_id>@<8 hex>",
+      The ratchet registry: one entry per profile and POSITIVES case, keyed "<profile>.<CLASS>.<case_id>@<8 hex>" (no "/", so
+      _marker_guard's ancestor expansion, which splits on "/", yields no profile or class prefix that could authorize
+      a whole class),
       value 1 (masked and attributed) or 0 (tombstone). Header comment names the marker grammar
       `# detector-loosening-approved: dec-NNN <reason>`, that a new case or a 0-to-1 raise is always free, and the
       mark-then-drop path for retiring a case.
@@ -159,7 +165,9 @@ scope:
     action: Modify
     purpose: >-
       New token detector-loosening-approved (direction down, reason_required true, used_by
-      [validate_detector_registry_edits]) bound to the existing check_state_diff export, adding no export; one
+      [validate_detector_registry_edits]) bound to the existing check_state_diff export, adding no export; its row
+      comment says keys are "/"-free so a Decision authorizes one case, never a class (the tier-demotion-approved bare-key
+      precedent, Decision 187 cl.4); one
       amendment_log entry (field_add, semantic_break false). The token puts detector loosening in Decision 235 cl.1's
       class by that clause's own wording.
   - file: config/agent/executor/capabilities.yaml
@@ -204,10 +212,17 @@ scope:
       For each redactor that keeps its own copy -- scripts/ci/redaction_check.py mask_account_ids (system python3 in
       terraform-apply-sandbox.yml cannot import src), scripts/terraform_apply_guard.py _redact (stdlib, code-owned),
       src/common/ducklake_handler_errors.py redact (Lambda-packaged in four DuckLake bundles), scripts/ci/
-      security_detector_probe.py redact, and the .pre-commit-config.yaml block-sensitive-identifiers regex (parsed from
-      the file, one entry per alternation branch): (a) COPY_PATTERNS, a closed table (copy, attribute or branch, exact
-      pattern source and flags) asserted equal to the live sources, so any edit to a copy fails until its strength is
-      re-reviewed here; every entry matches at least one POSITIVES text whose planted value read_masked removes;
+      security_detector_probe.py redact, and the .pre-commit-config.yaml block-sensitive-identifiers regex: (a)
+      COPY_PATTERNS, a closed table of rows (copy, exact pattern source and flags; for a hook branch, the first 16 hex
+      of the sha256 of the branch source, so no account-shaped literal is restated in a test). The live side is DERIVED
+      from each copy, never read from named attributes: for each of the four modules an AST walk collects every string
+      literal passed as the pattern of re.compile, re.sub, re.subn, re.search, re.match, re.fullmatch, re.findall,
+      re.finditer or re.split (with its flags), and that set must equal the module's rows in both directions (today 2,
+      2, 4 and 2 patterns, all redaction shapes), so an edited pattern, a new module-level compile or an inline re.sub
+      fails until its strength is re-reviewed here; for the hook, the entry is parsed depth-aware (the outer group
+      unwrapped, no split inside a (?:...) or (?!...) group) into branches whose digests must equal the hook rows,
+      and the set of language: pygrep hook ids must equal {block-sensitive-identifiers}, so a new pattern hook fails
+      until it is pinned; every row matches at least one POSITIVES text whose planted value read_masked removes;
       (b) DIVERGENCES, a closed list (copy, pattern, reason) the test asserts exact: whole-ARN patterns remove the
       resource path read_masked keeps (public names, readability), and unbounded or digit-only-bounded 12-digit
       patterns hit 13-plus-digit runs and digits inside hex digests that read_masked spares (the rec-3322 false-positive
@@ -218,14 +233,16 @@ scope:
     action: Create
     purpose: >-
       Mirror home of classes.py (validate_test_coverage): every row compiles, ids are unique and in no profile twice,
-      kinds are closed, keep_prefix and keep_affixes rows carry the groups they need, accept specs name ACCEPT keys, and
+      kinds are closed (whole, keep_prefix), keep_prefix rows carry group 1, accept specs name ACCEPT keys, and
       each replaced part refuses a marker; per-file coverage of classes.py through this file alone.
   - file: tests/sensitive_values/test_profiles.py
     action: Create
     purpose: >-
       Mirror home of profiles.py: write_time equals the pre-change CLASS_ORDER tuple (recorded literally), read_masked
       is write_time followed by the six added ids in order, every id resolves to a class, MARKER_FORMAT renders
-      "[REDACTED:<id>]".
+      "[REDACTED:<id>]". test_profile_fingerprints_pinned: fingerprint("write_time") and fingerprint("read_masked")
+      equal literals recorded at build time, so any detector change, including one no corpus case witnesses, is a
+      reviewed edit to this code-owned file.
   - file: tests/sensitive_values/test_package_boundary.py
     action: Create
     purpose: >-
@@ -263,7 +280,8 @@ scope:
       pattern, a base PROTECTED path dropped at HEAD, and a base CODEOWNERS line or boundary entry removed; SKIPs (no
       failure) when origin/main is unreachable and when the batched base read fails. Tamper guard (fixture base text and
       Decision bodies): an unmarked 1-to-0 fails; a marker citing a Decision whose body names the exact case key passes;
-      a marker citing a Decision naming only the profile or class fails; deleting a value-1 entry fails; deleting a 0
+      a marker citing a Decision naming only the profile or class fails, including a body holding the literal
+      "<profile>.<CLASS>" prefix and one holding "<profile>/<CLASS>"; deleting a value-1 entry fails; deleting a 0
       tombstone passes; a new entry and a 0-to-1 raise pass; both SKIP paths are exercised. Wiring nodes:
       test_checks_are_registered (both names in registry.all_checks() through the misc manifest, pre=True),
       test_marker_token_declared (marker-grammar.yaml declares detector-loosening-approved, direction down,
@@ -286,9 +304,9 @@ acceptance_criteria:
     tests/telemetry/test_parser_version_registry.py passes unmodified.
   - >-
     mask(text, "read_masked") masks every POSITIVES case, touches no NEGATIVES case, and counts nothing on a second
-    pass; every pinned copy pattern and hook branch equals its entry in the exact COPY_PATTERNS table and hits at
-    least one POSITIVES case whose planted value read_masked removes; every copy pattern that hits a NEGATIVES text is
-    on the exact DIVERGENCES list.
+    pass; each copy module's AST-derived pattern set, each parsed hook branch and the pygrep hook set equal the exact
+    COPY_PATTERNS table in both directions, every row hits at least one POSITIVES case whose planted value read_masked
+    removes, and every copy pattern that hits a NEGATIVES text is on the exact DIVERGENCES list.
   - >-
     src.sensitive_values imports only the standard library (AST test) and no first-party package (importlinter contract
     src-sensitive-values-is-a-leaf), and src.turn_capture may import it (the one planned widening of
@@ -300,9 +318,11 @@ acceptance_criteria:
     No Lambda artifact changes: data-pipeline is reported affected only by its own manifest edit (new-path excludes,
     no sensitive_values path staged; no deploy), and no DuckLake artifact is affected.
   - >-
-    The detector paths carry CODEOWNERS lines and boundary_patterns entries, and no later PR can narrow them, the
-    PROTECTED set or the protected case population (a dropped, swapped or edited case is a gated deletion) without
-    the checks failing.
+    The detector paths carry CODEOWNERS lines and boundary_patterns entries; a later PR that leaves the check module
+    unedited cannot narrow them, the PROTECTED set or the protected case population (a dropped, swapped or edited case
+    is a gated deletion) without the checks failing, and any detector change at all changes a pinned fingerprint.
+    Loosening the corpus misses is the enumerated tamper set; a PR editing the check module itself is caught only by
+    CODEOWNERS (procedural until rec-2827) and T4.21's base-ref guard once built.
 verification_plan:
   - step: 1
     phase: pre-deploy
@@ -385,7 +405,10 @@ verification_plan:
       A failure in scope is fixed on the branch; never skip a test, relax an assertion, or add a baseline, allowlist or
       budget entry. A failure outside scope becomes a rec via scripts.ops_data_portal (Decision 59, 55).
     hermetic: false
-    graduation: not-applicable
+    graduation: waive
+    graduation_waiver_reason: >-
+      vp-red-before.yaml recursion_refusal: a graduated step may not invoke scripts.validate, so the full tier cannot
+      graduate; it runs post-merge on main in every case.
 test_obligations:
   - source: src/turn_capture/scrub.py
     behavior: Adapter output and counts are byte-identical to the pre-change scrubber.
@@ -403,12 +426,12 @@ test_obligations:
     test_selector: tests/sensitive_values/test_classes.py
     red_green_expectation: red before (package missing), green after.
   - source: tests/sensitive_values/test_copies_no_stronger.py
-    behavior: Every pinned copy source equals its COPY_PATTERNS entry, hits a masked positive, and broadens only on DIVERGENCES.
+    behavior: Each copy's derived pattern set equals its COPY_PATTERNS rows both ways, hits a masked positive, and broadens only on DIVERGENCES.
     verification_step: 2
     test_selector: tests/sensitive_values/test_copies_no_stronger.py
-    red_green_expectation: red before (file and package missing); afterwards red on any edit to a copy pattern.
+    red_green_expectation: red before (file and package missing); afterwards red on any edited, added or removed copy pattern or pygrep hook.
   - source: src/sensitive_values/profiles.py
-    behavior: write_time equals scrub.py's CLASS_ORDER; read_masked is write_time plus the six added classes in order.
+    behavior: write_time equals scrub.py's CLASS_ORDER; read_masked is write_time plus the six added classes in order; both fingerprints are pinned.
     verification_step: 2
     test_selector: tests/sensitive_values/test_profiles.py
     red_green_expectation: red before (package missing), green after.
@@ -497,7 +520,8 @@ context:
   - "red_overlap verdict: clear (no open reds). recs_related: rec-4657, rec-4326, rec-4231, rec-4156, rec-4658 checked, none bundled (each stays with its owner; this plan edits none of their files' behaviour)."
   - "Decided with notice (critique round 1): SSO_HUB_PROFILE joins read_masked so the read profile covers every shape a pinned copy blocks; the shared base reader and CODEOWNERS matcher are reused by import; the corpus builder stays separate from tests/fixtures (scripts/ cannot import tests/)."
   - "Decided with notice (critique round 2): the registry is per profile and case; URL_CREDENTIAL (whole credential-bearing authority, host included, Decision 101) replaces a password-only DSN class. Not pinned: validate_actions_evidence._SECRET_SHAPES' identifier branch and validate_account_credential_inventory._SHAPES (an at-sign, any word-word-8-digit run) are commit-time refusals over structured contract fields, far too broad for free text. Bare database hostnames without credentials stay unmasked, as the commit hook allows them today; rec-4657 owns widening. Coordinate scrub.py edits with rec-4657 (write_time widening is its parser bump)."
-  - "gates: decision-scout=FLAGS_FOUND (program); plan-critique=REVISE rounds 1-2 addressed, round 3 pending"
+  - "Decided with notice (critique round 3): registry keys use '.' not '/' so Decision authorization stays per case; the copy pattern sets are derived by AST from each copy and the hook parsed depth-aware (hook rows pinned by digest, so no account-shaped literal enters a test); keep_affixes dropped (no row uses it); both profile fingerprints pinned in a code-owned test. The round-2 F6 subject recurred as round-3 F2 (add-a-pattern direction); the operator was told under the oscillation rule."
+  - "gates: decision-scout=FLAGS_FOUND (program); plan-critique=REVISE rounds 1-3 addressed, confirming round 4 pending"
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
