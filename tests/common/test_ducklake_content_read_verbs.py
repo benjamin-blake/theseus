@@ -99,3 +99,25 @@ def test_tree_window_treats_naive_as_utc_and_utc_now_is_aware() -> None:
     assert cv.tree_in_read_window(_NOW - timedelta(days=cv.READ_WINDOW_DAYS + 1), _NOW) is False
     assert cv.tree_in_read_window(_NOW - timedelta(days=cv.READ_WINDOW_DAYS), _NOW) is True
     assert cv.utc_now().tzinfo is not None
+
+
+def test_session_transcript_orders_by_the_declared_keys_in_order() -> None:
+    sql = " ".join(cv.SESSION_TRANSCRIPT_SQL.split())
+    order_by = sql.rsplit("ORDER BY ", 1)[1]
+    keys = [
+        "(tr.session_id = $session_id) DESC",
+        "fe.first_ts",
+        ", tr.session_id,",
+        "tr.event_timestamp",
+        "coalesce(tr.source_ordinal, -1)",
+        "tr.external_ref LIKE '%/full'",
+        "CASE tr.purpose WHEN 'prompt' THEN 0",
+        "tr.producer",
+        "tr.event_id",
+        "tr.parser_version LIMIT $max_rows OFFSET $offset",
+    ]
+    cursor = 0
+    for key in keys:
+        found = order_by.find(key, cursor)
+        assert found >= 0, key
+        cursor = found + len(key)
