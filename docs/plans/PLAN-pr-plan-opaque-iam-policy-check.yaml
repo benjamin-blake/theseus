@@ -14,9 +14,10 @@ plan_type: IMPLEMENTATION
 verification_tier: V3
 plan_path: docs/plans/PLAN-pr-plan-opaque-iam-policy-check.yaml
 phase: >-
-  ci_rca (soft-warn category; no tier_item claimed). Decision 226 cl.5 class preventive for the rec-4718 / rec-4685 key,
-  alongside PLAN-ci-policy-plan-time-lambda-arns (which bundles both recs). Replaces the dropped apply-time routing of
-  opaque IAM updates to tf-gated-apply (Benjamin 2026-10-29 22:05Z, approval belongs at planning).
+  ci_rca (soft-warn category; no tier_item claimed). A voluntary preventive for the rec-4718 shape (not one Decision 226
+  cl.5 owes: rec-4685 is source=manual), alongside PLAN-ci-policy-plan-time-lambda-arns, which bundles rec-4685; rec-4718
+  closed by waiver 2026-10-29. Replaces the dropped apply-time routing of opaque IAM updates to tf-gated-apply (Benjamin
+  2026-10-29 22:05Z, approval belongs at planning).
 scope:
   - file: scripts/ci/plan_time_policy_check.py
     action: Create
@@ -26,9 +27,11 @@ scope:
       equal to scripts/ci/terraform_plan_digest.py's _POLICY_TYPES (aws_iam_role_policy, aws_iam_policy,
       aws_iam_user_policy, aws_iam_group_policy, aws_s3_bucket_policy, aws_sns_topic_policy,
       aws_secretsmanager_secret_policy, aws_glue_resource_policy). Finding rules over resource_changes: (1) a managed entry
-      of a POLICY_TYPES type whose change.actions is exactly ["create"] or ["update"] and whose change.after_unknown.policy
-      is true -> reason policy-unknown (a replace pair or delete never trips: the guard already routes it to
-      tf-gated-apply, where the reviewer is skipped, the same reason trust policies are out of scope); (2) a data entry of type aws_iam_policy_document whose change.actions is ["read"] and
+      of a POLICY_TYPES type whose change.actions contains "create" or "update" (a pure create, a pure update, or a
+      replace pair) and whose change.after_unknown.policy is true -> reason policy-unknown. Why: on an auto-apply plan the opaque line reaches the merge-time reviewer (the
+      rec-4718 failure); on a routed plan it reaches the tf-gated-apply approver with no content (approval without signal).
+      A delete carries no after value and never trips. Trust policies (aws_iam_role.assume_role_policy) stay out by
+      Benjamin's F1 choice (option C rejected; the type set mirrors the digest's policy types); (2) a data entry of type aws_iam_policy_document whose change.actions is ["read"] and
       which carries a non-empty action_reason -> reason deferred-read. Addresses have every bracketed instance key replaced
       with [*] (Decision 238 cl.4: no instance key) and must fullmatch [A-Za-z0-9_.\-\[\]*]{1,256}, else print
       "<unprintable address>"; duplicates collapse; output sorted. Output grammar, fixed: first line
@@ -36,7 +39,8 @@ scope:
       line per finding and one GitHub annotation line "::error title=IAM policy unknown at plan time::<n> ..." whose text
       carries only the count and a fixed remedy pointer. Unreadable file, invalid JSON, a non-object top level, or a
       missing string format_version -> "PLAN_TIME_POLICY: ERROR <fixed reason>" and exit 2; never an exception message,
-      path or JSON excerpt. Wrong argument count -> exit 2 with a fixed usage line. Module docstring names the remedies:
+      path or JSON excerpt. Wrong argument count -> exit 2 with a fixed usage line. Module docstring states the Why above
+      and names the remedies:
       build the ARN from names (var.aws_region, var.account_id, a name local; `secret:<name>-*` for Secrets Manager), or
       create the resource in one PR and grant it in the next.
   - file: tests/test_plan_time_policy_check.py
@@ -44,7 +48,7 @@ scope:
     purpose: >-
       Script tests. Cases drive main() in-process (the module is under the 100% per-file coverage default) plus a
       subprocess run with sys.executable -I by path: update and create with unknown policy (exit 1, address and
-      policy-unknown), a replace pair ["delete","create"] and ["create","delete"] with unknown policy (CLEAN), deferred read with read_because_dependency_pending and with
+      policy-unknown), a replace pair ["delete","create"] and ["create","delete"] with unknown policy (OPAQUE), deferred read with read_because_dependency_pending and with
       read_because_config_unknown (deferred-read), known policy update, plain read without action_reason, delete, no-op,
       non-policy type with an unknown policy-named attribute, module and for_each instance keys stripped, an address with a
       newline or "::" printed as <unprintable address>, duplicates collapsed; the default_tags case (an update to
@@ -59,7 +63,8 @@ scope:
     purpose: >-
       Workflow tests, split from the script tests by concern (each file stays under 500 SLOC). The speculative-plan job
       runs the script exactly once, between the digest step and the PR comment step, with the digest step's if: and no
-      continue-on-error; the job is absent from terraform/github/repo.tf's required_check contexts. Predicted-guard body:
+      continue-on-error and no working-directory; the job is absent from terraform/github/repo.tf's required_check
+      contexts. Predicted-guard body:
       the step's literal run body, executed by `bash -e` (the workflow's effective shell, no shell: or defaults set) with a
       shimmed `python` exiting 0, 2, 1 and 7, writes verdict=PASS, BLOCKED, ERROR, ERROR to GITHUB_OUTPUT and exits 0 each
       time. S3 (rec-4637 PR 3) re-points or retires this file when it deletes the job.
@@ -71,8 +76,10 @@ scope:
       Decision 170 registry.examined/skipped. A job "posts the digest" when one of its steps' run body contains
       "context=terraform-plan-digest". For every such job: exactly one step in the whole job has a run body matching
       python3 -I \S*scripts/ci/plan_time_policy_check\.py (workspace-absolute or relative path), and that step comes
-      after the digest step in the steps list; its if: equals the digest step's if: after whitespace normalisation; it
-      has no continue-on-error. Fails when no workflow
+      after the digest step in the steps list; that step's run body is exactly one effective line starting with
+      "python3 -I " and containing none of "||", "&&", ";", "set +e", "exit" or "true" (so it cannot be neutered on the
+      same line); its if: equals the digest step's if: after whitespace normalisation; it has no continue-on-error.
+      Fails when no workflow
       job posts the digest (the anchor moved: re-point this check, never delete it). Docstring: why anchored on the
       digest status (it is what the merge-time fetch verifies, fetch-saved-plan/action.yml:81-91), and that the trusted
       plan cutover (rec-4637) must keep the check wired in whichever job posts it.
@@ -81,7 +88,8 @@ scope:
     purpose: >-
       Mirror test. Real tree green with examined >= 1. Red cases on synthetic workflow trees: no digest-posting job; the
       check missing; the check before the digest step; one invocation before persist/digest plus one after; two
-      invocations after; a different if:; continue-on-error true; invoked without -I. Green case: the same wiring in a
+      invocations after; a different if:; continue-on-error true; invoked without -I; "... || true"; "...; exit 0";
+      a second body line. Green case: the same wiring in a
       second workflow file (the trusted-job shape). Registration case: _manifest.ENTRIES holds an Entry named
       validate_plan_time_policy_check_wiring with pre=True, full_segment "full_after_lint", attr equal to the name and
       module scripts.checks.ci_guards.validate_plan_time_policy_check_wiring (red before: no such entry).
@@ -93,14 +101,19 @@ scope:
       validate_masked_errexit_steps' shape).
   - file: config/ci_rca_taxonomy.yaml
     action: Modify
-    purpose: Row validate_plan_time_policy_check_wiring -> environment (sibling workflow-wiring guards' class).
+    purpose: >-
+      Row validate_plan_time_policy_check_wiring -> environment (sibling workflow-wiring guards' class). The file is at
+      500 of 500 effective lines (config class), so the same edit folds the Main Canary workflow row's three-line
+      `rationale: >-` onto one double-quoted line under 2,000 characters, text unchanged (net -1; the 40e02457
+      precedent). Never a raise.
   - file: .github/workflows/terraform-apply-sandbox.yml
     action: Modify
     purpose: >-
       speculative-plan job. (1) New step "Fail on an IAM policy unknown at plan time" with id policy_known, placed after
       "Emit and post plan digest (DEP-07)" and before "Build and post PR comment ...", `if: success() &&
       steps.oidc_plan.outcome == 'success'` (the digest step's), no continue-on-error, run one line: python3 -I
-      "$GITHUB_WORKSPACE/scripts/ci/plan_time_policy_check.py" "$WORKDIR/plan.json". Its comment says why it may fail the
+      "$GITHUB_WORKSPACE/scripts/ci/plan_time_policy_check.py" "$WORKDIR/plan.json", and no working-directory (the
+      relative $WORKDIR path and the 546-line count both assume none). Its comment says why it may fail the
       job although the job is advisory: it fires only on this PR's own plan, after plan.bin and its digest are saved, and
       the job stays out of required_status_checks (Decision 83); the PR comment still posts (if: always()). (2) Compact
       the pred_guard run body from 11 to 3 lines with identical exit-code mapping: `PRED_RC=0; python
@@ -132,9 +145,9 @@ followon_recs:
 infrastructure_dependencies: []
 acceptance_criteria:
   - >-
-    The script reports PLAN_TIME_POLICY: OPAQUE with exit 1 for a pure create or update with unknown policy on any of the
-    eight policy types and for a deferred aws_iam_policy_document read, CLEAN with exit 0 otherwise (replace pairs and
-    deletes included), and ERROR with exit 2 on
+    The script reports PLAN_TIME_POLICY: OPAQUE with exit 1 for a create, update or replace with unknown policy on any of the
+    eight policy types and for a deferred aws_iam_policy_document read, CLEAN with exit 0
+    otherwise, and ERROR with exit 2 on
     unreadable or non-plan input without echoing input text.
   - The default_tags fixture reports exactly the three deferred CI documents and the three CI role policies.
   - The script imports only stdlib modules, runs by path under python3 -I, and POLICY_TYPES equals the digest's _POLICY_TYPES.
@@ -183,10 +196,13 @@ verification_plan:
       from scripts.checks.structural.size_limits import validate_structural_size_limits as b;
       from scripts.checks.ci_guards.validate_oidc_failopen_guards import validate_oidc_failopen_guards as c;
       from scripts.checks.contracts.validate_terraform_cc_web_operations import validate_terraform_cc_web_operations as d;
-      f=[]; [g(f) for g in (a, b, c, d)]; print('GUARDS_OK' if not f else f); raise SystemExit(1 if f else 0)"
-    expected: exit 0 and GUARDS_OK printed; the workflow at most 546 effective lines, the contract at most 500.
-    fix_if: A ceiling or budget is exceeded - fold the change smaller; never raise a ceiling or budget.
-    hermetic: false
+      f=[]; [g(f) for g in (a, b, c, d)]; print('GUARDS_OK' if not f else f); raise SystemExit(1 if f else 0)" &&
+      test "$(grep -cF 'After persisting plan.bin and posting its digest status, fails the job (red; still no required check) if scripts/ci/plan_time_policy_check.py finds an IAM policy unknown at plan time.' docs/contracts/terraform-cc-web-operations.yaml)" -eq 1
+    expected: >-
+      exit 0 and GUARDS_OK printed; the workflow at most 546 effective lines, the contract and the taxonomy at most 500,
+      and the approved contract sentence present exactly once.
+    fix_if: A ceiling or budget is exceeded - fold the change smaller; never raise a ceiling or budget. Sentence missing - restore the approved wording.
+    hermetic: true
     graduation: not-applicable
   - step: 4
     phase: pre-deploy
@@ -201,8 +217,11 @@ verification_plan:
   - step: 5
     phase: pre-deploy
     action: >-
-      LIVE red half. Canary: a draft PR titled "DO NOT MERGE: plan-time policy check canary", head = a branch cut from the
-      build branch plus one commit to terraform/personal that adds aws_cloudwatch_log_group.plan_time_policy_canary
+      LIVE red half. Canary: a draft PR titled "DO NOT MERGE: plan-time policy check canary", head = the branch
+      claude/plan-time-policy-canary (an agent_branch_prefixes name; this second branch is the exception to git-ops
+      branch_rule that Benjamin's approval of the canary proof authorizes), created locally from the build branch's pushed
+      HEAD (record that SHA) with git switch -c and pushed with the bare canonical push from that branch, after a full-tier
+      run so the handoff gate has evidence (a validated-but-red tree passes with a warning). Plus one commit to terraform/personal that adds aws_cloudwatch_log_group.plan_time_policy_canary
       (name /aws/lambda/agent-platform-plan-time-policy-canary, retention 1 day) and appends its .arn to the Resource of
       one existing jsonencode statement in an agent-platform-* Lambda execution role policy, so that policy is unknown on
       update. RUN_ID is that commit's terraform-apply-sandbox pull_request run. Wait for that run to finish before
@@ -236,7 +255,9 @@ verification_plan:
     action: >-
       LIVE green half. Second canary commit (no force-push) replaces the .arn reference with the name-built ARN
       "arn:aws:logs:${var.aws_region}:${var.account_id}:log-group:/aws/lambda/agent-platform-plan-time-policy-canary:*".
-      RUN_ID is that commit's run. Afterwards close the canary unmerged and delete its branch.
+      RUN_ID is that commit's run. Afterwards close the canary unmerged and delete its branch with the gate's single
+      agent-branch delete form. If the script or the workflow step changes after the recorded build SHA, re-cut the
+      canary and re-run VP 5 and VP 6.
     command: |-
       test -n "$RUN_ID" && bin/venv-python - <<'EOF'
       import json, os, sys, urllib.request
@@ -331,10 +352,10 @@ context:
   - "Why the PR plan is the merge plan: push path fetches and applies tfplan/personal/<pr>/<sha>.bin (terraform-apply-sandbox.yml:301-316), digest-verified (fetch-saved-plan/action.yml:81-91)."
   - "Placement: before persist or digest would skip both and fail the merge closed; after the comment a redaction failure would skip the check."
   - "Expected trips and remedies: Lambda in-place edit deferring CI documents (fixed by PLAN-ci-policy-plan-time-lambda-arns); a policy referencing a resource created in the same PR (#1442, #1641 shape) -> name-built ARN or two PRs."
-  - "Residuals (not fixed here): fresh-plan paths (dispatch acknowledge-and-retry, Decision 183 cl.2; Reconcile fallback, Decision 158); until rec-4637 the job runs the PR's own copy of the script (Decision 238 cl.3); a default_tags change hides every CI policy naming the four allowlisted resources, with no one-line remedy."
+  - "Residuals (not fixed here): fresh-plan paths (dispatch acknowledge-and-retry, Decision 183 cl.2; Reconcile fallback, Decision 158); until rec-4637 the job runs the PR's own copy of the script (Decision 238 cl.3); a default_tags change hides every CI policy naming the four allowlisted resources, with no one-line remedy; adopting GitHub auto-merge (rec-940) would let a non-required red merge; no success wake exists for speculative-plan, so merges rely on get_check_runs."
   - "S3 overlap: rec-4637 (PR #1722) deletes speculative-plan; validate_plan_time_policy_check_wiring makes its trusted job carry the step. Whichever lands second wires it. Told to the S3 thread 2026-10-29: its full-refresh plan makes drift on a referenced resource trip the check, predicate (h) needs a CODEOWNERS line for the script, its step-order test must admit the step, and r3_workflows line numbers shift by one."
   - "Merge rule: the CI-green wake waits only for pr-validate and terraform-validate; before merging any terraform/personal PR, confirm with get_check_runs that speculative-plan finished green."
-  - "Sequencing: the build may start once this plan merges, unless a new critical ci_rca rec is open. Independent of PLAN-ci-policy-plan-time-lambda-arns (disjoint files); landing first turns a Lambda-edit PR red at PR time until that plan lands."
+  - "Sequencing: the build may start once this plan merges, unless a new critical ci_rca rec is open. PLAN-ci-policy-plan-time-lambda-arns (on main) also adds a config/ci_rca_taxonomy.yaml row: whichever build lands second folds one more wrapped rationale. Landing first turns a Lambda-edit PR red at PR time until that plan lands."
   - "Follow-on: rec-4741 (Low) - the digest renders a deferred document's configured statements; after rec-4637 PR 3."
   - "Decision-scout: FLAGS_FOUND (NOTE 162 handled by F2 A with a bash -e body test; NOTE 163 handled: every trip class has a code remedy). Decisions triaged: 191 of 191. Roadmap items intersected: 3; CONFLICT: 0; RELATED: 3. CITE: 238, 83, 89, 92, 77, 162, 165, 166, 183, 226, 186."
   - "red_overlap: verdict clear, no open reds (rec-4718 closed 2026-10-29 22:46Z after Reconcile run 40958224365)."
@@ -352,6 +373,12 @@ execution_steps:
     Edit terraform-apply-sandbox.yml (new step, compacted pred_guard body), then the r3_workflows entries and the lowered
     budget; edit the contract with the approved wording; run VP 1-3.
   - Run VP 4 (full tier) to completion; commit and push.
+  - >-
+    Closure evidence, recorded as four SEPARATE facts (implement skill Commit Flows): GitHub readiness state; parent
+    validator evidence (VP 4 full-tier exit 0 plus bin/venv-python -m scripts.checks.validation_result --verify-head for
+    the pushed HEAD); structured postflight evidence (write the scripts.session.postflight_evidence.CATEGORIES JSON in the
+    scratchpad, then bin/venv-python -m scripts.session.postflight --evidence <file>); the real outcome - push, build PR,
+    canary PR and both canary run ids, CI green by event-driven wake (never polled), merge SHA.
   - Open the canary draft PR and run VP 5 and VP 6; close it unmerged; record both run ids in the build PR body.
   - >-
     Open the build PR; merge on code review PROCEED and green CI (standing rule; the contract wording is pre-approved);
