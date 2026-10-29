@@ -243,8 +243,9 @@ scope:
   - file: config/composite_action_body_baseline.yaml
     action: Modify
     purpose: >-
-      PR 3 (named rewrite, Decision 235 cl.1). Remove the speculative-plan entries (lines 249-255) and the claims-probe,
-      claims-probe-no-env and live-assume entries (271-273); add an r3_workflows entry, at its measured size, for each
+      PR 3 (named rewrite, Decision 235 cl.1). Remove every speculative-plan entry and the claims-probe,
+      claims-probe-no-env and live-assume entries (find them by key, not line number; other plans add and change
+      entries here); add an r3_workflows entry, at its measured size, for each
       new inline run body of terraform-plan-trusted.yml's plan job and terraform-apply-sandbox.yml's ducklake-artifacts
       job. The terraform-init-retry entry is unchanged (body untouched).
   - file: scripts/ci/neon_api_key.sh
@@ -351,7 +352,8 @@ scope:
     purpose: >-
       PR 3. rec-4637's acceptance. Parses the real workflows and asserts: trigger and job gate (same-repo AND base
       main); environment; checkout shape; step order overlay -> screen -> assume -> mirror -> hermetic init -> plan ->
-      backstop -> guard -> persist -> digest status -> comment, with no credential step before the screen; no
+      backstop -> guard -> persist -> digest status -> (the plan-time policy check, when present) -> comment, with no
+      credential step before the screen; no
       continue-on-error on the assume; the plan command runs through trusted_plan_env.sh and neon_api_key.sh run,
       with -lock=false, without -refresh=false or -var-file, and quiet_run.sh is the innermost wrapper (the only
       redirect wraps terraform, never a wrapper that emits masks); the refusal comment step needs no credential step to
@@ -382,6 +384,12 @@ scope:
       PR 3. The repo-root sys.path entry is appended instead of inserted at 0, so the stdlib always wins in the trusted
       job, followed by the scripts-package location check (fixed message on a mismatch); behaviour otherwise
       unchanged (its existing tests pass unedited; the location check gets one red case in its own suite).
+  - file: tests/test_plan_time_policy_check_workflow.py
+    action: Modify
+    purpose: >-
+      PR 3, only if PLAN-pr-plan-opaque-iam-policy-check has merged (it creates this file, pinning the
+      speculative-plan job's internals): re-point it at the trusted plan job's step 13b, or delete it if
+      validate_plan_time_policy_check_wiring plus test_terraform_plan_trusted.py already pin the same facts.
   - file: tests/test_ci_neon_api_key.py
     action: Modify
     purpose: >-
@@ -827,6 +835,11 @@ test_obligations:
     verification_step: 6
     test_selector: tests/checks/ci_guards/test_validate_trusted_plan_environment.py
     red_green_expectation: red before (predicate h fails an insert at position 0), green after; tests/test_terraform_plan_digest.py stays green
+  - source: tests/test_plan_time_policy_check_workflow.py
+    behavior: pins the plan-time policy check in the surviving job (conditional on the other plan)
+    verification_step: 9
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: Conditional file owned by PLAN-pr-plan-opaque-iam-policy-check; --pre's affected-set pytest runs it whenever it exists.
   - source: tests/test_ci_neon_api_key.py
     behavior: check skips only pull_request and fetches on pull_request_target
     verification_step: 6
@@ -955,7 +968,7 @@ context:
   - "Fable consult: /mnt/project-files/trusted-plan-executor/s3-executor-cutover/ADVICE.md; reconciliation in step6b-presentation.md."
   - "Decision 235 cl.1 named loosenings/rewrites: validate_planner_secret_value_reads (4); its _TF_CMD_RE widened for the trusted_plan_env.sh prefix and the quiet_run.sh inner wrapper; neon_api_key.sh check's pull_request_target skip removed, with test_ci_neon_api_key.py's skip assertion for that event; TEMP_NO_ENV_JOBS emptied; test_validate_trusted_plan_environment.py's claims-probe-based cases re-pointed at job plan; composite_action_body_baseline.yaml loses the retired bodies and gains entries for the new ones; the speculative_plan_job contract row retired."
   - "Plan-shape residual (APPROVED 2026-10-29, 'Keep them', cmsg_01Cqz6E4mzSv6kkGCSCub3WMV1YaxYVsittbFYvxtXjDgV; Decision 238 cl.4 and rec-4637's context ask for it): with count, for_each, dynamic, conditional, comparison and logical forms refused outside condition and validation blocks, regex and can confined to validation blocks, try fixed to the config file read, no instance-count column and a one-word fit line, what a PR can still learn from a run is whether it succeeded, how long it took, and which allowlisted attributes differ from state. Recorded as the accepted residual; the Decision text is not amended."
-  - "Coordination (2026-10-29 22:57Z, from the 'Block hidden IAM policies before merge' thread): PLAN-pr-plan-opaque-iam-policy-check (approved by Benjamin 22:52Z, not merged at S3 plan time) adds scripts/ci/plan_time_policy_check.py to the speculative-plan job after the digest step, a --pre check validate_plan_time_policy_check_wiring anchored on 'context=terraform-plan-digest' in a run body, and one speculative_plan_job step sentence. If it lands first, PR 3 wires the check into the trusted job (step 13b), keeps that sentence, and keeps the digest post's --field context=terraform-plan-digest in the run body so the wiring check's anchor holds. Follow-on rec-4741 edits terraform_plan_digest.py after PR 3."
+  - "Coordination (2026-10-29 22:57Z, from the 'Block hidden IAM policies before merge' thread): PLAN-pr-plan-opaque-iam-policy-check (approved by Benjamin 22:52Z, not merged at S3 plan time) adds scripts/ci/plan_time_policy_check.py to the speculative-plan job after the digest step, a --pre check validate_plan_time_policy_check_wiring anchored on 'context=terraform-plan-digest' in a run body, and one speculative_plan_job step sentence. If it lands first, PR 3 wires the check into the trusted job (step 13b), keeps that sentence, and keeps the digest post's --field context=terraform-plan-digest in the run body so the wiring check's anchor holds. Follow-on rec-4741 edits terraform_plan_digest.py after PR 3. Full-refresh interaction (from that plan's critique): out-of-band drift on a resource a CI policy document references defers the document, so the check reports OPAQUE on an unrelated PR. No special handling: the merge-time apply consumes that same saved plan and its reviewer would refuse the same opaque line, so the PR-time red predicts a real merge-time failure; the fix is to reconcile the drift first. The job stays advisory (Decision 83), and plan.bin and the digest are already persisted by then."
   - "Kept, not retired: scripts/ci/oidc_claims_probe.py and its registry shard trusted-plan-oidc-claims-probe.yaml have no caller after PR 3, but the shard is S2's graduated record; S4 (rec-4640) removes them with the other PR-only plumbing."
   - "Slice map: S1 rec-4632, S1b rec-4635, S2 rec-4636 (landed), S3 rec-4637 (this), S5 rec-4638 (reuses the screen, overlay and plan_names_core), S4 rec-4640 (must re-home the ducklake-artifacts grant when it deletes the planner PR-sub; refinement appended to rec-4640's context 2026-10-29), S6 rec-4639. rec-4686 (real-plan canary) depends on this job shape."
   - "Gotcha: python3 -I drops the script directory from sys.path, so every new script inserts the repo root itself and never uses -m (predicate h)."
