@@ -125,6 +125,14 @@ scope:
       {github_ci_branch, PlatformDev}, URL-only (Decision 213), with github_ci_branch's agent/* trust owned by rec-4480;
       admitting any other producer identity, and per-tenant roles for a principal outside this account, follow rec-4420."
       becomes execution step 4's text; one amendment_log entry (governance_note_add, semantic_break false).
+  - file: tests/checks/contracts/test_telemetry_writer_ratification.py
+    action: Modify
+    purpose: >-
+      PR 2 (the ratification build's census test). Where it pins the "Declared residual (principal classes):" invariant
+      text or the newest amendment_log entries by position, re-key those pins to the ratification's entries by date and
+      summary and to the residual's amended text (execution step 3), so this plan's in-place edit and its newer
+      field_add head entry are planned changes, never a weakening (planned-change disposition citing
+      acceptance_criteria[2]). If the merged test pins neither, no edit.
   - file: tests/checks/contracts/test_tenant_id_producer_identity_model.py
     action: Modify
     purpose: >-
@@ -170,6 +178,14 @@ scope:
       job's timeout-minutes rises by 3 over the adapter's value (25 -> 28 if unchanged) for the sign-in and classifier
       ceilings, the same parity reasoning as the apply jobs. The branch-role sign-in and the agent step are untouched; the
       agent keeps the branch role.
+  - file: tests/test_telemetry_ci_capture_action.py
+    action: Modify
+    purpose: >-
+      PR 3 (the adapter's test). Its ci-rca step-shape pins move to the new tail without weakening: the job ends sign-in,
+      capture, capture_skipped classifier; the capture step's if is always() && steps.capture_creds.outcome == 'success'
+      (still contains always()), continue-on-error true, timeout-minutes 5; the job timeout is the adapter's value + 3
+      (28 if 25). Planned-change weakening disposition: moved, not weakened -- predicate (e) of validate_ci_capture_identity
+      now carries the ordering. test_credential_inputs_replace_every_ambient_aws_variable is untouched.
   - file: config/telemetry/capture.yaml
     action: Modify
     purpose: >-
@@ -231,7 +247,8 @@ scope:
   - file: scripts/checks/ci_guards/_manifest.py
     action: Modify
     purpose: >-
-      PR 3. Register validate_ci_capture_identity (pre=True) with pre_globs .github/workflows/**, .github/actions/**,
+      PR 3. Register validate_ci_capture_identity (pre=True, full_segment="full_after_lint" like every ci_guards entry, so
+      it also runs in the full tier on main) with pre_globs .github/workflows/**, .github/actions/**,
       config/telemetry/capture.yaml, config/agent/data_quality/source_registry.yaml,
       scripts/checks/ci_guards/validate_ci_capture_identity.py, scripts/verify_ci_workflow/**,
       scripts/checks/_common.py, scripts/checks/registry.py.
@@ -346,7 +363,10 @@ verification_plan:
       bin/venv-python -m pytest tests/checks/iam_tf/ tests/checks/contracts/test_tenant_id_producer_identity_model.py
       tests/checks/contracts/ tests/checks/ci_guards/ tests/test_subagent_review_wiring.py -q
     expected: exit 0, no failures
-    fix_if: a guard fails -- fix the change, never the guard; a guard that pins the old two-class list is a planned change only where this scope names it
+    fix_if: >-
+      a guard fails -- fix the change, never the guard; the planned changes are exactly the scope's rows for
+      test_tenant_id_producer_identity_model.py (two-class list), test_telemetry_writer_ratification.py (residual text and
+      amendment_log head) and test_telemetry_ci_capture_action.py (ci-rca's tail shape); any other red guard is a defect
     hermetic: false
     graduation: waive
     graduation_waiver_reason: A no-regression re-run of whole standing test directories (rule (v)); steps 1-5 carry the durable regressions.
@@ -486,13 +506,14 @@ verification_plan:
     phase: post-deploy
     action: Read back the captured plan-review run through the telemetry reader (PlatformDev)
     command: >-
-      test -n "$RUN_ID" && AWS_PROFILE=agent_platform RUN_ID="$RUN_ID" bin/venv-python -c 'import hashlib, json, os;
+      test -n "$RUN_ID" && test -n "$RUN_START" && AWS_PROFILE=agent_platform RUN_ID="$RUN_ID" RUN_START="$RUN_START" bin/venv-python -c 'import hashlib, json, os;
       from datetime import date, timedelta; from scripts.telemetry_capture.read_route import make_routed_reader; r =
       make_routed_reader(); d = date.today(); pre = "gha:" + os.environ["RUN_ID"] + "/"; cands =
       r.named("telemetry_root_sessions", day_from=(d - timedelta(days=1)).isoformat(), day_to=d.isoformat()); tree = lambda
       sid: r.named("session_tree_rows", session_id=sid, offset=0, max_rows=500); hit = lambda rs: any(x["table_name"] ==
-      "telemetry_agents" and (json.loads(x["row_json"]).get("host_run_ref") or "").startswith(pre) for x in rs); roots =
-      [rs for rs in (tree(c["session_id"]) for c in cands) if hit(rs)]; assert roots, "no root for the run"; rows = roots[0];
+      "telemetry_agents" and (json.loads(x["row_json"]).get("host_run_ref") or "").startswith(pre) for x in rs); cands = [c
+      for c in cands if str(c.get("session_started_at") or "") >= os.environ["RUN_START"]]; roots = [rs for rs in (tree(c["session_id"]) for c in cands) if
+      hit(rs)]; assert roots, "no root for the run"; rows = roots[0];
       t = lambda n: [json.loads(x["row_json"]) for x in rows if x["table_name"] == n]; tr, ag, se, ob = t("telemetry_transcripts"), t("telemetry_agents"),
       t("telemetry_sessions"), t("telemetry_observations"); e = hashlib.sha256(b"").hexdigest(); assert tr and all(j.get("content_omitted_reason")
       == "withheld_by_policy" and j.get("content_sha256") == e and j.get("content_bytes") == 0 for j in tr); assert
@@ -501,7 +522,9 @@ verification_plan:
     expected: >-
       RUN_ID is VP 14's run id; the root is found with today's verbs only (telemetry_root_sessions candidates for two days,
       then session_tree_rows per candidate, keeping the tree whose telemetry_agents row_json host_run_ref starts
-      gha:<RUN_ID>/), so nothing waits on rec-4713's verb surface. PLAN_REVIEW_CAPTURED with the counts of roots for the run, transcript rows and observation
+      gha:<RUN_ID>/), so nothing waits on rec-4713's verb surface; RUN_START is the run's start in the reader's
+      session_started_at format, and only roots started after it are expanded, so an earlier large interactive tree cannot
+      answer 413 before the CI root is reached. PLAN_REVIEW_CAPTURED with the counts of roots for the run, transcript rows and observation
       rows: every transcript row a withheld_by_policy omission with the empty-string digest and 0 bytes (the write-enforced
       exactly-one-of then implies no content and no content_uri), a top-level telemetry_agents open and close with agent_type
       plan-review, the session's workflow plan-review, and model-call usage present
@@ -698,6 +721,7 @@ context:
   - "Decision 199 cl.5 (scout NOTE) decided with notice: withholding plan-review text is no content-tier change of its own; it implements Decision 238 cl.1 (no agent-obtainable identity reads plan-review transcripts) by storing less, and the typed omission value is the run-shape plan's contract amendment."
   - "Decision 212 (scout NOTE) decided with notice: no new coupling here -- the Actions-to-writer function_url client is the adapter's PC-01 line; this plan swaps only the signing identity."
   - "Out of scope, filed rec-4717: archive_transcripts.sh copies review.json to an S3 prefix the branch role and PlatformDev read, a second plan-review text surface (names-only since rec-4639)."
+  - "Residuals noted by critique: the 45-minute apply-job timeout also gives a hung pre-capture step 15 more minutes and holds the shared apply concurrency group longer; in ci-rca the capture action and .venv sit in the workspace the agent can write before capture_creds runs, so the role split there is attribution, not an integrity boundary (no escalation: the branch role already holds writer invoke)."
   - "Decision 143 (scout SPIRIT NOTE) decided with notice, Benjamin may overturn: withholding rests on capture.yaml, the adapter's parser and guards, all inside the merge loop, as any workflow edit that could already echo the review digest is. Mitigation here: check predicate (h) makes a flip to full a visible guard edit, and the canary test pins the parser. Writer-edge enforcement keyed on caller_role is the deferred half, rec-4714."
   - "F1 decided with notice: a typed governance.principal_admission block in the contract (one new optional model on ContractGovernance), not registry_path to a config file as the Fable consult advised -- registry_path already means the verb/named-read registry in three contracts, and c4 asks the writer contract itself to declare the registry (Agent-First collocation)."
   - "F2: credentials stay out of the job environment by construction -- configure-aws-credentials@v6 with output-env-credentials false skips every exportVariable (and its cleanup), validate_actions_account_id_masking R4 forbids sign-in inside a composite, and the capture steps end the job. A dependent job cannot be the fallback: transcripts live in the job's own $HOME and never become artifacts."
@@ -717,6 +741,7 @@ pre_implementation_checklist:
   - withheld_by_policy is in telemetry_transcripts.yaml content_omitted_reason accepted_values on main and the production writer deploy carrying it has run (before PR 3)
   - The merged run-shape contract and the merged adapter parser agree that a withheld row stores content_sha256 of the empty byte string and content_bytes 0 (raised with the adapter thread 2026-10-29); else stop and report before PR 3
   - The ratification's "Declared residual (principal classes):" sentence on main matches execution step 3's anchor verbatim
+  - On the merged adapter, validate_claude_p_retry_wrapper's capture-step pairing accepts an if that contains always() (not only equals it); else ask the adapter's owner thread to widen it before PR 3, or add that check and its test as PR 3 Modify rows by a plan amendment first
   - Only the plan-cited Decision sections are read (238, 213, 143, 144, 98, 129, 223, 92)
   - All files in scope located and readable
   - Acceptance criteria understood and verifiable
