@@ -668,7 +668,7 @@ decided_date: "2026-10-20"
 amends: [81, 126, 213, 216]
 significance:
   value: numbered_decision
-  justification: "Catalog-identity and data-plane commitments amending Decisions 216, 126, 213 and 81; ducklake_maintenance.yaml and deploy-paths.yaml can index the procedures but cannot widen a ratified rule, nor can an amendment_forms annotation (Decision 204 cl.4)."
+  justification: "Durable catalog-identity and data-plane commitments amending Decisions 216, 126, 213 and 81; ducklake_maintenance.yaml and deploy-paths.yaml can index the procedures but cannot widen a ratified rule or carve-out, nor can an amendment_forms annotation (Decision 204 cl.4 precedent)."
 ```
 
 **Status:** Decided
@@ -698,7 +698,7 @@ conditions:
     description: "The catalog provider refuses the owner-role membership, ownership transfer or session-role default for a non-superuser owner: the shared owner login owns ducklake_telemetry with default privileges to its logins, dated on Decision 216."
   - id: measured-grants-drift
     kind: manual
-    description: "A DuckLake extension bump changes the statements a writer verb issues: re-measure clause 3's grants first."
+    description: "A DuckLake extension bump changes the statements a writer verb issues: re-measure clause 3's grants before the bump merges."
   - id: boundary-headroom
     kind: manual
     description: "The boundary's minified size passes 5,632 bytes: re-decide where clause 5's fence lives."
@@ -707,8 +707,8 @@ conditions:
 **Related:** Decision 216, 213, 81, 214, 222, 204, 143, 144, 202, 126, 88, 181.
 
 [Amendment 2026-10-27, Decision 237: cl.4 logins live in /secret/.]
-[Amendment 2026-10-29, Decision 239: content reader.]
 
+[Amendment 2026-10-29, Decision 239: cl.3's telemetry reader login is shared with the content reader, its connection limit summed across both; cl.5's fence exceptions add the content reader's role.]
 
 ---
 
