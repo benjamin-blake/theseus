@@ -148,7 +148,7 @@ scope:
       carrying the newline-separated ${{ github.workspace }}/terraform/personal/review.json.sessions.jsonl and
       ${{ github.workspace }}/terraform/personal/review_retry.json.sessions.jsonl, so ci-pass runs once per job over
       every manifest). The job's timeout-minutes goes 30 -> 45 so the apply keeps its full 30 minutes ahead of the
-      capture trio's 12-minute ceiling. No other step, output, condition or job changes; speculative-plan,
+      capture steps' 13-minute ceiling (5 + 2 + 5 + 1). No other step, output, condition or job changes; speculative-plan,
       advisory-status and gated-apply are untouched.
   - file: .github/workflows/reconcile.yml
     action: Modify
@@ -210,7 +210,8 @@ scope:
       later job references either step id; (g) the capture action's own action.yml contains no
       aws-actions/configure-aws-credentials (R4 restated for this action) and writes no GITHUB_OUTPUT; (h) every workflow
       with a job whose steps use .github/actions/subagent-plan-review has a config/telemetry/capture.yaml ci_workflows entry
-      with agent plan-review and content_policy withheld, and no ci_uncaptured entry names
+      with agent plan-review and content_policy withheld, every ci_workflows entry's agent is a canonical_id in
+      config/agent/data_quality/source_registry.yaml, and no ci_uncaptured entry names
       .github/actions/subagent-plan-review (Decision 238 cl.1: flipping to full, or re-exempting the call site, is a
       visible guard edit, never a config-only change); (i) the job can run the capture: <root>/.venv is created by some step of the job
       (root = the workspace for ./.github/actions/..., .dispatch-tooling for ./.dispatch-tooling/...); (j) a capture step
@@ -221,16 +222,18 @@ scope:
     action: Create
     purpose: >-
       PR 3. Real tree green with the three wired jobs (apply-sandbox, apply-reconcile, rca) examined; one red case per
-      predicate (a)-(g) on synthetic workflows, including a capture step after it a further step, output-env-credentials
+      predicate (a)-(j) on synthetic workflows and actions, including a capture action.yml that signs in with
+      configure-aws-credentials or writes GITHUB_OUTPUT (g), a capture step after it a further step, output-env-credentials
       true, a capture step using the job's apply-role env (no credential inputs), a second job assuming the capture role
       for anything else, timeout-minutes 10, a job output reading steps.capture_creds, runs-on self-hosted, a
-      plan-review workflow entry with content_policy full, a leftover subagent-plan-review ci_uncaptured entry (h), a capture job with no venv-creating step (i), a capture_env
+      plan-review workflow entry with content_policy full, a leftover subagent-plan-review ci_uncaptured entry (h), an entry whose agent is not a source_registry canonical_id (h), a capture job with no venv-creating step (i), a capture_env
       step that runs aws (e), a classifier that runs aws or sits before the capture step (e), and a .dispatch-tooling capture step with a relative manifest path (j).
   - file: scripts/checks/ci_guards/_manifest.py
     action: Modify
     purpose: >-
       PR 3. Register validate_ci_capture_identity (pre=True) with pre_globs .github/workflows/**, .github/actions/**,
-      config/telemetry/capture.yaml, scripts/checks/ci_guards/validate_ci_capture_identity.py, scripts/verify_ci_workflow/**,
+      config/telemetry/capture.yaml, config/agent/data_quality/source_registry.yaml,
+      scripts/checks/ci_guards/validate_ci_capture_identity.py, scripts/verify_ci_workflow/**,
       scripts/checks/_common.py, scripts/checks/registry.py.
   - file: config/ci_rca_taxonomy.yaml
     action: Modify
@@ -268,6 +271,7 @@ bundled_recommendations:
   - rec-4415
 followon_recs:
   - rec-4714
+  - rec-4717
 closes_criteria:
   - "T3.22:c4"
   - "T3.20:c9"
@@ -484,17 +488,20 @@ verification_plan:
     command: >-
       test -n "$RUN_ID" && AWS_PROFILE=agent_platform RUN_ID="$RUN_ID" bin/venv-python -c 'import hashlib, json, os;
       from datetime import date, timedelta; from scripts.telemetry_capture.read_route import make_routed_reader; r =
-      make_routed_reader(); d = date.today(); roots = [x for x in r.named("telemetry_root_sessions",
-      day_from=(d - timedelta(days=1)).isoformat(), day_to=d.isoformat()) if (x.get("host_run_ref") or
-      "").startswith("gha:" + os.environ["RUN_ID"] + "/")]; assert roots, "no root for the run"; rows =
-      r.named("session_tree_rows", session_id=roots[0]["session_id"], offset=0, max_rows=500); t = lambda n: [json.loads(x["row_json"])
-      for x in rows if x["table_name"] == n]; tr, ag, se, ob = t("telemetry_transcripts"), t("telemetry_agents"),
+      make_routed_reader(); d = date.today(); pre = "gha:" + os.environ["RUN_ID"] + "/"; cands =
+      r.named("telemetry_root_sessions", day_from=(d - timedelta(days=1)).isoformat(), day_to=d.isoformat()); tree = lambda
+      sid: r.named("session_tree_rows", session_id=sid, offset=0, max_rows=500); hit = lambda rs: any(x["table_name"] ==
+      "telemetry_agents" and (json.loads(x["row_json"]).get("host_run_ref") or "").startswith(pre) for x in rs); roots =
+      [rs for rs in (tree(c["session_id"]) for c in cands) if hit(rs)]; assert roots, "no root for the run"; rows = roots[0];
+      t = lambda n: [json.loads(x["row_json"]) for x in rows if x["table_name"] == n]; tr, ag, se, ob = t("telemetry_transcripts"), t("telemetry_agents"),
       t("telemetry_sessions"), t("telemetry_observations"); e = hashlib.sha256(b"").hexdigest(); assert tr and all(j.get("content_omitted_reason")
       == "withheld_by_policy" and j.get("content_sha256") == e and j.get("content_bytes") == 0 for j in tr); assert
       len([j for j in ag if j.get("agent_type") == "plan-review"]) >= 2; assert any(j.get("workflow") == "plan-review" for j in
       se); assert any(j.get("tokens_input") for j in ob); print("PLAN_REVIEW_CAPTURED", len(roots), len(tr), len(ob))'
     expected: >-
-      RUN_ID is VP 14's run id. PLAN_REVIEW_CAPTURED with the counts of roots for the run, transcript rows and observation
+      RUN_ID is VP 14's run id; the root is found with today's verbs only (telemetry_root_sessions candidates for two days,
+      then session_tree_rows per candidate, keeping the tree whose telemetry_agents row_json host_run_ref starts
+      gha:<RUN_ID>/), so nothing waits on rec-4713's verb surface. PLAN_REVIEW_CAPTURED with the counts of roots for the run, transcript rows and observation
       rows: every transcript row a withheld_by_policy omission with the empty-string digest and 0 bytes (the write-enforced
       exactly-one-of then implies no content and no content_uri), a top-level telemetry_agents open and close with agent_type
       plan-review, the session's workflow plan-review, and model-call usage present
@@ -627,10 +634,10 @@ test_obligations:
     test_selector: tests/checks/ci_guards/test_validate_ci_capture_identity.py
     red_green_expectation: red before (predicate (h) fails on the real tree's exemption and missing entries), green after
   - source: config/agent/data_quality/source_registry.yaml
-    behavior: plan-review is a registered agent_type key
-    verification_step: 18
-    command: bin/venv-python -m scripts.validate --pre
-    waiver_reason: check_source_registry already schema-validates every entry in the fast tier; a dedicated node would duplicate it.
+    behavior: plan-review is a registered agent key for the capture.yaml entries
+    verification_step: 3
+    test_selector: tests/checks/ci_guards/test_validate_ci_capture_identity.py
+    red_green_expectation: red before (predicate (h) finds agent plan-review absent from source_registry), green after
   - source: scripts/checks/ci_guards/validate_ci_capture_identity.py
     behavior: each predicate reddens on its synthetic breach
     verification_step: 3
@@ -690,6 +697,7 @@ context:
   - "Decision 210 cl.4 (scout WARN, resolved): withheld_by_policy joins telemetry_transcripts content_omitted_reason accepted_values (write-enforced by src/row_rules) with its writer deploy in PLAN-telemetry-top-level-agent-run, which builds before the adapter and this plan; PR 3 opens only once that value is live. If that plan drops it, the adapter thread takes it (its 14:24Z note), never this plan's PR 3 silently."
   - "Decision 199 cl.5 (scout NOTE) decided with notice: withholding plan-review text is no content-tier change of its own; it implements Decision 238 cl.1 (no agent-obtainable identity reads plan-review transcripts) by storing less, and the typed omission value is the run-shape plan's contract amendment."
   - "Decision 212 (scout NOTE) decided with notice: no new coupling here -- the Actions-to-writer function_url client is the adapter's PC-01 line; this plan swaps only the signing identity."
+  - "Out of scope, filed rec-4717: archive_transcripts.sh copies review.json to an S3 prefix the branch role and PlatformDev read, a second plan-review text surface (names-only since rec-4639)."
   - "Decision 143 (scout SPIRIT NOTE) decided with notice, Benjamin may overturn: withholding rests on capture.yaml, the adapter's parser and guards, all inside the merge loop, as any workflow edit that could already echo the review digest is. Mitigation here: check predicate (h) makes a flip to full a visible guard edit, and the canary test pins the parser. Writer-edge enforcement keyed on caller_role is the deferred half, rec-4714."
   - "F1 decided with notice: a typed governance.principal_admission block in the contract (one new optional model on ContractGovernance), not registry_path to a config file as the Fable consult advised -- registry_path already means the verb/named-read registry in three contracts, and c4 asks the writer contract itself to declare the registry (Agent-First collocation)."
   - "F2: credentials stay out of the job environment by construction -- configure-aws-credentials@v6 with output-env-credentials false skips every exportVariable (and its cleanup), validate_actions_account_id_masking R4 forbids sign-in inside a composite, and the capture steps end the job. A dependent job cannot be the fallback: transcripts live in the job's own $HOME and never become artifacts."
