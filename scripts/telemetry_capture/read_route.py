@@ -6,7 +6,8 @@ reader URL): ducklake_telemetry's events are served by the telemetry reader's ow
 event reader since slice 2c's cleanup (the shared reader serves no event verb), so an event read on that route raises
 NoEventReaderOnSmoke before any call. Ops reads always use the shared reader. Nothing resolves at construction, so a
 failure raises at the first use, inside the caller's own handler. Errors name a source, never a value, a URL or an AWS
-error text (Decision 101).
+error text (Decision 101). The content route (Decision 239) is a further function_url client for the telemetry content reader:
+a content verb on the event route, or an event verb on the content route, raises WrongRoute before any call.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from typing import Any
 
 from scripts.aws_profile import resolve_aws_profile
 from scripts.telemetry_capture.state import DEFAULT_CATALOG, KNOWN_CATALOGS
+from src.common.ducklake_content_read_verbs import CONTENT_READS
 from src.common.ducklake_event_read_verbs import EVENT_READS
 from src.common.ducklake_reader_client import DuckLakeReader, make_reader
 
@@ -25,8 +27,16 @@ READER_URL_ENV = "DUCKLAKE_TELEMETRY_READER_URL"
 READER_URL_PARAMETER = "/agent-platform/ducklake/telemetry_reader_url"
 READER_FUNCTION = "agent-platform-ducklake-telemetry-reader"
 SHARED_READER_FUNCTION = "agent-platform-ducklake-reader"
+CONTENT_READER_URL_ENV = "DUCKLAKE_TELEMETRY_CONTENT_READER_URL"
+CONTENT_READER_URL_PARAMETER = "/agent-platform/ducklake/telemetry_content_reader_url"
+CONTENT_READER_FUNCTION = "agent-platform-ducklake-telemetry-content"
 REGION = "eu-west-2"
 EVENT_VERBS = frozenset(EVENT_READS)
+CONTENT_VERBS = frozenset(CONTENT_READS)
+
+
+class WrongRoute(RuntimeError):
+    """A content verb was sent to the event route, or an event verb to the content route (raised before any call)."""
 
 
 class TelemetryCatalogUnresolved(RuntimeError):
@@ -93,6 +103,33 @@ class TelemetryReader(DuckLakeReader):
         return dict(catalog) if isinstance(catalog, dict) else {}
 
 
+class ContentReader(DuckLakeReader):
+    """The telemetry content reader's Function URL behind the shared reader client; serves the content verbs only."""
+
+    def _reader_url(self) -> str:
+        url = (
+            os.environ.get(CONTENT_READER_URL_ENV)
+            or _parameter(CONTENT_READER_URL_PARAMETER, self._profile, self._region)
+            or _function_url(CONTENT_READER_FUNCTION, self._profile, self._region)
+        )
+        if url:
+            return url.rstrip("/")
+        raise RuntimeError(
+            f"{CONTENT_READER_URL_ENV} not set, SSM {CONTENT_READER_URL_PARAMETER!r} unavailable and "
+            f"lambda:GetFunctionUrlConfig on {CONTENT_READER_FUNCTION!r} failed -- cannot reach the telemetry content reader"
+        )
+
+    def named(self, verb: str, **params: Any) -> list[dict[str, Any]]:
+        if verb not in CONTENT_VERBS:
+            raise WrongRoute("the content route serves only the content verbs")
+        return super().named(verb, **params)
+
+
+def content_reader(profile: str | None = None) -> ContentReader:
+    """The content route's reader; its URL resolves on the first call, so a failure raises inside the caller's handler."""
+    return ContentReader(profile=profile)
+
+
 class RoutedReader:
     """Event verbs to the reader serving the writer's catalog, everything else to *ops*; resolved on first use, then cached."""
 
@@ -125,6 +162,8 @@ class RoutedReader:
         return dict(self._ops_verbs) if self._ops_verbs is not None else dict(self._ops.describe())
 
     def named(self, verb: str, **params: Any) -> list[dict[str, Any]]:
+        if verb in CONTENT_VERBS:
+            raise WrongRoute("a content verb is not served on the event route")
         if verb not in EVENT_VERBS:
             return list(self._ops.named(verb, **params))
         if self.shared:

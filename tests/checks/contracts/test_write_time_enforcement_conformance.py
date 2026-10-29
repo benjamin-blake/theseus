@@ -419,6 +419,9 @@ _NON_ROW_WRITING: dict[str, dict[str, str]] = {
     "src/lambdas/ducklake_telemetry_reader/handler.py": dict.fromkeys(
         ("attach_check", "describe", "named_read"), "read or probe: the telemetry reader holds no write grant"
     ),
+    "src/lambdas/ducklake_telemetry_content_reader/handler.py": dict.fromkeys(
+        ("describe", "named_read"), "read: the telemetry content reader holds no write grant"
+    ),
     "src/lambdas/ducklake_reader/handler.py": dict.fromkeys(
         (
             "attach_check read_current partition_prune_check write_probe read_ops_current "

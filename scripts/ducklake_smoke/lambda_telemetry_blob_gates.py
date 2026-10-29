@@ -6,7 +6,7 @@ proven by its first user; the S3 reject vectors PUT directly under a real grant.
 (Decision 55).
 
 No vector reads through a reader: no deployed function serves transcript_content after slice 2c (Decision 236), so the
-content read-back is retired (rec-4481 owns re-adding one with a content reader) and blob presence keeps its writer-side
+content read-back is retired (rec-4699 owns re-adding one with the content reader) and blob presence keeps its writer-side
 proof through telemetry_probe's blob_objects.
 
 Output carries markers, integer measurements (blob_grant_ms, blob_put_ms, blob_append_ms) and nothing else: never a
