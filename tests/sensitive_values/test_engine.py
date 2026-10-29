@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from scripts.checks.misc import sensitive_value_corpus as corpus
@@ -82,3 +84,11 @@ def test_fingerprint_stable_distinct_and_sensitive(monkeypatch: pytest.MonkeyPat
 def test_accept_predicate_semantics() -> None:
     keep = engine.ACCEPT["long_or_digit"](min_len=32)
     assert keep("a" * 32) and keep("short1") and not keep("shortletters")
+
+
+@pytest.mark.parametrize("profile", PROFILE_NAMES)
+def test_long_alphanumeric_run_masks_in_bounded_time(profile: str) -> None:
+    started = time.monotonic()
+    mask("A" * 200_000, profile)
+    mask("a1" * 100_000 + "-" * 50_000, profile)
+    assert time.monotonic() - started < 2.0

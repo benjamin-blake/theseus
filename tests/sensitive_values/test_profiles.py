@@ -23,7 +23,7 @@ ADDED = (
 )
 PINNED_FINGERPRINTS = {
     "write_time": "write_time@7f9f5851623601e8",
-    "read_masked": "read_masked@5fb2dd3668b522cd",
+    "read_masked": "read_masked@7877707e166f59ad",
 }
 
 

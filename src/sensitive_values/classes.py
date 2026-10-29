@@ -72,7 +72,7 @@ _ROWS = (
     DetectorClass(
         "URL_CREDENTIAL",
         "network",
-        rf"""([A-Za-z][A-Za-z0-9+.\-]*://){_NOT_MARKER}[^/\s@"'<>]+@[^/\s"'<>),;]*""",
+        rf"""((?<![A-Za-z0-9+.\-])[A-Za-z][A-Za-z0-9+.\-]*://){_NOT_MARKER}[^/\s@"'<>]+@[^/\s"'<>),;]*""",
         "keep_prefix",
     ),
     # ducklake_handler_errors.py first pattern, keep_prefix so the key stays readable
