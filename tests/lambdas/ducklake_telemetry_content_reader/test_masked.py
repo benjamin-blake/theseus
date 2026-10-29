@@ -187,3 +187,14 @@ def test_a_blob_row_that_cannot_fit_the_remaining_budget_is_not_fetched(monkeypa
     rows = [_srow(i, None, content_uri="s3://b/k", content_bytes=3_000_000, total=2) for i in range(2)]
     (env,), _ = masked.serve_session(rows, _values(), True, None)
     assert len(env["rows"]) == 1 and env["next_offset"] == 1 and len(store.calls) == 1
+
+
+def test_session_counts_masks_and_serves_omitted_rows() -> None:
+    rows = [
+        _srow(0, f"token {_TOKEN}", total=2),
+        _srow(1, None, total=2, content_omitted_reason="not_stored"),
+    ]
+    (env,), served = masked.serve_session(rows, _values(), True, None)
+    first, second = env["rows"]
+    assert sum(served.mask_counts.values()) >= 1 and first["mask_counts"]
+    assert second["storage"] == "omitted" and second["text"] is None and second["omitted_reason"] == "not_stored"

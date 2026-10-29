@@ -92,3 +92,10 @@ def test_content_read_version_is_stable_and_moves_with_the_sql() -> None:
     assert cv.content_read_version(replace(entry, sql=entry.sql + " ")) == version
     assert cv.content_read_version(replace(entry, sql=entry.sql + " -- x")) != version
     assert cv.content_read_version(cv.CONTENT_READS["session_transcript_masked"]) != version
+
+
+def test_tree_window_treats_naive_as_utc_and_utc_now_is_aware() -> None:
+    assert cv.tree_in_read_window(datetime(2026, 10, 1), _NOW) is True
+    assert cv.tree_in_read_window(_NOW - timedelta(days=cv.READ_WINDOW_DAYS + 1), _NOW) is False
+    assert cv.tree_in_read_window(_NOW - timedelta(days=cv.READ_WINDOW_DAYS), _NOW) is True
+    assert cv.utc_now().tzinfo is not None

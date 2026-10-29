@@ -170,3 +170,24 @@ def test_conflicts_and_too_large_mask_counts_reach_the_header() -> None:
     code, out = _run(["session", SID], fake)
     header = out.splitlines()[1]
     assert code == 0 and "conflicted_grain_keys=1" in header and "'GITHUB_TOKEN': 7" in header
+
+
+def test_row_page_without_bytes_fails_and_tool_output_flag_is_forwarded() -> None:
+    class Empty(Fake):
+        def named(self, verb: str, **p: Any) -> list[dict[str, Any]]:
+            self.calls.append((verb, p))
+            return [
+                {"storage": "inline", "length": 0, "masked_bytes": 9, "masked_sha256": "0" * 64, "data": "", "mask_counts": {}}
+            ]
+
+    assert _run(["row", SID, "claude_code", "E0", "3"], Empty([]))[0] == 1
+
+    seen = Fake([_item(0, "x")])
+    assert _run(["session", SID, "--include-tool-output"], seen)[0] == 0
+    assert seen.calls[0][1]["include_tool_output"] is True
+
+
+def test_a_413_at_one_row_per_page_is_final(capsys: pytest.CaptureFixture[str]) -> None:
+    fake = Fake([_item(0, "x")], limit=0)
+    assert _run(["session", SID], fake)[0] == 1
+    assert "response_too_large" in capsys.readouterr().err
