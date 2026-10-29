@@ -1,0 +1,346 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "sensitive-value-detectors"
+intent: >-
+  Give sensitive-value detection one home: a stdlib-only leaf package, src/sensitive_values, holding every detector class
+  (seeded from the six existing redactors) and named profiles over them, so the production content reader (plan 2 of
+  the rec-4481 program) masks transcript text with the same shapes the write-time scrubber uses, and the security
+  project's rec-4657 widens one library instead of a seventh copy. The write-time scrubber becomes a byte-identical
+  adapter (no parser bump). A corpus ratchet with a Decision-gated loosening marker makes any weakening of a profile
+  fail the PR unless a Decision approves it (Decision 235 class). The redactors that cannot import the package stay as
+  copies, pinned by tests to be no stronger than the read profile.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-sensitive-value-detectors.yaml
+phase: >-
+  ad_hoc_rec (soft-warn category; no tier_item claimed, so the Tier Item Freshness Gate is skipped). Plan 1 of 3 for
+  rec-4481 (High). closes_criteria is empty: no tier_item criterion names this work.
+closes_criteria: []
+scope:
+  - file: src/sensitive_values/__init__.py
+    action: Create
+    purpose: >-
+      Facade (Decision 80/104/124 pattern) re-exporting the public surface: DetectorClass, MaskResult, mask,
+      fingerprint, PROFILES, CLASSES, MARKER_FORMAT. No logic. Docstring: the single home for sensitive-value shapes; consumers pick a profile;
+      a profile change that lowers a corpus count needs a detector-loosening-approved marker (Decision 235 cl.1).
+  - file: src/sensitive_values/classes.py
+    action: Create
+    purpose: >-
+      Frozen DetectorClass(id, family, pattern, kind, accept) rows, stdlib re only, compiled at import with no other
+      import-time work. kind is whole (replace the match), keep_prefix (keep group 1, replace the rest) or keep_affixes
+      (keep groups 1 and 3, replace group 2); accept is an optional predicate on the match (the Bearer heuristic). Rows,
+      each with a one-line comment naming the redactor it was seeded from: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
+      AWS_SESSION_TOKEN, ANTHROPIC_API_KEY, GITHUB_TOKEN, BEARER_TOKEN (src/turn_capture/scrub.py, patterns copied
+      character for character); DSN_PASSWORD (the password field of a URL-style connection string, between the user name and the at-sign, keep_affixes);
+      PASSWORD_ASSIGNMENT and X_AMZ_PARAM (src/common/ducklake_handler_errors.py's first two patterns, as keep_prefix so
+      the key stays readable and only the value is masked); UNIQUE_ID (IAM unique IDs, every
+      prefix in scrub.py's _KEY_PREFIXES except AKIA/ASIA, 16-17 characters, token-bounded as in
+      scripts/ci/redaction_check.py:UNIQUE_ID_SHAPE); ACCOUNT_ID (redaction_check.py:ACCOUNT_ID_SHAPE verbatim,
+      token-bounded so hex digests and SHAs are never hit, and an account inside an ARN is masked while the resource
+      path stays, the rec-4656 mask_account_ids precedent). No whole-ARN class: role and resource names are public in
+      terraform/, and the feedback loop needs them to read what an agent did.
+  - file: src/sensitive_values/profiles.py
+    action: Create
+    purpose: >-
+      PROFILES: name -> ordered tuple of class ids, each applied once in order. write_time = scrub.py's CLASS_ORDER
+      exactly. read_masked = write_time, then DSN_PASSWORD, PASSWORD_ASSIGNMENT, X_AMZ_PARAM, UNIQUE_ID, ACCOUNT_ID.
+      MARKER_FORMAT "[REDACTED:{cls}]" for every profile (scrub.py's grammar). No S3 URI class: the data-lake bucket
+      name is public in terraform/personal/main.tf, so masking it would cost transcript readability for no secrecy.
+  - file: src/sensitive_values/engine.py
+    action: Create
+    purpose: >-
+      mask(text, profile) -> MaskResult(text, counts): applies the profile's classes in order with scrub.py's exact
+      semantics (one re.sub per class, counts per class, only non-zero counts returned, never reports matched text,
+      never raises on a str, idempotent). An unknown profile raises KeyError naming the profile only.
+      fingerprint(profile) -> "<profile>@<first 12 hex of sha256>" over each class's id, pattern source, flags and
+      kind in profile order, so a response can name the exact detector set that masked it (plan 2).
+  - file: src/turn_capture/scrub.py
+    action: Modify
+    purpose: >-
+      Becomes an adapter: CLASS_ORDER = PROFILES["write_time"]; ScrubResult keeps its fields; scrub_text(text) returns
+      ScrubResult(*mask(text, "write_time")). The regexes and helper closures move to the package. Output and counts are
+      byte-identical (VP step 1), so parser_versions.yaml stays at claude_code 7 and the golden digest is unchanged. The
+      docstring keeps the parser_version sentence and names the package as the pattern home.
+  - file: tests/turn_capture/test_package_boundary.py
+    action: Modify
+    purpose: >-
+      ALLOWED_FIRST_PARTY gains "src.sensitive_values" (planned-change, acceptance_criteria[2]): turn_capture stays
+      plane-neutral because the new package is itself a stdlib leaf, enforced by the new importlinter contract. FORBIDDEN
+      and the other two tests are unchanged.
+  - file: .importlinter
+    action: Modify
+    purpose: >-
+      New contract src-sensitive-values-is-a-leaf (forbidden: scripts, src.common, src.data, src.lambdas, src.schemas,
+      src.telemetry, src.turn_capture, src.row_rules), mirroring src-row-rules-is-a-leaf.
+  - file: src/lambdas/data-pipeline/manifest.yaml
+    action: Modify
+    purpose: >-
+      excludes gain src/sensitive_values beside src/turn_capture and src/row_rules, so the src/ include never bundles it
+      and a package edit never marks data-pipeline affected (PLAN-ops-writer-row-rules precedent).
+  - file: tests/lambda_manifest/test_bundle_checks.py
+    action: Modify
+    purpose: >-
+      Add test_sensitive_values_excluded_from_data_pipeline, the twin of test_turn_capture_excluded_from_data_pipeline:
+      the exclude is declared, compute_affected_artifacts over the package files omits data-pipeline, and a staged
+      bundle holds no sensitive_values path.
+  - file: scripts/checks/misc/sensitive_value_corpus.py
+    action: Create
+    purpose: >-
+      Runtime-built corpus, no literal secret or account shapes (the never-commit hook and detect-secrets must never see
+      one; Decision 138): POSITIVES, one tuple (class_id, text, planted_value) per case, at least two per class and
+      including scrub.py's JSON, export and Bearer-boundary shapes, ARNs in quoted, comma-terminated and AccessDenied
+      contexts (planted value = the account field), 17-character unique IDs, and DSNs; NEGATIVES, texts no read_masked class may touch (40-hex SHAs, sha256
+      and md5 digests, 13-digit epoch milliseconds, UUIDs, ISO timestamps, `token = get_token()`, a public s3:// path,
+      short Bearer words).
+  - file: scripts/checks/misc/sensitive_value_detectors.py
+    action: Create
+    purpose: >-
+      Two registered checks collocated with the registry's semantics (coverage_baseline.py shape).
+      validate_detector_ratchet: (a) the registry's keys equal {profile/class for every class in every profile}; (b) for
+      each key the measured count (POSITIVES of that class whose planted value is absent from mask(text, profile).text)
+      equals the registered count; (c) mask(text, profile) changes no NEGATIVES text; (d) every protected path
+      (src/sensitive_values/, src/turn_capture/scrub.py, config/sensitive_value_detectors.yaml,
+      scripts/checks/misc/sensitive_value_*.py) matches an entry in .github/CODEOWNERS and a Decision 117
+      boundary_patterns entry. validate_detector_registry_edits: _marker_guard.check_state_diff plus check_present_markers
+      on a RegistrySpec with token detector-loosening-approved, gated_direction down, weakened = head count < base count,
+      gates_deletion = base count > 0 (a class leaves a profile only after a marked drop to 0), mention_candidates = the
+      exact key only, reason_required true. Wired like scripts/checks/ci_guards/validate_schedule_removal_markers.py:
+      SKIP (registry.skipped) when origin/main is unreachable, a batched `git cat-file` base reader that returns "" for
+      a registry absent at the base (every entry new, so the plan's own PR passes), and registry.examined over the
+      entry count.
+  - file: config/sensitive_value_detectors.yaml
+    action: Create
+    purpose: >-
+      The ratchet registry: entries keyed "<profile>/<CLASS>" with the measured corpus count. Header comment names the
+      marker grammar `# detector-loosening-approved: dec-NNN <reason>` and that a raise is always free.
+  - file: scripts/checks/misc/_manifest.py
+    action: Modify
+    purpose: >-
+      Entry rows for validate_detector_ratchet and validate_detector_registry_edits, pre=True, full_segment
+      full_after_lint, no pre_globs (both run every tier; the ratchet is a few hundred regex calls).
+  - file: docs/contracts/marker-grammar.yaml
+    action: Modify
+    purpose: >-
+      New token detector-loosening-approved (direction down, reason_required true, used_by
+      [validate_detector_registry_edits]) bound to the existing check_state_diff export, adding no export; one
+      amendment_log entry (field_add, semantic_break false). The token puts detector loosening in Decision 235 cl.1's
+      class by that clause's own wording.
+  - file: config/agent/executor/capabilities.yaml
+    action: Modify
+    purpose: >-
+      boundary_patterns gain src/sensitive_values/, src/turn_capture/scrub.py, config/sensitive_value_detectors.yaml,
+      scripts/checks/misc/sensitive_value_ and tests/sensitive_values/, under a comment citing Decision 235 cl.5 and the
+      Decision 221 cl.2 precedent. Their checks then sit in Decision 235 cl.5's irreducible floor and T4.21's base-ref
+      guard refuses executor diffs to them once built.
+  - file: .github/CODEOWNERS
+    action: Modify
+    purpose: >-
+      Four lines owned by the operator: /src/sensitive_values/, /src/turn_capture/scrub.py,
+      /config/sensitive_value_detectors.yaml, /scripts/checks/misc/sensitive_value_*.py. Procedural until rec-2827
+      (agent PRs are authored as the sole code owner); the binding controls are the ratchet and the plan 3 deploy lock.
+  - file: tests/sensitive_values/__init__.py
+    action: Create
+    purpose: Package marker (empty), matching tests/turn_capture/.
+  - file: tests/sensitive_values/test_engine.py
+    action: Create
+    purpose: >-
+      Per class: every POSITIVES case of that class is masked by read_masked with the class marker and counted;
+      idempotent on its own output; never raises on arbitrary str (including lone surrogates); counts carry class ids
+      and integers only; an unknown profile raises KeyError; profile order is closed (each id resolves to a class).
+  - file: tests/sensitive_values/test_write_time_identity.py
+    action: Create
+    purpose: >-
+      test_write_time_matches_pre_library_digest: sha256 over scrub_text(text).text and sorted counts for every
+      POSITIVES and NEGATIVES text equals a constant the implementer computes on main BEFORE editing scrub.py and
+      records in the test (byte identity without keeping a second copy of the old code). Also asserts scrub_text and
+      mask(..., "write_time") agree on every case.
+  - file: tests/sensitive_values/test_copies_no_stronger.py
+    action: Create
+    purpose: >-
+      For each redactor that keeps its own copy -- scripts/ci/redaction_check.py mask_account_ids (system python3 in
+      terraform-apply-sandbox.yml cannot import src), scripts/terraform_apply_guard.py _redact (stdlib, code-owned),
+      src/common/ducklake_handler_errors.py redact (Lambda-packaged in four DuckLake bundles), scripts/ci/
+      security_detector_probe.py redact, and the .pre-commit-config.yaml block-sensitive-identifiers regex (parsed from
+      the file) -- over every POSITIVES case: whenever the copy removes or flags the planted value, read_masked removes it
+      too. Plus redaction_check's ACCOUNT_ID_SHAPE and UNIQUE_ID_SHAPE pattern sources are asserted equal to the
+      corresponding class sources' token-bounded cores.
+  - file: tests/checks/misc/test_sensitive_value_detectors.py
+    action: Create
+    purpose: >-
+      Ratchet: passes on the committed tree; fails on a registry key missing, an extra key, a count off by one, a
+      monkeypatched loosened pattern, a NEGATIVES hit, and a protected path with no CODEOWNERS line or no boundary
+      pattern. Tamper guard (fixture base text and Decision bodies): an unmarked decrease fails; a marker citing a
+      Decision whose body names the exact key passes; a marker citing a Decision naming only the profile fails; deleting
+      a non-zero entry fails; deleting a zero entry passes; a new entry and an increase pass.
+  - file: config/agent/verification_registry/entries/sensitive-values-write-time-identity.yaml
+    action: Create
+    purpose: >-
+      Graduation shard for VP step 1 (check_id sensitive-values-write-time-identity, primitive_slot test_selector,
+      guard_target src/turn_capture/scrub.py, plan_slug sensitive-value-detectors, graduated_at the merge date,
+      graduated_by implement-agent, check_spec node_id
+      tests/sensitive_values/test_write_time_identity.py::test_write_time_matches_pre_library_digest).
+bundled_recommendations: []
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    src/turn_capture/scrub.py produces byte-identical text and identical counts to the pre-change scrubber on the whole
+    corpus, parser_versions.yaml is unchanged, and every existing test in tests/turn_capture/test_scrub.py and
+    tests/telemetry/test_parser_version_registry.py passes unmodified.
+  - >-
+    mask(text, "read_masked") masks every POSITIVES case and touches no NEGATIVES case, and removes every planted value
+    that any of the five pinned copies removes.
+  - >-
+    src.sensitive_values imports only the standard library (importlinter contract src-sensitive-values-is-a-leaf), and
+    src.turn_capture may import it (the one planned widening of tests/turn_capture/test_package_boundary.py).
+  - >-
+    validate_detector_ratchet and validate_detector_registry_edits are registered, run in the fast tier, pass on the
+    committed tree, and fail on each loosening named in tests/checks/misc/test_sensitive_value_detectors.py.
+  - >-
+    No Lambda artifact changes: data-pipeline is reported affected only by its own manifest edit (new-path excludes,
+    staged runtime code byte-identical; no deploy), and no DuckLake artifact is affected.
+  - The detector paths carry CODEOWNERS lines and boundary_patterns entries, asserted by validate_detector_ratchet.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: The write-time scrubber is byte-identical after becoming an adapter; the parser registry and golden digest hold.
+    command: >-
+      bin/venv-python -m pytest tests/sensitive_values/test_write_time_identity.py::test_write_time_matches_pre_library_digest
+      tests/turn_capture/test_scrub.py tests/telemetry/test_parser_version_registry.py -q
+    expected: exit 0; all selected tests pass. Before the change the identity node does not exist.
+    fix_if: >-
+      The digest differs -- the adapter changed behaviour; fix the package or adapter, never the recorded digest. The
+      golden digest drifts -- same; a parser_version bump is out of scope (rec-4657 owns write_time widening).
+    hermetic: true
+    expected_literals: ["passed"]
+    graduation: graduate
+    graduation_check_id: sensitive-values-write-time-identity
+  - step: 2
+    phase: pre-deploy
+    action: The library masks every positive, spares every negative, and is at least as strong as each pinned copy.
+    command: bin/venv-python -m pytest tests/sensitive_values -q
+    expected: exit 0; every test passes. Before the change the directory does not exist.
+    fix_if: A copy removes a planted value read_masked keeps -- widen the class in the package; never drop the case.
+    hermetic: true
+    expected_literals: ["passed"]
+    graduation: waive
+    graduation_waiver_reason: >-
+      Directory-level selection; the ratchet check registered in step 3 re-asserts the same corpus property in every
+      tier, and step 1 graduates the identity node.
+  - step: 3
+    phase: pre-deploy
+    action: The ratchet and tamper guard pass on the tree and fail on each loosening.
+    command: >-
+      bin/venv-python -m pytest tests/checks/misc/test_sensitive_value_detectors.py -q &&
+      bin/venv-python -c "from scripts.checks.misc.sensitive_value_detectors import validate_detector_ratchet as r, validate_detector_registry_edits as e; f=[]; r(f); e(f); print('DETECTOR_FAILS', len(f)); assert not f, f"
+    expected: exit 0; tests pass and the last line is DETECTOR_FAILS 0.
+    fix_if: A loosening case passes -- fix the check; never relax the test.
+    hermetic: true
+    expected_literals: ["DETECTOR_FAILS 0"]
+    graduation: waive
+    graduation_waiver_reason: Both checks are registered in scripts/checks/misc/_manifest.py and run in every tier.
+  - step: 4
+    phase: pre-deploy
+    action: Import boundaries hold and no Lambda artifact needs a deploy.
+    command: >-
+      bin/venv-python -m scripts.import_governance --check-contracts &&
+      bin/venv-python -m pytest tests/turn_capture/test_package_boundary.py
+      tests/lambda_manifest/test_bundle_checks.py::test_sensitive_values_excluded_from_data_pipeline
+      tests/lambda_manifest/test_bundle_checks.py::test_turn_capture_excluded_from_data_pipeline -q &&
+      bin/venv-python -c "import subprocess; from scripts.lambda_manifest import compute_affected_artifacts as c; names=subprocess.run(['git','diff','--name-only','origin/main...HEAD'],capture_output=True,text=True,check=True).stdout.split(); a=c([n for n in names if n!='src/lambdas/data-pipeline/manifest.yaml']); print('AFFECTED', sorted(a))"
+    expected: exit 0; the last line is AFFECTED [].
+    fix_if: >-
+      An artifact is affected -- a package path is bundled somewhere; add the exclude, never deploy from this plan. An
+      import contract fails -- the package imported a first-party module; remove the import.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: The affected-artifact line reads this branch's transient diff; the two tests run in every tier.
+  - step: 5
+    phase: pre-deploy
+    action: SLOC budgets hold with no raise.
+    command: >-
+      bin/venv-python -c "from scripts.checks.sloc.sloc_limits import validate_sloc_limits as c; f=[]; c(f); print('SLOC_FAILS', len(f)); assert not f, f"
+    expected: SLOC_FAILS 0; exit 0.
+    fix_if: A file is over budget -- decompose (Decision 128); never raise.
+    hermetic: true
+    expected_literals: ["SLOC_FAILS 0"]
+    graduation: waive
+    graduation_waiver_reason: Replays the registered SLOC check that runs in every tier.
+  - step: 6
+    phase: pre-deploy
+    action: Discharge the handoff obligation with a full-tier run to completion (Decision 163).
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0.
+    fix_if: >-
+      A failure in scope is fixed on the branch; never skip a test, relax an assertion, or add a baseline, allowlist or
+      budget entry. A failure outside scope becomes a rec via scripts.ops_data_portal (Decision 59, 55).
+    hermetic: false
+    graduation: not-applicable
+test_obligations:
+  - source: src/turn_capture/scrub.py
+    behavior: Adapter output and counts are byte-identical to the pre-change scrubber.
+    verification_step: 1
+    test_selector: tests/sensitive_values/test_write_time_identity.py::test_write_time_matches_pre_library_digest
+    red_green_expectation: red before (node missing), green after.
+  - source: src/sensitive_values/engine.py
+    behavior: Applies classes in order once each; counts only; idempotent; never raises on a str.
+    verification_step: 2
+    test_selector: tests/sensitive_values/test_engine.py
+    red_green_expectation: red before (package missing), green after.
+  - source: src/sensitive_values/classes.py
+    behavior: Each class masks its positives and spares the negatives; no weaker than any pinned copy.
+    verification_step: 2
+    test_selector: tests/sensitive_values/test_copies_no_stronger.py
+    red_green_expectation: red before (package missing), green after.
+  - source: src/sensitive_values/profiles.py
+    behavior: write_time equals scrub.py's CLASS_ORDER; read_masked is write_time plus the identity and DSN classes.
+    verification_step: 2
+    test_selector: tests/sensitive_values/test_engine.py
+    red_green_expectation: red before (package missing), green after.
+  - source: scripts/checks/misc/sensitive_value_detectors.py
+    behavior: Ratchet and tamper guard fail on each loosening and pass on the tree.
+    verification_step: 3
+    test_selector: tests/checks/misc/test_sensitive_value_detectors.py
+    red_green_expectation: red before (module missing), green after.
+  - source: src/lambdas/data-pipeline/manifest.yaml
+    behavior: Excludes the package so data-pipeline never bundles it.
+    verification_step: 4
+    test_selector: tests/lambda_manifest/test_bundle_checks.py::test_sensitive_values_excluded_from_data_pipeline
+    red_green_expectation: red before (node missing), green after.
+constraints:
+  - Never write a literal secret, account ID, ARN or unique ID in code, tests, commit text or PR body; corpus values are built at runtime (Decision 138, Decision 101).
+  - write_time stays byte-identical; widening the write-time scrub is rec-4657's parser_version bump, not this plan.
+  - redaction_check.py, terraform_apply_guard.py, ducklake_handler_errors.py and security_detector_probe.py are not edited; only tests pin them.
+  - No Lambda deploy, no AWS state change, no admin credentials, no Neon resource.
+  - No rescue agents or workaround loops (Decision 55).
+context:
+  - "Program: rec-4481 production content reads, plan 1 of 3 (2 content reader code + new Decision; 3 reader infra and deploy lock). Design doc https://claude.ai/artifact/AhxNzg8WZJi3gid3SLLF5r; evidence /mnt/project-files/telemetry-content-reader/."
+  - "Benjamin 2026-10-29 09:25Z (cmsg_012XgaFy8VaDQbxP5D8nC95862JLvFJbh91KKpaSx4R5Pp): build the filters into this machinery, sync later with the security project, DRY. 09:29Z (cmsg_012XgaFy8VaDQbxP5D8nC9587Ywkoq4ZrQzbLPMVdGkdTk): agents must not edit the filter and use the edited copy."
+  - "src.turn_capture forbids src.common (tests/turn_capture/test_package_boundary.py), so the package is a top-level leaf like src/row_rules, not src/common/."
+  - "src/ is wholesale in data-pipeline's includes (active artifact); the exclude keeps a package edit from marking it affected; deploy-prod-lambdas.yml push paths do not include the manifest (PLAN-ops-writer-row-rules precedent)."
+  - "Copies stay because: redaction_check.py runs as `python3 scripts/ci/redaction_check.py` (no repo root on sys.path); terraform_apply_guard.py is stdlib-only and code-owned; handler_errors is in four DuckLake bundles (an edit is a governed deploy; rec-4326 owns its next change); pygrep cannot import Python."
+  - "rec-4657 (security project) consumes this library for write-time account and ARN classes and value-free redaction events; rec-4231, rec-4326, rec-4658, rec-4156 stay with their owners."
+  - "Decision-scout (program-level, 2026-10-29): FLAGS_FOUND; for this plan CITE 235 (cl.1 class, cl.5 floor), 117, 221 cl.2, 165, 138, 101, 128, 80; the WARN flags (143, 230, 154) bind plans 2-3. Report: /mnt/project-files/telemetry-content-reader/decision-scout-report.md."
+  - "Operator go-ahead 2026-10-29 11:01Z (cmsg_012XgaFy8VaDQbxP5D8nC9584ffx6okBayoY9PimAs1mAp): write plans 1 and 2; plan 3 waits for the approval probe (rec-4695)."
+  - "red_overlap verdict: clear (no open reds). recs_related: rec-4657, rec-4326, rec-4231, rec-4156, rec-4658 checked, none bundled (each stays with its owner; this plan edits none of their files' behaviour)."
+  - "gates: decision-scout=FLAGS_FOUND (program); plan-critique=pending"
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - On main's scrub.py, compute the corpus digest for test_write_time_matches_pre_library_digest BEFORE editing scrub.py (write the corpus module first).
+  - Package (classes, profiles, engine, facade), .importlinter contract, boundary-test widening, data-pipeline exclude and its test.
+  - scrub.py adapter; run VP step 1.
+  - Corpus-driven tests for the engine and the pinned copies; run VP step 2.
+  - Registry YAML, the two checks, manifest Entries, marker-grammar token, boundary_patterns, CODEOWNERS lines, check tests; run VP step 3.
+  - Graduation shard for step 1.
+  - Execute VP steps 4-6; on unrecoverable failure stop and RCA (Decision 55).
+  - Open the PR; merge on code review PROCEED and green CI under the standing rule.
+  - 'Report: what was implemented, verification results'
+rollback: >-
+  Revert the squash commit. Nothing is deployed; scrub.py returns to its inline regexes with identical output.
