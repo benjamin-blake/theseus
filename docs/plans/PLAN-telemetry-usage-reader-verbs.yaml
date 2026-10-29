@@ -83,7 +83,8 @@ scope:
     action: Modify
     purpose: >-
       New node test_reader_gate_reads_the_usage_verbs (wired fake: a 200 with matching rows passes, a non-200 or a row with
-      a missing column fails naming the verb, no body echoed).
+      a missing column fails naming the verb, no body echoed); test_happy_path_prints_the_fixed_line's pinned named_read
+      verb sequence gains the three verbs after sessions_window.
   - file: tests/common/test_ducklake_model_usage_rollup.py
     action: Create
     purpose: rec-4719 acceptance (whole file). Nodes in execution_steps[4].
@@ -117,7 +118,7 @@ acceptance_criteria:
   - "tool_use_rollup counts each tool_call once per observation (open row), splits error, blocked and interrupted by the observation's current close, and groups by tree, root or sub-agent, agent_name, workflow, tool name, MCP server; it equals the oracle on every golden tree."
   - "session_startup_baseline returns one row per session of each tree with the earliest model_call's model and token classes (1h/5m split included), NULLs and model_call_count 0 for a session with no model_call; it equals the oracle on every golden tree."
   - "All three are agent-facing window verbs (max 7 days), served by the telemetry reader, listed in VERB_FIELDS and read-engine.yaml, and carry the Decision 207 stamps; non-real projects and trees outside the window are excluded."
-  - "scripts.telemetry_usage chunks a range into <=7-day calls, sums exactly, halves a chunk on a typed 413 or 504, refuses more than --max-windows calls, and on any other failed chunk prints no total and exits 1 naming the failed window and error_type."
+  - "scripts.telemetry_usage chunks a range into <=7-day calls, sums exactly, halves a chunk on a typed 413 or 504, refuses more than --max-windows initial windows and more than 32 calls in all, and on any other failed chunk prints no total and exits 1 naming the failed window and error_type."
   - "Post-deploy: the governed deploy and the reader smoke gate are green and a live CLI run over a 9-day range answers per-model totals including claude-fable-5-1."
   - "rec-4719, rec-4702 and rec-4703 are closed; rec-4725 (the alarm) stays open."
 verification_plan:
@@ -188,7 +189,7 @@ verification_plan:
   - step: 7
     phase: pre-deploy
     action: >-
-      Every registry-wide guard picks the new verbs up: VERB_FIELDS parity and output columns, describe and the MCP
+      The main registry-wide guards pick the new verbs up (the full tier in VP 8 runs the rest): VERB_FIELDS parity and output columns, describe and the MCP
       projection, read-engine grouping, served-set, read routing, the smoke gate, the existing event-verb and
       verification-verb suites unchanged.
     command: >-
@@ -248,7 +249,7 @@ verification_plan:
       bin/venv-python -m scripts.telemetry_usage tools --from 2026-10-21 --to 2026-10-29 > /tmp/usage-tools.json &&
       bin/venv-python -m scripts.telemetry_usage startup --from 2026-10-21 --to 2026-10-29 > /tmp/usage-startup.json &&
       bin/venv-python -c "import json; m = json.load(open('/tmp/usage-models.json')); t = json.load(open('/tmp/usage-tools.json'));
-      s = json.load(open('/tmp/usage-startup.json')); print('calls', m['calls'], 'fable', [r for r in m['rows'] if r['model'] == 'claude-fable-5-1'][0]['tokens_output_total'] > 0,
+      s = json.load(open('/tmp/usage-startup.json')); print('calls', m['calls'], 'fable', any(r['model'] == 'claude-fable-5-1' and (r['tokens_output_total'] or 0) > 0 for r in m['rows']),
       'artifact', any(r['tool_name'] == 'Artifact' for r in t['rows']), 'kinds', sorted({r['is_root'] for r in s['rows']}))"
     expected: calls 2, fable True, artifact True, kinds [False, True]; each command exits 0 and its stderr names two windows.
     fix_if: A non-zero exit names the failed window and error_type; diagnose it, never retry into a partial total.
@@ -330,12 +331,12 @@ constraints:
   - No rescue agents or workaround loops (Decision 55).
 context:
   - "Decision-scout verdict FLAGS_FOUND; CITE 199, 236, 207, 88, 84, 128, 101; one SPIRIT NOTE (Decision 215: the CLI must fail closed on a failed chunk), folded into execution_steps[3]. Decisions triaged: 190 of 190. Roadmap items intersected: 3; CONFLICT: 0; RELATED: 3."
-  - "gates: decision-scout=FLAGS_FOUND (note accepted); plan-critique=REVISE round 1 (F1-F5 fixed); round 2 pending"
+  - "gates: decision-scout=FLAGS_FOUND (note accepted); plan-critique=REVISE round 1 (F1-F5 fixed), PROCEED round 2 (F1-F6 fixed); round 3 confirming"
   - "Evidence: /mnt/project-files/usage-report-check/REPORT.md (per-model hand walk, 22 trees), /mnt/project-files/context-composition-feedback/FINDINGS.md (startup baseline, tool counts); approach /mnt/project-files/usage-reader-verbs/step6b-presentation.md."
   - "Decided with notice: server cap stays 7 days, longer ranges are client chunks (exact: every tree row carries the root's partition pin, Decision 199 cl.2); rec-4331 not bundled (its text gates it behind the executor cost governor; the CLI prints a cache_read_ratio per model); rec-4703's step-change alarm split to rec-4725."
   - "Changed after the presentation, with notice: the presented read-time surface label is dropped (constraint 4); the CLI groups by a literal branch_prefix instead."
   - "Thread-title link: rows carry harness_session_key (the session_01... id list_sessions/get_session use); titles are joined in-session. The project thread title is not in the transcript (ai-title is Claude Code's own)."
-  - "Coordination: PLAN-telemetry-content-reader's build also edits ducklake_telemetry_reader.yaml and read-engine.yaml (amendment-log text only); merge main and keep both entries. Tell the coordinator before merging: the merge redeploys the telemetry reader (governed channel) and data-pipeline (CI)."
+  - "Coordination: PLAN-telemetry-content-reader's build also edits ducklake_telemetry_reader.yaml and read-engine.yaml (amendment-log text only); merge main and keep both entries. Tell the coordinator before merging: the merge redeploys the telemetry reader (governed channel); no data-pipeline deploy fires."
   - "TELEMETRY_PRODUCTION_HOLD (PLAN-telemetry-top-level-agent-run): while a telemetry column add is pending, deploy-telemetry skips the production reader; VP 9 stops on that notice."
   - "Live probe 2026-10-29: telemetry_root_sessions over 7 days 10.6 s, sessions_window 5.9 s; 57 roots 23-29 Oct (51 claude/project-thread-*, 6 agent/*)."
   - "Neighbours not in scope: rec-4713 (surface verb), rec-4701 (skill name on Skill calls; until then Skill counts as one tool), rec-4704 (loaded-surface capture), rec-4720 (a Fable capture gap: this verb reports what was captured), rec-4363 (no offset on paginable verbs; these verbs are not paginable)."
@@ -356,12 +357,14 @@ execution_steps:
     SQL (src/common/ducklake_event_read_sql.py). Window scope as sessions_window; real-purpose projects only (the {projects}
     purpose = 'real' join). One shared CTE block, written once: tree = the deduped rows sharing (tenant_id, project_id,
     session_started_at); per session: is_root = parent_session_id IS NULL, workflow = the first non-null value by
-    (event_timestamp, coalesce(source_ordinal, -1), event_id) (the _FIRST rule), and for a sub-agent session agent_name = the
-    latest non-null telemetry_agents.agent_name of that session_id by the same ordering (NULL for a root); per tree:
+    (event_timestamp, coalesce(source_ordinal, -1), event_id) (the _FIRST rule); per tree:
     root_session_id = min(session_id) over root sessions (NULL if none), roots_in_tree = their count, harness_session_key
     and branch = the root's first non-null values, tree stamps = generations (distinct producer/parser_version structs
-    over the tree's sessions, ordered), conflicted_grain_keys (the tree's sessions' keys, concatenated in the existing
-    order) and derivation_conflicted (any session conflicted). model_call rows are the R5c-collapsed o rows.
+    over the tree's sessions, ordered by producer then parser_version), conflicted_grain_keys (the tree's sessions' keys,
+    ordered by table_name, producer, event_id, parser_version) and derivation_conflicted (any session conflicted). model_call rows are the R5c-collapsed o rows. A second,
+    agents-only CTE, composed only into (b) and (c) (which compose the agents table): for a sub-agent session agent_name
+    = the latest non-null telemetry_agents.agent_name of that session_id by the same ordering (NULL for a root). (a) does
+    not compose agents and carries no agent_name.
     (a) MODEL_USAGE_ROLLUP_SQL over (observations, sessions): one row per (tree, model) with columns root_session_id,
     harness_session_key, branch, workflow (the root's), session_started_at, last_event_timestamp (tree max over s and o),
     roots_in_tree, model, session_count (sessions with a call on the model), model_call_count, tokens_input_total,
@@ -398,13 +401,18 @@ execution_steps:
     call's latest close, and session_count. session_startup_baseline: one row per session of each tree with its earliest
     model_call (event_timestamp, source_ordinal, event_id) and that call's model and token classes, or model_call_count 0
     and NULLs. Every row carries root_session_id, roots_in_tree, harness_session_key and branch for the title join, and the
-    Decision 207 stamps (tree-level for the two rollups: any session conflicted). No row carries content, cost or a single
+    Decision 207 stamps; for the two rollups they are tree-level: generations is the distinct (producer, parser_version)
+    pairs over the tree's sessions ordered by producer then parser_version, conflicted_grain_keys is every tree session's
+    conflicted keys ordered by table_name, producer, event_id, parser_version, and derivation_conflicted is true when any
+    tree session is conflicted. No row carries content, cost or a single
     summed token total." amendment_log entry: date, semantic_break false, change_class field_add, summary naming the three
     verbs and recs, migration_story "New verbs only; no existing verb, payload or answer changes; describe lists three more
-    agent-facing verbs." The oracle in scripts/telemetry_verify/derive.py implements this text.
+    agent-facing verbs." The oracle in scripts/telemetry_verify/derive_usage.py implements this text.
   - >-
-    CLI (scripts/telemetry_usage.py). Split [from, to] into consecutive windows of at most 7 days; refuse more than
-    --max-windows calls (default 9) before any call; print "windows=<n>" and each window to stderr. Call the verb per
+    CLI (scripts/telemetry_usage.py). Split [from, to] into consecutive windows of at most 7 days; refuse a range needing more than
+    --max-windows initial windows (default 9) before any call; halving adds calls under a separate fixed cap of 32 calls
+    per invocation, past which the CLI fails closed; print "windows=<n>", each window and the final "calls=<n>" to
+    stderr. Call the verb per
     window through TelemetryReader(profile resolved by scripts.aws_profile.resolve_aws_profile). On ResponseTooLargeError
     (413) or ReadDeadlineExceededError (504) halve that window and read the halves, down to 1 day, then fail (the
     contract's "narrow the window"; the same read is never resent). On any other error (ReaderInvokeError after the
@@ -432,7 +440,7 @@ execution_steps:
     test_usage_verbs_are_registered_agent_facing_window_verbs (binding window, max_window_days 7, agent_facing, params
     day_from/day_to, VERB_FIELDS present), test_reader_contract_declares_the_usage_verbs (ducklake_telemetry_reader.yaml audit_invariants name all three verbs and the latest amendment_log entry is a field_add naming them), test_twenty_days_make_three_exact_chunks, test_chunk_sums_equal_a_single_window_sum,
     test_a_failed_chunk_prints_no_total_and_exits_1 (504 and 503 cases, stderr names the window), test_413_and_504_halve_the_window,
-    test_max_windows_refused_before_any_call, test_cache_read_ratio_null_on_zero_denominator, test_branch_prefix_literal.
+    test_max_windows_refused_before_any_call, test_halving_past_the_call_cap_fails_closed, test_cache_read_ratio_null_on_zero_denominator, test_branch_prefix_literal.
     The smoke-gate node per scope.
   - Execute the Verification Plan -- run each pre-deploy step; loop until pass; on an unrecoverable V3 failure stop and RCA (Decision 55).
   - >-
