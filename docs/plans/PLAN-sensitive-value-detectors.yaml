@@ -36,7 +36,8 @@ scope:
       engine, never a lambda, so the fingerprint can hash it: BEARER_TOKEN carries ("long_or_digit", min_len 32), scrub.py's
       heuristic. Every replaced part refuses to start at a marker ((?!\[REDACTED:) or a charset without "["), so a second
       pass counts nothing (scrub.py's idempotence semantics, tests/turn_capture/test_scrub.py). Rows,
-      each with a one-line comment naming the redactor it was seeded from: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
+      each with a one-line comment naming the redactor it was seeded from (ASSUMED_ROLE_SESSION's and URL_CREDENTIAL's
+      comments mark what is new): AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
       AWS_SESSION_TOKEN, ANTHROPIC_API_KEY, GITHUB_TOKEN, BEARER_TOKEN (src/turn_capture/scrub.py, patterns copied
       character for character); URL_CREDENTIAL (a URL authority that carries userinfo -- user, password and host of
       a connection string -- replaced whole after the scheme, keep_prefix; seeded from the URL-credential branch of
@@ -73,7 +74,7 @@ scope:
       match unless the token is at least min_len long or holds a digit); an unknown accept name raises KeyError.
       fingerprint(profile) -> "<profile>@<first 16 hex of sha256>" over each class's id, pattern source, flags, kind and
       accept spec (name and sorted params) in profile order, so a response names the exact detector set that masked it
-      (plan 2) and a heuristic change changes the fingerprint. 16 hex, not 12: an all-digit 12-hex digest (about 0.36%)
+      (plan 2) and an accept-spec name or parameter change changes the fingerprint. 16 hex, not 12: an all-digit 12-hex digest (about 0.36%)
       would be an account-shaped run that ACCOUNT_ID and the pinned copies mask; a 16-digit run is not.
   - file: src/turn_capture/scrub.py
     action: Modify
@@ -226,20 +227,23 @@ scope:
       equal the module's rows in both directions (today 2, 2, 4 and 2 patterns, all redaction shapes), so an edited
       pattern, a new module-level compile or an inline re.sub fails until its strength is re-reviewed here. The test
       also imports all four modules by dotted name (scripts.ci.redaction_check, scripts.terraform_apply_guard,
-      src.common.ducklake_handler_errors, scripts.ci.security_detector_probe; each is stdlib-only at module scope), so
+      src.common.ducklake_handler_errors, scripts.ci.security_detector_probe; each imports cleanly with no AWS or duckdb dependency at module scope,
+      ducklake_handler_errors also loading the src.common.ducklake_runtime facade and yaml), so
       the --pre affected-test import channel selects it whenever a copy changes. For the hook, the entry is parsed
       depth-aware (the outer group unwrapped, no split inside a (?:...) or (?!...) group) into branches whose digests
       must equal the hook rows, the hook's args must equal its pinned args (none today; --ignore-case or --negate would
       change its strength), and the set of language: pygrep hook ids must equal {block-sensitive-identifiers}, so a new
-      pattern hook fails until it is pinned. Declared residual: a language: system grep hook or a pattern imported
-      from another module is out of reach; every row matches at least one POSITIVES text whose planted value read_masked removes;
+      pattern hook fails until it is pinned; every row matches at least one POSITIVES text whose planted value
+      read_masked removes;
       (b) DIVERGENCES, a closed list (copy, pattern, reason) the test asserts exact: whole-ARN patterns remove the
       resource path read_masked keeps (public or AWS-generated role and resource names, readability; session names
       are masked by ASSUMED_ROLE_SESSION), and unbounded or digit-only-bounded 12-digit
       patterns hit 13-plus-digit runs and digits inside hex digests that read_masked spares (the rec-3322 false-positive
       class); each listed copy pattern must still hit a NEGATIVES text, so a stale entry fails; (c) ACCOUNT_ID's source
       equals redaction_check.ACCOUNT_ID_SHAPE's; UNIQUE_ID_SHAPE is a behavioural subset (every POSITIVES text it
-      matches, read_masked masks), since the class adds the other key prefixes.
+      matches, read_masked masks), since the class adds the other key prefixes. Declared residual: a language: system
+      grep hook, a pattern imported from another module, or a call reached through an assigned alias or getattr is
+      out of reach.
   - file: tests/sensitive_values/test_classes.py
     action: Create
     purpose: >-
@@ -538,8 +542,8 @@ context:
   - "Decided with notice (critique round 1): SSO_HUB_PROFILE joins read_masked so the read profile covers every shape a pinned copy blocks; the shared base reader and CODEOWNERS matcher are reused by import; the corpus builder stays separate from tests/fixtures (scripts/ cannot import tests/)."
   - "Decided with notice (critique round 2): the registry is per profile and case; URL_CREDENTIAL (whole credential-bearing authority, host included, Decision 101) replaces a password-only DSN class. Not pinned: validate_actions_evidence._SECRET_SHAPES' identifier branch and validate_account_credential_inventory._SHAPES (an at-sign, any word-word-8-digit run) are commit-time refusals over structured contract fields, far too broad for free text. Bare database hostnames without credentials stay unmasked, as the commit hook allows them today; rec-4657 owns widening. Coordinate scrub.py edits with rec-4657 (write_time widening is its parser bump)."
   - "Decided with notice (critique round 3): registry keys use '.' not '/' so Decision authorization stays per case; the copy pattern sets are derived by AST from each copy and the hook parsed depth-aware (hook rows pinned by digest, so no account-shaped literal enters a test); keep_affixes dropped (no row uses it); both profile fingerprints pinned in a code-owned test. The round-2 F6 subject recurred as round-3 F2 (add-a-pattern direction); the operator was told under the oscillation rule."
-  - "Decided with notice (critique round 4): ASSUMED_ROLE_SESSION joins read_masked (an SSO session name is a person's sign-in name; the critic's whole-ARN reason did not cover it); general email addresses stay visible, a widening for rec-4657. Confirming round 4 returned REVISE on three surgical points (copies test selection and fail-closed derivation, planted-value digest); escalated to the operator with a recommendation under the planning rule."
-  - "gates: decision-scout=FLAGS_FOUND (program); plan-critique=REVISE rounds 1-4 addressed, operator-chosen round pending"
+  - "Decided with notice (critique round 4): ASSUMED_ROLE_SESSION joins read_masked (an SSO session name is a person's sign-in name; the critic's whole-ARN reason did not cover it); general email addresses and the session suffix of a unique-id principal (<unique id>:<session>, get-caller-identity and CloudTrail output) stay visible, widenings for rec-4657. Confirming round 4 returned REVISE on three surgical points (copies test selection and fail-closed derivation, planted-value digest); escalated to the operator with a recommendation under the planning rule."
+  - "gates: decision-scout=FLAGS_FOUND (program); plan-critique=PROCEED (round 5, a delta check after the round-4 escalation; wording nits applied)"
 pre_implementation_checklist:
   - Branch confirmed not on main
   - >-
