@@ -41,7 +41,9 @@ scope:
       id> (Decision 184: a free-tier local run fits); a new host is a new prefix and a contract widen (Decision 210 cl.3).
       No prefix's character class admits ':' after the prefix, so an ARN cannot match; it never carries an ARN, account
       id or hostname (Decision 101); the per-host typed columns (workflow_run_id,
-      lambda_request_id) stay as typed join keys. populated_by "unproduced: T3.20:c9 (no producer writes it)". No
+      lambda_request_id) stay as typed join keys. dq_intent also gains null_or_zero_when {trigger: [subagent_sync,
+      subagent_background]}: a sub-agent row's host_run_ref is NULL at write (the additive leg refuses only not_null
+      and required_when, so the add still works). populated_by "unproduced: T3.20:c9 (no producer writes it)". No
       required_when here: Decision 222 cl.1's auto-add refuses a column carrying one, so PLAN-claude-p-capture-adapter
       adds required_when {trigger: [<top-level values>]} after the production add. amendment_log field_add entry.
       (2) trigger: dq_intent {accepted_values: {values: [subagent_sync, subagent_background, workflow_run,
@@ -78,7 +80,9 @@ scope:
       TOP-LEVEL RUN paragraph pointing at run_shapes and telemetry_sessions.surface. (9) realization: host_run_ref under
       unproduced T3.20:c9 (with workflow_run_id); a new owner key rec-4711: [lambda_request_id, findings_count,
       recs_created, queue_entries_written]; the T3.22:c5 key removed. (10) contract-level amendment_log entry naming the
-      plan, Decision 199/210/222 and rec-4416. contract_version stays 2 (field-level semantic changes are logged per
+      plan, Decision 199/210/222 and rec-4416. (11) The header comment and contract.description name both run shapes
+      (entity_ref the spawning toolUseId and session_id the CHILD on a sub-agent run; the root-session forms on a
+      top-level run). contract_version stays 2 (field-level semantic changes are logged per
       field, the corpus precedent).
   - file: docs/contracts/telemetry_sessions.yaml
     action: Modify
@@ -107,14 +111,20 @@ scope:
       dq_intent gains pattern_when [{when: {content_omitted_reason: [withheld_by_policy]}, pattern:
       "^e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855$"}] (built from hashlib.sha256(b"") in the test,
       never typed by hand); content_bytes dq_intent gains null_or_zero_when {content_omitted_reason: [withheld_by_policy]}.
-      populated_by of content_omitted_reason names both reasons. amendment_log entries on the three fields.
+      populated_by of content_omitted_reason names both reasons. The sentences that say an omission row's
+      content_sha256/content_bytes are the raw source bytes' identity (content_omitted_reason semantics, content_sha256
+      description and semantics, content_bytes description) are qualified to "an oversize omission row" and gain the
+      withheld clause; the pinned phrases "raw source bytes' identity" and "of the raw source bytes on an omission row"
+      (tests/telemetry/test_contract_amendments.py:302,304) are kept verbatim inside the qualified sentences.
+      amendment_log entries on the three fields.
   - file: docs/contracts/telemetry-lexicon.yaml
     action: Modify
     purpose: >-
       Three terms after `agent`: "top-level run" (a root session an unattended host started plus its telemetry_agents
       pair, observation_id NULL; see_also telemetry_agents run_shapes), "host run ref" (host_run_ref's prefix registry),
       "surface" (the read-derived classification, telemetry_sessions.surface). The `agent` term's definition notes the
-      session_id is the root on a top-level run. amendment_log entry (Class D, term-level only).
+      session_id is the root on a top-level run; the `payload omission` term's definition names both reasons and says a
+      withheld_by_policy row stores the empty digest and zero bytes. amendment_log entry (Class D, term-level only).
   - file: scripts/contracts_schema.py
     action: Modify
     purpose: >-
@@ -168,8 +178,8 @@ scope:
       predicate) stays ducklake-only, so the ops serving deploy never waits on a telemetry column. (5) New
       _telemetry_hold_tables(sidecar) -> sorted telemetry_catalog tables with a non-empty pending_reconcile, through the
       same _has_pending_reconcile predicate (one predicate, Decision 88 static, zero egress). (6) CLI --telemetry-hold:
-      prints exactly one stdout line "held=true" or "held=false", and on stderr "TELEMETRY_PRODUCTION_HOLD pending=<n>
-      tables=<names>" when held (columns are named, never values); exit 0 in both cases, exit 1 only on an unreadable or
+      prints exactly one stdout line "held=true" or "held=false", and on stderr "TELEMETRY_PRODUCTION_HOLD pending=<pending column count>
+      columns=<table.column names>" when held (names only, never values); exit 0 in both cases, exit 1 only on an unreadable or
       malformed sidecar (fail loud, Decision 55). Module docstring names the third entrypoint. Stays under 500 SLOC.
   - file: tests/checks/ops_governance/test_validate_reconcile_pending_gate.py
     action: Modify
@@ -191,6 +201,21 @@ scope:
       expected hold must not wake ci-rca). Job-8 header comment names the hold. No new trigger path is needed: the
       sidecar is under config/lambda/ducklake/**, so emptying pending_reconcile triggers the deploy that ships the held
       functions.
+  - file: config/composite_action_body_baseline.yaml
+    action: Modify
+    purpose: >-
+      r3_workflows gains ".github/workflows/deploy-ducklake-lambdas.yml::deploy-telemetry::hold": <the hold step's
+      measured effective line count> (Decision 162 workflow shell-body ratchet); no other entry changes.
+  - file: docs/contracts/ducklake_reader.yaml
+    action: Modify
+    purpose: >-
+      The transcript_content audit invariant's "its content_bytes is the raw source size" becomes "its content_bytes is
+      the raw source size (0 on a withheld_by_policy row)"; amendment_log entry (prose_improvement).
+  - file: src/common/ducklake_event_content.py
+    action: Modify
+    purpose: >-
+      Module docstring only: the omitted-storage clause gains "(0 on a withheld_by_policy row)". No code change; the
+      file is already in this plan's deploy.
   - file: tests/verify_ci_workflow/test_ducklake_deploy_map_wiring.py
     action: Modify
     purpose: >-
@@ -269,7 +294,8 @@ scope:
       pattern_when; (d) RowRules.from_projection over that entry plus src.row_rules.rules.check_row: a well-formed
       top-level row (trigger workflow_run, entity_ref "<uuid>/run", host_run_ref "gha:1/1/rca/1", agent_type ci_rca)
       passes, a sub-agent row passes, and each of trigger cron_workflow, host_run_ref "k8s:x", host_run_ref "gha:1"
-      and a top-level entity_ref without "/run" raises RowRuleError naming the rule and column; (e) telemetry_sessions
+      a top-level entity_ref without "/run", and a sub-agent row carrying a host_run_ref each raise RowRuleError naming
+      the rule and column; (e) telemetry_sessions
       surface is read-derived (timing read, realized false) and its description lists the seven values; (f) the
       telemetry_transcripts projection accepts a withheld_by_policy omission row with the empty digest and 0 bytes and
       refuses one with any other digest or a non-zero size; (g) host_run_ref "local:x/arn:aws:lambda:r:1:function:f" and
@@ -413,7 +439,7 @@ verification_plan:
       tests/telemetry/test_retire_session_cli_contract_notes.py tests/telemetry/test_contract_amendments.py
       tests/checks/contracts/test_telemetry_event_journal_contracts.py tests/checks/contracts/test_validate_telemetry_field_realization.py
       tests/checks/contracts/test_write_time_enforcement_conformance.py tests/checks/contracts/test_validate_telemetry_lexicon_tables.py
-      tests/test_field_semantics_event_projection.py tests/row_rules -q
+      tests/test_field_semantics_event_projection.py tests/checks/ci_guards/test__workflow_shell_bodies.py tests/row_rules -q
     expected: exit 0.
     fix_if: Fix the code or contract in scope; a pinned column list or vocabulary elsewhere is updated only where scope names it.
     hermetic: true
@@ -456,7 +482,7 @@ verification_plan:
     command: >-
       bin/venv-python -m scripts.checks.ops_governance.validate_reconcile_pending_gate --deploy-gate && bin/venv-python -m
       scripts.checks.ops_governance.validate_reconcile_pending_gate --telemetry-hold
-    expected: "OK: no reconcile_scope=ducklake table has a pending reconcile., then held=true on stdout and TELEMETRY_PRODUCTION_HOLD pending=1 tables=['telemetry_agents'] on stderr."
+    expected: "OK: no reconcile_scope=ducklake table has a pending reconcile., then held=true on stdout and TELEMETRY_PRODUCTION_HOLD pending=1 columns=['telemetry_agents.host_run_ref'] on stderr."
     fix_if: A refused --deploy-gate means a telemetry table leaked into the ducklake predicate; held=false means the pending entry is missing.
     hermetic: true
     expected_literals:
@@ -664,6 +690,21 @@ test_obligations:
     verification_step: 4
     test_selector: tests/checks/contracts/test_telemetry_registry_status.py
     red_green_expectation: red before (says exempt_reason), green after.
+  - source: config/composite_action_body_baseline.yaml
+    behavior: The hold step's inline body is baselined.
+    verification_step: 4
+    test_selector: tests/checks/ci_guards/test__workflow_shell_bodies.py
+    waiver_reason: Ratchet data read by validate_composite_action_shell_bodies in every tier (VP 10 --pre); no behaviour of its own.
+  - source: docs/contracts/ducklake_reader.yaml
+    behavior: The omitted-row size note names the withheld case.
+    verification_step: 4
+    test_selector: tests/checks/contracts/test_telemetry_top_level_agent_run.py
+    waiver_reason: Reference prose on an unserved verb; the rule it describes is pinned by VP 1 (f).
+  - source: src/common/ducklake_event_content.py
+    behavior: Docstring only.
+    verification_step: 4
+    test_selector: tests/checks/contracts/test_telemetry_top_level_agent_run.py
+    waiver_reason: Docstring-only edit; no behaviour changes.
 weakening_dispositions:
   - candidate: '[assertion-changed] tests/telemetry/test_contract_amendments.py::test_tool_result_capture_policy_declared'
     cite: acceptance_criteria[3]
@@ -724,10 +765,8 @@ context:
     of a new file or workflow. rec-4483 keeps the status vocabulary; the build appends a context note to it (update_rec)
     saying the routing half is settled here.
   - >-
-    Withheld omission digest: an oversize omission row's content_sha256 identifies the raw source bytes, which the
-    contract accepts because it "can confirm an exact guess of a short output". Plan review outputs are short verdicts,
-    and Decision 238 cl.1 says no agent-obtainable identity reads them, so a withheld row stores nothing derived from the
-    payload: the empty-string digest and zero bytes.
+    Withheld digest: an oversize row's raw digest "can confirm an exact guess of a short output"; plan-review verdicts
+    are short and Decision 238 cl.1 bars agent reads, so a withheld row stores the empty digest and zero bytes.
   - >-
     Surface is read-derived (data-modeling-standard derived-state rule) and needs no new column: the root/sub-agent split
     is parent_session_id, the top-level pair marks an unattended root, the host prefix names the host and
@@ -735,7 +774,9 @@ context:
     owns the verb, and PLAN-claude-p-capture-adapter's completeness change is its first consumer.
   - >-
     For plan 2 (recorded in the handoff): the hold must be clear and the second deploy green before its producer merges;
-    it adds host_run_ref required_when {trigger: [the seven top-level values]}; it fills workflow_run_id with the run id
+    it adds host_run_ref required_when {trigger: [the seven top-level values]}; a withheld_by_policy row it emits
+    carries the empty-string SHA-256 and content_bytes 0 (never the raw source's digest or size, or the writer refuses
+    it); it fills workflow_run_id with the run id
     too; slice 4 verification and the monitor must treat a root's top-level pair as run provenance (derive.py keeps root
     state from session rows).
   - >-
