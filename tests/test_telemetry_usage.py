@@ -13,6 +13,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 from scripts import telemetry_usage as cli
@@ -240,3 +241,43 @@ def test_startup_groups_by_day_prefix_and_root_with_nearest_rank_percentiles() -
     assert (thread["first_call_input_median"], thread["first_call_input_p90"]) == (55, 90)
     assert (thread["first_call_input_min"], thread["first_call_input_max"]) == (10, 100)
     assert (agent["branch_prefix"], agent["is_root"], agent["count"]) == ("agent", False, 1)
+
+
+def test_halving_beyond_the_call_cap_stops_at_the_cap() -> None:
+    class Oversize(FakeReader):
+        def named(self, verb: str, day_from: str, day_to: str) -> list[dict[str, Any]]:
+            if day_from != day_to:
+                self.calls.append((verb, day_from, day_to))
+                raise ResponseTooLargeError("named_read", "big", None)
+            return super().named(verb, day_from=day_from, day_to=day_to)
+
+    reader = Oversize([])
+    code, result, err = _run(["models", "--from", "2026-09-01", "--to", "2026-10-05"], reader)
+    assert (code, result) == (1, None) and len(reader.calls) == cli.MAX_CALLS
+    assert "error_type=call_cap_exceeded" in err
+
+
+def test_the_default_reader_uses_the_platform_profile_never_the_environment_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts.telemetry_capture import read_route  # noqa: PLC0415
+
+    seen: list[str | None] = []
+
+    class Recorder(FakeReader):
+        def __init__(self, profile: str | None = None) -> None:
+            super().__init__([])
+            seen.append(profile)
+
+    monkeypatch.setattr(read_route, "TelemetryReader", Recorder)
+    monkeypatch.setenv("AWS_PROFILE", "agent_platform_admin")
+    for name in ("AWS_ACCESS_KEY_ID", "AWS_LAMBDA_FUNCTION_NAME"):
+        monkeypatch.delenv(name, raising=False)
+    out, err = io.StringIO(), io.StringIO()
+    assert cli.run(["tools", "--from", "2026-10-01", "--to", "2026-10-01"], out=out, err=err) == 0
+    assert seen == ["agent_platform"]
+
+
+def test_main_exits_with_the_run_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "run", lambda argv: 3)
+    with pytest.raises(SystemExit) as info:
+        cli.main()
+    assert info.value.code == 3
