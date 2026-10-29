@@ -3,7 +3,7 @@
 Loaded automatically when Claude reads or edits files in this directory. Universal rules in
 repo-root `CLAUDE.md` and `terraform/CLAUDE.md` still apply.
 
-This module manages GitHub repository settings for `benjamin-blake/theseus` via the
+This module manages GitHub repository settings for the repository named by `var.repository_name` via the
 `integrations/github` Terraform provider: GitHub Advanced Security (secret scanning + push
 protection), the `main` branch-protection ruleset, Actions permissions, and the
 `tf-gated-apply` GitHub Environment (CD.35 Wave 3 / T2.22 / Decision 92).
@@ -71,11 +71,10 @@ on Environment reviewer approval -- the job does not start until benjamin-blake 
 the GitHub Actions UI.
 
 Key constraints:
-- `prevent_self_review = false`: sole-developer repo; self-approval is intentional.
-- `deployment_branch_policy.protected_branches = true`: the gated job is only reachable from
-  protected branches (main). No custom branch policies.
-- The reviewer user ID is passed via `gated_apply_reviewer_user_ids` at apply time; it is
-  **never** committed with a literal default.
+- `protected_branches = true` may not restrict to main under the ruleset-only main.
+- The reviewer ID comes from `gated_apply_reviewer_user_ids` at apply time, never a literal default.
+
+deployment-approval-probe: inert rec-4695 probe Environment, created in the UI and imported; see its block in `environments.tf` and the workflow header.
 
 ## Lockout recovery
 
@@ -86,8 +85,8 @@ If the ruleset is applied with incorrect required-status-check names and merges 
 ## State reconcile (rec-3136)
 
 State is keyed by repository name. After a rename or transfer, never apply first: run
-`terraform state rm github_repository.this` and the other four addresses, then apply the
-`imports.tf` re-import (5 to import, 0 to change). Plan: `docs/plans/PLAN-terraform-github-state-reconcile.yaml`.
+`terraform state rm github_repository.this` and every other address, then apply the
+`imports.tf` re-import (one block per resource, 0 to change). Plan: `docs/plans/PLAN-terraform-github-state-reconcile.yaml`.
 
 ## Ruleset check-run names
 
