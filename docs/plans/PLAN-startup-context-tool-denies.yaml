@@ -5,10 +5,11 @@ handoff_policy:
 slug: "startup-context-tool-denies"
 intent: >-
   Strip always-loaded but unused harness tools (the cloud environment-setup and computer-folder
-  tools, the Artifact family and the Claude Docs connector) from every cloud web session's startup
-  context with blanket permissions.deny rules in .claude/settings.json, cutting an estimated 17-24k
-  tokens from a measured 94,959-token first-call baseline in every session and every subagent; then
-  report the measured cost and the workaround upstream to the platform vendor.
+  tools, the Artifact family and the Claude Docs connector) from the startup context of direct
+  (repository) cloud web sessions and their subagents -- the only surface that loads
+  .claude/settings.json -- with blanket permissions.deny rules, cutting an estimated 17-24k tokens from
+  a measured 94,959-token first-call baseline per direct session; then report the measured cost and
+  the workaround upstream to the platform vendor.
 plan_type: IMPLEMENTATION
 verification_tier: V2
 plan_path: docs/plans/PLAN-startup-context-tool-denies.yaml
@@ -48,7 +49,8 @@ acceptance_criteria:
     The plugin's rendered hooks file stays the render of the settings
     (tests/hooks/test_plugin_hooks.py render test passes unchanged).
   - >-
-    In a fresh cloud session on main after merge, the context panel's MCP tools plus System tools
+    In a fresh direct cloud web session (a repository session, not a project thread) on main after
+    merge, the context panel's MCP tools plus System tools
     lines total at most 46,200 (baseline 33.4k + 22.8k = 56.2k, minus 10,000) and the System tools
     line is at most 17,800 (the Artifact family stripped); the transcript first-call total is
     recorded as a secondary figure.
@@ -109,7 +111,8 @@ verification_plan:
   - step: 4
     phase: post-deploy
     action: >-
-      In a FRESH cloud session started on main after the merge (its first message is the short
+      In a FRESH direct cloud web session (a repository session, not a project thread) started on
+      main after the merge (its first message is the short
       pasteable prompt from the hand-back step), take two readings. PRIMARY: the user reads the
       context panel's MCP tools and System tools lines -- only tool definitions move them, so the
       drop is attributable to the denies, and the System tools line alone settles whether the
@@ -171,42 +174,41 @@ context:
   - >-
     Decision-scout verdict NO_FLAGS. CITE list (verbatim): Decision 132, Decision 189, Decision 163,
     Decision 101. Decisions triaged: 190 of 190. Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1.
-  - >-
-    gates: decision-scout=NO_FLAGS; project-alignment=write-the-plan r1; plan-critique=PROCEED after 2
-    round(s); round 2 autonomous; its optional tightenings applied (mechanical: postflight JSON_FILE).
+  - "gates: decision-scout=NO_FLAGS; project-alignment=write-the-plan r1, re-scope r2; plan-critique=<pending r3>"
   - "red_overlap: verdict clear, reds [] (Decision 226)."
   - >-
-    Baseline: 2026-10-29 session on main af368683, Claude Code 2.1.42, opened with a ~60-token
-    question -- first call wrote 94,959 tokens (panel: MCP tools 33.4k, system tools 22.8k, system
-    prompt 11.9k, memory 7.3k, skills 6.3k, MCP instructions 3k; the ~10.3k Messages remainder is
-    hook output, deferred-tool index, agent list and reminders). Tokens only, never money (D101).
+    Baseline: direct web session of 2026-10-29 on main af368683, Claude Code 2.1.42, ~60-token first
+    message -- first call wrote 94,959 tokens (panel: MCP tools 33.4k, system tools 22.8k, system
+    prompt 11.9k, memory 7.3k, skills 6.3k, MCP instructions 3k; ~10.3k Messages remainder is hook
+    output, deferred-tool index, agent list, reminders). Tokens only, never money (D101).
   - >-
-    Mechanism evidence: adding these entries mid-session made the harness report the seven
-    claude-code-remote tools and the three loaded Claude Docs tools "Denied by a permission rule"
-    while keeping cached definitions (no mid-session drop); a subagent spawned meanwhile lacked
-    them and kept the other 27 claude-code-remote tools. Artifact is unproven -- step 4 settles it.
+    Reach (telemetry claim check, 2026-10-29): project threads launch with user settings only and
+    plugin settings drop permissions, so these denies reach DIRECT web sessions only -- 3 of 39 root
+    sessions on 23-29 Oct. Project-thread first calls 84.6-87.1k; subagent first calls 44-49k.
   - >-
-    git-ops.yaml cc_web_permission_gotcha forbids ALLOW entries for the send_later/trigger tools to
-    silence prompts; these are DENY entries for a disjoint tool set. send_later, create_trigger,
-    delete_trigger and the other session/trigger tools stay undenied (overseer safety_net uses them).
+    Surface evidence: this direct session's startup deferred-tool index held no claude-code-remote
+    names (the environment tools load in full), while project threads defer or omit them. Usage
+    23-29 Oct: 0 calls to the eleven tools in direct sessions; threads used Artifact (8) and Claude
+    Docs (26), unaffected because threads never load these rules.
   - >-
-    Gotchas: .claude/settings.json is a handoff-gate never_exempt path (Decision 203) -- closure
-    follows git-ops handoff_sequence; the test names ".claude/settings.json" as a quoted token for
-    --pre data-edge selection (Decision 135); request_credential's denial removes no documented
-    recovery path (Decision 113).
+    Mechanism evidence: mid-session, the harness reported the seven claude-code-remote tools and three
+    loaded Claude Docs tools "Denied by a permission rule"; a subagent spawned meanwhile lacked them
+    and kept the other 27 claude-code-remote tools. Artifact is unproven -- step 4 settles it.
   - >-
-    Known gaps: project threads never load .claude/settings.json; the plugin ships the same file
-    (marketplace source ./.claude) but plugin permission rules are unverified. Claude Docs' server
-    instructions (~0.7k) persist unless the connector is switched off account-wide. A harness rename
-    of claude-code-remote would silently no-op the entries (repo prose already spells it
-    Claude_Code_Remote); step 4 is a one-time reading.
+    git-ops.yaml cc_web_permission_gotcha forbids ALLOW entries for the send_later/trigger tools; these
+    are DENY entries for a disjoint set. send_later and the trigger/session tools stay undenied.
   - >-
-    For the rec-2982 planner: get_environment is denied once this merges, so verifying the
-    setup-script PAT removal needs a human read or the in-repo bin/setup-cloud-env.sh, not that tool.
+    Gotchas: .claude/settings.json is a never_exempt path (Decision 203); the test quotes
+    ".claude/settings.json" for --pre selection (Decision 135); request_credential's denial removes no
+    documented recovery path (Decision 113). A harness rename of claude-code-remote would silently
+    no-op the entries; Claude Docs' ~0.7k server instructions stay.
   - >-
-    Forks decided by the user (AskUserQuestion, this session): rec-2982 separate plan next; deny set =
-    environment-setup tools + Artifact family + Claude Docs (extras excluded); email = agent shows
-    text in chat, sends on the user's 'send'. Not bundled: rec-2982, rec-4519, rec-3976.
+    For the rec-2982 planner: get_environment is denied once this merges -- verify the PAT removal by
+    human read or the in-repo bin/setup-cloud-env.sh.
+  - >-
+    User forks (AskUserQuestion, this session): rec-2982 separate plan next; deny set = environment
+    tools + Artifact family + Claude Docs, kept after the reach finding; re-scope to direct sessions and
+    merge; one upstream reply after step 4, sent on the user's 'send'. Not bundled: rec-4519, rec-3976.
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -245,7 +247,8 @@ execution_steps:
     squash-merge and unsubscribe. Report readiness, validator evidence, postflight evidence and
     push/PR as separate facts; a readiness state of unknown is never a PASS.
   - >-
-    Hand back to the user with a pasteable prompt for a FRESH cloud session on main: "Run the
+    Hand back to the user with a pasteable prompt for a FRESH direct cloud web session (a repository
+    session, not a project thread) on main: "Run the
     post-merge steps of docs/plans/PLAN-startup-context-tool-denies.yaml: VP step 4, then the
     upstream reply step." (A fresh session is required: a running session keeps tool definitions it
     already sent.)
@@ -255,8 +258,9 @@ execution_steps:
   - >-
     Fresh session, upstream reply: find the user's existing vendor feedback thread on cloud
     environment setup in their sent mail (the user confirms the thread). Compose a reply of at most
-    ten lines: (i) the environment-setup tools are always loaded, not deferred -- measured cost per
-    session and per subagent for a one-time setup flow; (ii) the workaround -- blanket
+    ten lines: (i) the environment-setup tools load in full in direct web sessions while project
+    threads already defer or omit them -- measured cost per direct session (and its subagents) for a
+    one-time setup flow; (ii) the workaround -- blanket
     permissions.deny in the repo settings, with the merged PR link; (iii) the ask -- load these tools
     on demand (tool search) or only when the user asks to set up an environment; (iv) a one-line
     P.S. that plugin skills are not de-duplicated against identical repo skills in web sessions.
