@@ -27,7 +27,8 @@ scope:
       "<UTC ISO-8601 with milliseconds, Z>"} (`date -u +%Y-%m-%dT%H:%M:%S.%3NZ`) (so a session killed by a step timeout is still found), and after it {"session_id": "<uuid>",
       "exit": <int>, "transient": <bool>} (attempt counts per wrapper invocation; two invocations in one job, as
       reconcile does, append to the same file). A manifest write failure is ignored and never changes the exit code. A
-      caller passing --session-id, --resume, --continue, --fork-session or --no-session-persistence gets the usage exit 1
+      caller passing --session-id, --resume, --continue, --fork-session or --no-session-persistence (also the -r and -c
+      short forms and any --flag=value spelling) gets the usage exit 1
       (capture needs one fresh persisted session per attempt). Reads no new environment variable, so it works under
       review.sh's env -i. Retry and exit semantics unchanged.
   - file: scripts/telemetry_capture/switch.py
@@ -373,7 +374,9 @@ scope:
     purpose: content_policy withheld yields withheld_by_policy omissions with the empty-string sha256, content_bytes 0 and no content or content_uri (never the raw digest); full is unchanged.
   - file: tests/telemetry_capture/test_runner.py
     action: Modify
-    purpose: run_pass with a ci gate runs under GITHUB_ACTIONS; without one it stays off; a P-5 conflict finishes deferred with pin_conflict.
+    purpose: >-
+      New nodes test_run_pass_ci_gate_runs_under_github_actions (with a ci gate it runs under GITHUB_ACTIONS; without one it stays off) and
+      test_run_pass_defers_a_pin_conflict (a P-5 conflict finishes deferred with pin_conflict).
   - file: tests/telemetry_capture/test_main.py
     action: Modify
     purpose: ci-pass is registered and delegates; pass accepts a sidecar-only tree and refuses a conflicted one with a fixed token.
@@ -405,7 +408,7 @@ scope:
     purpose: CLASS A. Note that claude_code writes withheld_by_policy from v8 when a tree's sidecar content_policy is withheld; realization updated; amendment_log.
   - file: docs/contracts/telemetry_sessions.yaml
     action: Modify
-    purpose: CLASS A. Note that from v8 a top-level root's workflow is its agent's source_registry key (the allow-list entry's agent) and checkout_sha falls back to the sidecar sha; amendment_log.
+    purpose: CLASS A. Note that from v8 a top-level root's workflow is its agent's source_registry key (the allow-list entry's agent) and checkout_sha falls back to the sidecar's host.checkout_sha when present (never host.sha, the triggering commit); amendment_log.
   - file: config/lambda/ducklake/field_semantics.yaml
     action: Modify
     purpose: Regenerated from the contracts by the existing generator (never hand-edited); carries the required_when rule to every DuckLake function.
@@ -440,6 +443,11 @@ scope:
   - file: scripts/telemetry_verify/__main__.py
     action: Modify
     purpose: completeness_line prints captured_host_runs.
+  - file: tests/telemetry_verify/test_main.py
+    action: Modify
+    purpose: >-
+      COMPLETENESS_LINE gains captured_host_runs=\d+ after captured_without_key (moved, not weakened: every existing
+      field stays pinned in place); a new node asserts the printed count for a host-run root.
   - file: tests/telemetry_verify/test_completeness.py
     action: Modify
     purpose: Host-run roots are counted in captured_host_runs and never reduce unexplained_not_captured.
@@ -449,7 +457,8 @@ scope:
       One check, two rules (the pairing joins the wrapper rule rather than a new check, so no new manifest, accounting
       or taxonomy row). Rule 1 also scans .github/actions/**/*.{yml,yaml,sh} for unwrapped claude -p. Rule 2 (pairing):
       a call site is a workflow job whose run bodies invoke claude_p_retry.sh or that uses a local composite action whose
-      files invoke it; every such job holds exactly one step whose uses path ends with
+      files invoke it; every such job holds exactly one step, with if: always() and continue-on-error: true, whose uses
+      path ends with
       .github/actions/telemetry-ci-capture, unless the job invokes the wrapper in no run body of its own and every
       claude-invoking action it uses is a ci_uncaptured call_site; a paired job's workflow must be a ci_workflows entry
       or hold a ci_uncaptured call site (else it would read off not_allow_listed silently); every
@@ -500,7 +509,7 @@ scope:
     action: Create
     purpose: >-
       The v8 notes exist in the four Class A contracts and the realization moves; host_run_ref's required_when is exactly
-      the seven top-level trigger values and undated; ducklake_reader.yaml's telemetry_root_sessions line names
+      the seven top-level trigger values and undated; the telemetry_sessions note names host.checkout_sha and never host.sha; ducklake_reader.yaml's telemetry_root_sessions line names
       host_run_ref; project-configuration.yaml carries the project.telemetry_capture.ci_workflows row and project.ref's new reader;
       ports.yaml's PC-01 names ci_pass.py and SA-03 exists with its location and owning_item; each with one amendment_log
       entry.
@@ -525,7 +534,7 @@ acceptance_criteria:
   - The writer rejects a top-level telemetry_agents row without host_run_ref and accepts sub-agent rows unchanged.
   - Completeness counts top-level-run roots as captured_host_runs, never as captured_without_key.
   - The pairing rule fails an unpaired claude_p_retry.sh call site, a stale exemption and a listed claude.yml, and passes the real tree.
-  - The first post-merge ci-rca agent run is captured end to end in production and its job stays green.
+  - The first post-merge ci-rca run whose agent step succeeded is captured end to end in production, and the capture step does not change the job's conclusion.
 verification_plan:
   - step: 1
     phase: pre-deploy
@@ -614,10 +623,11 @@ verification_plan:
     graduation_check_id: telemetry-host-run-ref-required
   - step: 7
     phase: pre-deploy
-    action: The root-sessions verb and completeness (both whole modules run in execution step 9).
+    action: The root-sessions verb, completeness and its printed line (the whole modules run in execution step 9).
     command: >-
       bin/venv-python -m pytest tests/common/test_ducklake_event_verification_verbs.py::test_root_sessions_returns_host_run_ref_for_top_level_roots_only
-      tests/telemetry_verify/test_completeness.py::test_host_run_roots_count_as_captured_host_runs -q
+      tests/telemetry_verify/test_completeness.py::test_host_run_roots_count_as_captured_host_runs
+      tests/telemetry_verify/test_main.py::test_completeness_line_prints_captured_host_runs -q
     expected: Both pass; both are absent before the change.
     fix_if: An interactive root returns a host_run_ref, or a host-run root lowers unexplained_not_captured.
     hermetic: true
@@ -661,8 +671,8 @@ verification_plan:
     expected: >-
       The manifest has 4 lines (a start and a result line per attempt); ci-pass prints CI_CAPTURE off
       reason=repository_mismatch sessions=2 and writes nothing. Then, by hand, each session's tree is found under
-      ~/.claude/projects and record_turn at v8 with a full sidecar yields one top-level open row whose checkout_sha is the
-      clone's HEAD.
+      ~/.claude/projects and record_turn at v8 with a full sidecar yields a top-level telemetry_agents open row and a
+      telemetry_sessions open row whose checkout_sha is the clone's HEAD.
     fix_if: A session id is not honoured on 2.1.148 (fall back to the result JSON session_id and re-plan), or the tree is not found.
     hermetic: false
     graduation: not-applicable
@@ -689,16 +699,17 @@ verification_plan:
   - step: 12
     phase: post-deploy
     action: >-
-      The first ci-rca run whose failing commit (workflow_run.head_sha) includes the merge and whose agent step ran (not
-      dedup-skipped) is captured end to end (an earlier failing commit lacks the action by design): its job is
+      The first ci-rca run whose failing commit (workflow_run.head_sha) includes the merge and whose rca_agent step succeeded (not
+      dedup-skipped, and not red for filing nothing) is captured end to end (an earlier failing commit lacks the action by design): its job is
       green, its capture step printed CI_CAPTURE done with sent >= 1 and halted 0, and the production store holds the
       run's top-level pair. Wait for a natural run (about 0.7 a day); never dispatch ci-rca to manufacture one.
     command: >-
       mcp__github__get_job_logs for that run's rca job (grep '^CI_CAPTURE'), then AWS_PROFILE=agent_platform
       bin/venv-python -c "import sys;from datetime import date,timedelta;from scripts.telemetry_capture import
       read_route;r=read_route.make_routed_reader();d=date.today();rows=r.named('telemetry_root_sessions',day_from=(d-timedelta(days=1)).isoformat(),day_to=d.isoformat());h=[x
-      for x in rows if (x.get('host_run_ref') or '').startswith('gha:'+sys.argv[1]+'/')];print('host_run_roots',len(h));assert h" <run_id>
-      and session_tree_rows for one such root (counts by table and event_kind only).
+      for x in rows if (x.get('host_run_ref') or
+      '').startswith('gha:'+sys.argv[1]+'/')];print('host_run_roots',len(h));assert h;import json,collections;t=r.named('session_tree_rows',session_id=h[0]['session_id'],offset=0,max_rows=2000);print(sorted(collections.Counter((x['table_name'],(x['row_json']
+      if isinstance(x['row_json'],dict) else json.loads(x['row_json'])).get('event_kind')) for x in t).items()))" <run_id>
     expected: >-
       CI_CAPTURE done sessions>=1 sent>=1 halted=0; host_run_roots >= 1; the tree holds a telemetry_agents open and close
       with no observation_id, telemetry_sessions open and close, and transcripts rows (full policy).
@@ -738,8 +749,8 @@ test_obligations:
   - source: scripts/telemetry_capture/runner.py
     behavior: ci mode runs like on; P-5 conflict defers with pin_conflict.
     verification_step: 3
-    test_selector: tests/telemetry_capture/test_ci_pass.py
-    red_green_expectation: red before (module absent), green after
+    test_selector: tests/telemetry_capture/test_runner.py::test_run_pass_ci_gate_runs_under_github_actions
+    red_green_expectation: red before (run_pass has no ci_gate and project_ref_pin ignores the sidecar), green after
   - source: scripts/telemetry_capture/ci_pass.py
     behavior: Gate, ranking, discovery, write-once sidecar, final pass, counts-only output, exit 0.
     verification_step: 3
@@ -868,7 +879,7 @@ test_obligations:
   - source: scripts/telemetry_verify/__main__.py
     behavior: completeness_line prints captured_host_runs.
     verification_step: 7
-    test_selector: tests/telemetry_verify/test_completeness.py::test_host_run_roots_count_as_captured_host_runs
+    test_selector: tests/telemetry_verify/test_main.py::test_completeness_line_prints_captured_host_runs
     red_green_expectation: red before (field absent), green after
   - source: scripts/checks/ci_guards/validate_claude_p_retry_wrapper.py
     behavior: Actions scan and the pairing rule.
