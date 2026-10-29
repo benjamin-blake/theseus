@@ -1,0 +1,398 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "telemetry-usage-reader-verbs"
+intent: >-
+  Make three telemetry usage questions answerable in one call each instead of a hand walk of session_tree_rows: how many
+  tokens each model used per thread with sub-agents included (rec-4719), which tools and MCP servers sessions actually
+  call (rec-4702), and what a session and each sub-agent pays on its first model call (rec-4703). Three agent-facing window
+  verbs on the production telemetry reader return per-tree and per-session derived rows; a small CLI sums them across
+  threads and walks ranges longer than seven days, failing closed.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-telemetry-usage-reader-verbs.yaml
+phase: >-
+  Telemetry read layer, operator-requested (Benjamin 2026-10-29: rec-4719 at 15:38Z, cmsg_012XgaFy8VaDQbxP5D8nC9589WQCqz2rCrYCtuDZTSFGZF;
+  rec-4702/rec-4703 queued at 12:44Z, cmsg_012XgaFy8VaDQbxP5D8nC958PyWqjtB1Uoh3NrpKEvsPwY; "write the plan" 18:51Z,
+  cmsg_012XgaFy8VaDQbxP5D8nC9589VUV9ZgYRry5A7hoAxNTHF). Soft-warn category ad_hoc_rec: no tier_item criterion names
+  these verbs (T3.14 is adjacent and deferred_post_mvp), so closes_criteria is empty.
+closes_criteria: []
+scope:
+  - file: src/common/ducklake_event_read_sql.py
+    action: Modify
+    purpose: >-
+      Three SQL templates composed with compose() (the shared R4 generations, R5a/R5b dedupe and R5c model_call collapse),
+      plus one shared tree CTE block written once: MODEL_USAGE_ROLLUP_SQL, TOOL_USE_ROLLUP_SQL, STARTUP_BASELINE_SQL.
+      Semantics in execution_steps[1]. Stays under 500 SLOC (349 today); if it would cross, the new templates move to a
+      sibling module src/common/ducklake_event_usage_sql.py (then also listed in the telemetry reader manifest includes and
+      the data-pipeline excludes) rather than a budget raise (Decision 128).
+  - file: src/common/ducklake_event_read_verbs.py
+    action: Modify
+    purpose: >-
+      EVENT_READS gains model_usage_rollup, tool_use_rollup and session_startup_baseline: binding window, params
+      (day_from, day_to), max_window_days MAX_WINDOW_DAYS, agent_facing true, not paginable, descriptions built with
+      _derived_rows_note naming the grain and "one tree is the rows sharing the root's tenant, project and
+      session_started_at".
+  - file: src/common/ducklake_reader_client.py
+    action: Modify
+    purpose: >-
+      VERB_FIELDS gains the three verbs' output columns in the SQL's order (execution_steps[1]); the existing parity tests
+      (test_verb_fields_parity.py, test_ducklake_event_read_verbs.py::test_verb_fields_match_event_verb_output_columns)
+      then cover them. Lambda-packaged in data-pipeline, which CI redeploys on merge (deploy-prod-lambdas.yml).
+  - file: scripts/telemetry_verify/derive.py
+    action: Modify
+    purpose: >-
+      Independent oracle functions model_usage_rollup, tool_use_rollup and session_startup_baseline over deduped stored
+      rows (pure Python, no SQL, written from the contract text in execution_steps[2], never from the SQL), signature
+      (tables, projects, day_from, day_to) like sessions_window; the module docstring names the new source.
+  - file: scripts/telemetry_usage.py
+    action: Create
+    purpose: >-
+      Agent CLI `bin/venv-python -m scripts.telemetry_usage {models|tools|startup} --from YYYY-MM-DD --to YYYY-MM-DD
+      [--by-root] [--max-windows N]` over scripts.telemetry_capture.read_route.TelemetryReader (PlatformDev profile via
+      resolve_aws_profile; no committed URL, Decision 101). Behaviour in execution_steps[3]: <=7-day chunking, exact
+      client-side sums, fail-closed, typed-413 halving, bounded and printed call count (Decision 88), JSON on stdout.
+  - file: docs/contracts/ducklake_telemetry_reader.yaml
+    action: Modify
+    purpose: >-
+      Class B, provisional_v0: one audit invariant giving the three verbs' grain, bounds, columns and conventions (text in
+      execution_steps[2]) and one amendment_log entry (change_class field_add, semantic_break false). The served-set and
+      paginable wording is unchanged (the served set is EVENT_READS minus transcript_content by construction).
+  - file: docs/contracts/read-engine.yaml
+    action: Modify
+    purpose: >-
+      The verbs grouping under telemetry_observations gains model_usage_rollup, tool_use_rollup and
+      session_startup_baseline (validate_read_engine_verbs requires the grouping to equal NAMED_READS plus EVENT_READS by
+      first table); one amendment_log entry.
+  - file: scripts/ducklake_smoke/lambda_telemetry_reader_gates.py
+    action: Modify
+    purpose: >-
+      _check_reads also reads the three verbs over the same two-day window: each answers 200 and every returned row's keys
+      equal VERB_FIELDS[verb]; failure text names the verb and a status or error_type only (Decision 101).
+  - file: tests/ducklake_neon_smoke_test/test_lambda_telemetry_reader_gates.py
+    action: Modify
+    purpose: >-
+      New node test_reader_gate_reads_the_usage_verbs (wired fake: a 200 with matching rows passes, a non-200 or a row with
+      a missing column fails naming the verb, no body echoed).
+  - file: tests/common/test_ducklake_model_usage_rollup.py
+    action: Create
+    purpose: rec-4719 acceptance (whole file). Nodes in execution_steps[4].
+  - file: tests/common/test_ducklake_event_read_tool_usage.py
+    action: Create
+    purpose: rec-4702 acceptance node test_tool_use_counts_by_name_and_server_across_sessions plus the nodes in execution_steps[4].
+  - file: tests/common/test_ducklake_event_read_startup_baseline.py
+    action: Create
+    purpose: rec-4703 acceptance node test_first_model_call_baseline_per_session_and_agent_run plus the nodes in execution_steps[4].
+  - file: tests/test_telemetry_usage.py
+    action: Create
+    purpose: >-
+      CLI behaviour over a fake reader (no duckdb, no network) and the registration node; nodes in execution_steps[4].
+bundled_recommendations:
+  - rec-4719
+  - rec-4702
+  - rec-4703
+followon_recs:
+  - rec-4725
+infrastructure_dependencies: []
+acceptance_criteria:
+  - "model_usage_rollup returns one row per (tree, model) whose totals equal the oracle's sums over the tree's root and sub-agent model_call rows after R4/R5 dedupe and R5c collapse, for every golden tree."
+  - "tool_use_rollup counts each tool_call once per observation (open row), splits error, blocked and interrupted by the observation's current close, and groups by tree, root or sub-agent, agent_name, workflow, tool name, MCP server; it equals the oracle on every golden tree."
+  - "session_startup_baseline returns one row per session of each tree with the earliest model_call's model and token classes (1h/5m split included), NULLs and model_call_count 0 for a session with no model_call; it equals the oracle on every golden tree."
+  - "All three are agent-facing window verbs (max 7 days), served by the telemetry reader, listed in VERB_FIELDS and read-engine.yaml, and carry the Decision 207 stamps; non-real projects and trees outside the window are excluded."
+  - "scripts.telemetry_usage chunks a range into <=7-day calls, sums exactly, halves a chunk on a typed 413, refuses more than --max-windows calls, and on any other failed chunk prints no total and exits 1 naming the failed window and error_type."
+  - "Post-deploy: the governed deploy and the reader smoke gate are green and a live CLI run over a 9-day range answers per-model totals including claude-fable-5-1."
+  - "rec-4719, rec-4702 and rec-4703 are closed; rec-4725 (the alarm) stays open."
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: CLI behaviour and verb registration (no duckdb, no network).
+    command: bin/venv-python -m pytest tests/test_telemetry_usage.py -q
+    expected: exit 0 with every node passing. Before the change the file does not exist.
+    fix_if: Fix scripts/telemetry_usage.py or the registry entries; never the test.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: Whole-file run of a test file this plan creates, always inside the --pre affected-test selection; step 2 graduates the registration node.
+  - step: 2
+    phase: pre-deploy
+    action: The three verbs are registered as agent-facing 7-day window verbs and the CLI knows them.
+    command: bin/venv-python -m pytest tests/test_telemetry_usage.py::test_usage_verbs_are_registered_agent_facing_window_verbs -q
+    expected: exit 0. Before the change the node does not exist.
+    fix_if: Fix the EVENT_READS entries; never the test.
+    hermetic: true
+    expected_literals:
+      - passed
+    graduation: graduate
+    graduation_check_id: telemetry-usage-verbs-registered
+  - step: 3
+    phase: pre-deploy
+    action: The CLI fails closed on a failed chunk.
+    command: bin/venv-python -m pytest tests/test_telemetry_usage.py::test_a_failed_chunk_prints_no_total_and_exits_1 -q
+    expected: exit 0. Before the change the node does not exist.
+    fix_if: Fix the CLI's error path; a partial total is never printed.
+    hermetic: true
+    expected_literals:
+      - passed
+    graduation: graduate
+    graduation_check_id: telemetry-usage-cli-fails-closed
+  - step: 4
+    phase: pre-deploy
+    action: rec-4719 acceptance -- per-model tree totals against the oracle over the golden chain (duckdb).
+    command: bin/venv-python -m pytest tests/common/test_ducklake_model_usage_rollup.py -q -rs
+    expected: exit 0, every node passed, none skipped (a skip means duckdb is missing from the venv; install it, never accept the skip).
+    fix_if: Fix the SQL or the oracle against the contract text in execution_steps[2]; never the test or a golden.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: Module-level duckdb importorskip; venv-less pr-validate collects nothing (vp-red-before hermetic_authoring (iii)). The full tier runs it.
+  - step: 5
+    phase: pre-deploy
+    action: rec-4702 acceptance node plus the tool-use file (duckdb).
+    command: >-
+      bin/venv-python -m pytest tests/common/test_ducklake_event_read_tool_usage.py::test_tool_use_counts_by_name_and_server_across_sessions -q
+      && bin/venv-python -m pytest tests/common/test_ducklake_event_read_tool_usage.py -q -rs
+    expected: exit 0 twice, nothing skipped.
+    fix_if: Fix the SQL or the oracle; never the test.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: Module-level duckdb importorskip (hermetic_authoring (iii)); the full tier runs it.
+  - step: 6
+    phase: pre-deploy
+    action: rec-4703 acceptance node plus the startup-baseline file (duckdb).
+    command: >-
+      bin/venv-python -m pytest tests/common/test_ducklake_event_read_startup_baseline.py::test_first_model_call_baseline_per_session_and_agent_run -q
+      && bin/venv-python -m pytest tests/common/test_ducklake_event_read_startup_baseline.py -q -rs
+    expected: exit 0 twice, nothing skipped.
+    fix_if: Fix the SQL or the oracle; never the test.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: Module-level duckdb importorskip (hermetic_authoring (iii)); the full tier runs it.
+  - step: 7
+    phase: pre-deploy
+    action: >-
+      Every registry-wide guard picks the new verbs up: VERB_FIELDS parity and output columns, describe and the MCP
+      projection, read-engine grouping, served-set, read routing, the smoke gate, the existing event-verb and
+      verification-verb suites unchanged.
+    command: >-
+      bin/venv-python -m pytest tests/common/ducklake_reader_client/test_verb_fields_parity.py tests/common/test_ducklake_event_read_verbs.py
+      tests/common/test_ducklake_event_read_sql.py tests/common/ducklake_event_reads tests/common/test_ducklake_event_verification_verbs.py
+      tests/lambdas/ducklake_telemetry_reader/test_handler.py tests/telemetry_capture/test_read_route.py
+      tests/ducklake_neon_smoke_test/test_lambda_telemetry_reader_gates.py tests/checks/contracts/test_validate_read_engine_verbs.py
+      tests/telemetry_verify -q -rs
+    expected: exit 0, nothing skipped.
+    fix_if: Fix the in-scope code or contract; a test outside scope that pins the verb list is a scope gap to raise, not to edit.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: Whole-file and directory runs of already-registered suites plus duckdb-gated files; steps 2-6 cover the new behaviour.
+  - step: 8
+    phase: pre-deploy
+    action: Contract and repo guards (read-engine verbs, contract drift, SLOC) and the fast tier.
+    command: >-
+      bin/venv-python -c "from scripts.checks.contracts.validate_read_engine_verbs import validate_read_engine_verbs as a;
+      from scripts.checks.contracts.validate_contract_drift import validate_contract_drift as b;
+      from scripts.checks.sloc.sloc_limits import validate_sloc_limits as c; f=[]; [x(f) for x in (a, b, c)];
+      print('GUARD_FAILS', len(f)); assert not f, f" && bin/venv-python -m scripts.validate --pre
+    expected: GUARD_FAILS 0, then the fast tier exits 0.
+    fix_if: Fix the named contract or decompose the file per scope[0]; never raise a budget.
+    hermetic: false
+    graduation: not-applicable
+  - step: 9
+    phase: post-deploy
+    action: >-
+      The merge's governed deploy redeployed the telemetry reader and its smoke gate passed (deploy-ducklake-lambdas.yml
+      deploy-telemetry and telemetry-smoke jobs), and deploy-prod-lambdas.yml redeployed data-pipeline. If the run shows
+      a TELEMETRY_PRODUCTION_HOLD notice, the reader deploy was skipped: stop and report to the coordinator; steps 10-11
+      wait until the hold clears and the reader is redeployed.
+    command: >-
+      Read the merge commit's workflow runs through mcp__github__actions_list (resource_id deploy-ducklake-lambdas.yml and
+      deploy-prod-lambdas.yml, head_sha = the merge SHA) and mcp__github__get_job_logs for the telemetry-smoke job.
+    expected: Both runs concluded success, the deploy-telemetry job ran (no hold notice) and the smoke log carries LAMBDA_TELEMETRY_READER OK.
+    fix_if: A red smoke on a usage verb means the deployed SQL disagrees with production data; diagnose from the error_type and forward-fix (never break-glass).
+    hermetic: false
+  - step: 10
+    phase: post-deploy
+    action: The deployed reader describes the three verbs as agent-facing window verbs with a read_version.
+    command: >-
+      bin/venv-python -c "from scripts.telemetry_capture.read_route import TelemetryReader as R; d = R(profile='agent_platform').describe();
+      v = ('model_usage_rollup', 'tool_use_rollup', 'session_startup_baseline');
+      print(sorted((n, d[n]['agent_facing'], d[n]['max_window_days'], bool(d[n]['read_version'])) for n in v))"
+    expected: "[('model_usage_rollup', True, 7, True), ('session_startup_baseline', True, 7, True), ('tool_use_rollup', True, 7, True)]"
+    fix_if: A missing verb means the deploy carried the old bundle; re-check step 9.
+    hermetic: false
+  - step: 11
+    phase: post-deploy
+    action: >-
+      Live answers over a 9-day range (two calls, so chunking is exercised): per-model totals name claude-fable-5-1 with
+      non-null output tokens; tool use names the Artifact tool; the startup baseline has root and sub-agent rows; the
+      models total for 27-29 Oct agrees with REPORT.md section 2's telemetry sums within 5% (production keeps growing).
+    command: >-
+      bin/venv-python -m scripts.telemetry_usage models --from 2026-10-21 --to 2026-10-29 > /tmp/usage-models.json &&
+      bin/venv-python -m scripts.telemetry_usage tools --from 2026-10-21 --to 2026-10-29 > /tmp/usage-tools.json &&
+      bin/venv-python -m scripts.telemetry_usage startup --from 2026-10-21 --to 2026-10-29 > /tmp/usage-startup.json &&
+      bin/venv-python -c "import json; m = json.load(open('/tmp/usage-models.json')); t = json.load(open('/tmp/usage-tools.json'));
+      s = json.load(open('/tmp/usage-startup.json')); print('calls', m['calls'], 'fable', [r for r in m['rows'] if r['model'] == 'claude-fable-5-1'][0]['tokens_output_total'] > 0,
+      'artifact', any(r['tool_name'] == 'Artifact' for r in t['rows']), 'kinds', sorted({r['is_root'] for r in s['rows']}))"
+    expected: calls 2, fable True, artifact True, kinds [False, True]; each command exits 0 and its stderr names two windows.
+    fix_if: A non-zero exit names the failed window and error_type; diagnose it, never retry into a partial total.
+    hermetic: false
+  - step: 12
+    phase: post-deploy
+    action: The bundled recs are closed and the follow-on stays open.
+    command: >-
+      bin/venv-python -c "from src.common.ducklake_reader_client import make_reader, fetch_recs_by_ids as f;
+      rows, _ = f(make_reader(profile='agent_platform'), ['rec-4719', 'rec-4702', 'rec-4703', 'rec-4725']);
+      print(sorted((r['id'], r['status']) for r in rows))"
+    expected: "[('rec-4702', 'closed'), ('rec-4703', 'closed'), ('rec-4719', 'closed'), ('rec-4725', 'open')]"
+    fix_if: Close through scripts.ops_data_portal update_rec (the squash body carries Resolves); never edit a cache.
+    hermetic: false
+test_obligations:
+  - source: src/common/ducklake_event_read_sql.py
+    behavior: Each usage verb's SQL derives the declared grain and totals over deduped rows.
+    verification_step: 4
+    test_selector: tests/common/test_ducklake_model_usage_rollup.py::test_verb_matches_oracle_on_every_golden_tree
+    red_green_expectation: red before (verb not registered), green after
+  - source: src/common/ducklake_event_read_verbs.py
+    behavior: The three verbs are agent-facing 7-day window verbs.
+    verification_step: 2
+    test_selector: tests/test_telemetry_usage.py::test_usage_verbs_are_registered_agent_facing_window_verbs
+    red_green_expectation: red before, green after
+  - source: src/common/ducklake_reader_client.py
+    behavior: VERB_FIELDS covers the new verbs' output columns.
+    verification_step: 7
+    test_selector: tests/common/ducklake_reader_client/test_verb_fields_parity.py::test_verb_fields_covers_every_registered_verb
+    red_green_expectation: red after the registry change alone, green once VERB_FIELDS gains the columns
+  - source: scripts/telemetry_verify/derive.py
+    behavior: The oracle re-derives each usage verb independently of the SQL.
+    verification_step: 6
+    test_selector: tests/common/test_ducklake_event_read_startup_baseline.py::test_verb_matches_oracle_on_every_golden_tree
+    red_green_expectation: red before (no oracle function), green after
+  - source: scripts/telemetry_usage.py
+    behavior: Chunked, exact, fail-closed cross-window aggregation.
+    verification_step: 3
+    test_selector: tests/test_telemetry_usage.py::test_a_failed_chunk_prints_no_total_and_exits_1
+    red_green_expectation: red before (module absent), green after
+  - source: scripts/ducklake_smoke/lambda_telemetry_reader_gates.py
+    behavior: The deploy gate reads the usage verbs and checks their columns.
+    verification_step: 7
+    test_selector: tests/ducklake_neon_smoke_test/test_lambda_telemetry_reader_gates.py::test_reader_gate_reads_the_usage_verbs
+    red_green_expectation: red before, green after
+constraints:
+  - No caller SQL; every value is a bound parameter (Decision 84 I-3). The verbs compose the shared dedupe; no rule is restated.
+  - Per-tree and per-session rows only; no cross-tree aggregation in SQL (Decision 199 cl.1 and its 2026-10-16 note; telemetry_sessions.yaml WINDOW VERBS). Cross-thread sums live in the CLI.
+  - No transcript content, no content_uri, no dollar figure (Decision 236 cl.3; Decision 101 2026-10-17 note). Token classes are never summed into one total in a verb row.
+  - No `surface` column or vocabulary. telemetry_sessions.surface is declared read-derived by PLAN-telemetry-top-level-agent-run and its verb is rec-4713; these verbs carry branch, is_root, agent_name and workflow instead.
+  - No Class A contract, Decision, capture, producer, table, IAM or Terraform change. No budget raise (Decision 128).
+  - PlatformDev only (--profile agent_platform / resolve_aws_profile); never the ADMIN profile. No break-glass deploy (Decisions 125/126).
+  - No rescue agents or workaround loops (Decision 55).
+context:
+  - "Decision-scout verdict FLAGS_FOUND; CITE 199, 236, 207, 88, 84, 128, 101; one SPIRIT NOTE (Decision 215: the CLI must fail closed on a failed chunk), folded into execution_steps[3]. Decisions triaged: 190 of 190. Roadmap items intersected: 3; CONFLICT: 0; RELATED: 3."
+  - "gates: decision-scout=FLAGS_FOUND (note accepted); plan-critique=PENDING"
+  - "Evidence: /mnt/project-files/usage-report-check/REPORT.md (per-model hand walk, 22 trees), /mnt/project-files/context-composition-feedback/FINDINGS.md (startup baseline, tool counts); approach /mnt/project-files/usage-reader-verbs/step6b-presentation.md."
+  - "Decided with notice: server cap stays 7 days, longer ranges are client chunks (exact: every tree row carries the root's partition pin, Decision 199 cl.2); rec-4331 not bundled (its text gates it behind the executor cost governor; the CLI prints a cache_read_ratio per model); rec-4703's step-change alarm split to rec-4725."
+  - "Changed after the presentation, with notice: the presented read-time surface label is dropped (constraint 4); the CLI groups by a literal branch_prefix instead."
+  - "Thread-title link: rows carry harness_session_key (the session_01... id list_sessions/get_session use); titles are joined in-session. The project thread title is not in the transcript (ai-title is Claude Code's own)."
+  - "Coordination: PLAN-telemetry-content-reader's build also edits ducklake_telemetry_reader.yaml and read-engine.yaml (amendment-log text only); merge main and keep both entries. Tell the coordinator before merging: the merge redeploys the telemetry reader (governed channel) and data-pipeline (CI)."
+  - "TELEMETRY_PRODUCTION_HOLD (PLAN-telemetry-top-level-agent-run): while a telemetry column add is pending, deploy-telemetry skips the production reader; VP 9 stops on that notice."
+  - "Live probe 2026-10-29: telemetry_root_sessions over 7 days 10.6 s, sessions_window 5.9 s; 57 roots 23-29 Oct (51 claude/project-thread-*, 6 agent/*)."
+  - "Neighbours not in scope: rec-4713 (surface verb), rec-4701 (skill name on Skill calls; until then Skill counts as one tool), rec-4704 (loaded-surface capture), rec-4720 (a Fable capture gap: this verb reports what was captured), rec-4363 (no offset on paginable verbs; these verbs are not paginable)."
+  - "red_overlap 2026-10-29: blocked by rec-4718 (Critical, terraform/personal/oidc_ci_roles.tf sandbox-apply IAM reviewer REVISE), shared only through transitive test residue (tests/test_security_detector_liveness_workflow.py, tests/test_terraform_github_pr_plan.py). Deferral rationale: this plan touches no terraform, IAM or workflow file and cannot repair or worsen that red; the build re-runs red_overlap before merge and waits if the red is then past its SLO."
+  - "Class B field_add on a provisional_v0 contract: not on the always-ask list; standing merge rule once code review PROCEEDs and CI is green."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - Decision 199 cl.1-2 (and the 2026-10-16 note), 207, 236 cl.2-3 read
+  - All files in scope located and readable; tests/fixtures/telemetry_golden_chain.py and scripts/telemetry_verify/dedupe.py read
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - >-
+    Merge origin/main into the branch (force-push is refused in this environment). Re-read ducklake_telemetry_reader.yaml
+    and read-engine.yaml, which the content reader build may have changed, before editing them.
+  - >-
+    SQL (src/common/ducklake_event_read_sql.py). Window scope as sessions_window; real-purpose projects only (the {projects}
+    purpose = 'real' join). One shared CTE block, written once: tree = the deduped rows sharing (tenant_id, project_id,
+    session_started_at); per session: is_root = parent_session_id IS NULL, workflow = the first non-null value by
+    (event_timestamp, coalesce(source_ordinal, -1), event_id) (the _FIRST rule), and for a sub-agent session agent_name = the
+    latest non-null telemetry_agents.agent_name of that session_id by the same ordering (NULL for a root); per tree:
+    root_session_id = min(session_id) over root sessions (NULL if none), roots_in_tree = their count, harness_session_key
+    and branch = the root's first non-null values, tree stamps = generations (distinct producer/parser_version structs
+    over the tree's sessions, ordered), conflicted_grain_keys (the tree's sessions' keys, concatenated in the existing
+    order) and derivation_conflicted (any session conflicted). model_call rows are the R5c-collapsed o rows.
+    (a) MODEL_USAGE_ROLLUP_SQL over (observations, sessions): one row per (tree, model) with columns root_session_id,
+    harness_session_key, branch, workflow (the root's), session_started_at, last_event_timestamp (tree max over s and o),
+    roots_in_tree, model, session_count (sessions with a call on the model), model_call_count, tokens_input_total,
+    tokens_output_total, tokens_cache_read_total, tokens_cache_creation_total, cache_creation_1h_total,
+    cache_creation_5m_total, usage_missing_count (calls missing tokens_input or tokens_output), generations,
+    conflicted_grain_keys, derivation_conflicted; each total NULL when no call carries that count (agent_run_token_rollup's
+    rule); a NULL model is its own row; ORDER BY session_started_at, root_session_id, model NULLS LAST.
+    (b) TOOL_USE_ROLLUP_SQL over (observations, sessions, agents): tool_call observations; one row per (tree, is_root,
+    agent_name, workflow, tool_name, mcp_server, attribution_mcp_server) with columns root_session_id, harness_session_key,
+    branch, session_started_at, roots_in_tree, is_root, agent_name, workflow, tool_name (name), mcp_server (the server
+    segment of a name of the form mcp__<server>__<tool>, else NULL), attribution_mcp_server (the open row's metadata key
+    attribution_mcp_server, else NULL), call_count (distinct observation_id among open rows), error_count, blocked_count,
+    interrupted_count (by each observation's current disposition: its latest close by event_timestamp, source_ordinal,
+    event_id), session_count (distinct sessions with an open row), then the tree stamps; ORDER BY session_started_at,
+    root_session_id, is_root DESC, agent_name NULLS FIRST, workflow, tool_name, mcp_server, attribution_mcp_server.
+    (c) STARTUP_BASELINE_SQL over (observations, sessions, agents): one row per session of each tree with columns
+    session_id, root_session_id, parent_session_id, is_root, harness_session_key, branch, workflow (the session's),
+    agent_name, session_started_at, roots_in_tree, model_call_count, first_call_at, model, tokens_input, tokens_cache_read,
+    tokens_cache_creation, cache_creation_1h_tokens, cache_creation_5m_tokens, tokens_output, usage_missing, then the
+    session's own stamps (STAMPS_SELECT/STAMPS_JOIN); the first call is the earliest model_call by event_timestamp,
+    coalesce(source_ordinal, -1), event_id; a session with no model_call has model_call_count 0 and NULL call columns;
+    ORDER BY session_started_at, root_session_id, is_root DESC, session_id.
+  - >-
+    Contract text (docs/contracts/ducklake_telemetry_reader.yaml), appended to audit_invariants verbatim: "Usage verbs
+    (PLAN-telemetry-usage-reader-verbs; rec-4719, rec-4702, rec-4703; agent-facing): model_usage_rollup, tool_use_rollup and
+    session_startup_baseline take day_from and day_to over at most 7 UTC days and read real-purpose projects only. A tree is
+    the R4/R5-deduped rows sharing one root's tenant_id, project_id and session_started_at (Decision 199 cl.2), so each row
+    is a derivation over one tree's partition and the verbs never aggregate across trees (Decision 199 cl.1); callers sum
+    rows across trees and windows. model_usage_rollup: one row per tree and model over the root and every sub-agent
+    session's R5c-collapsed model_call rows, the four token classes and the 1h/5m creation split summed separately (NULL
+    when no call carries a count), model_call_count, usage_missing_count and session_count. tool_use_rollup: one row per
+    tree, root or sub-agent, agent_name, workflow, tool name, MCP server (from an mcp__<server>__<tool> name) and the open
+    row's attribution_mcp_server metadata key, with call_count over open rows, error, blocked and interrupted counts by each
+    call's latest close, and session_count. session_startup_baseline: one row per session of each tree with its earliest
+    model_call (event_timestamp, source_ordinal, event_id) and that call's model and token classes, or model_call_count 0
+    and NULLs. Every row carries root_session_id, roots_in_tree, harness_session_key and branch for the title join, and the
+    Decision 207 stamps (tree-level for the two rollups: any session conflicted). No row carries content, cost or a single
+    summed token total." amendment_log entry: date, semantic_break false, change_class field_add, summary naming the three
+    verbs and recs, migration_story "New verbs only; no existing verb, payload or answer changes; describe lists three more
+    agent-facing verbs." The oracle in scripts/telemetry_verify/derive.py implements this text.
+  - >-
+    CLI (scripts/telemetry_usage.py). Split [from, to] into consecutive windows of at most 7 days; refuse more than
+    --max-windows calls (default 9) before any call; print "windows=<n>" and each window to stderr. Call the verb per
+    window through TelemetryReader(profile resolved by scripts.aws_profile.resolve_aws_profile). On ResponseTooLargeError
+    halve that window and retry down to 1 day, then fail. On any other error (ReadDeadlineExceededError, ReaderInvokeError,
+    a resolve failure) print nothing to stdout and exit 1 with stderr "telemetry_usage FAIL window=<from>..<to>
+    error_type=<type>" (no partial total, Decision 215). Output one JSON object on stdout: {verb, from, to, calls,
+    conflicted_rows, rows}. models: rows per model with trees, sessions, model_call_count, the six token totals (NULL-aware
+    sums), usage_missing_count and cache_read_ratio = cache_read / (input + cache_read + cache_creation), NULL when the
+    denominator is NULL or 0; --by-root adds per-tree rows keyed by harness_session_key. tools: rows per (tool_name,
+    mcp_server) with call, error, blocked, interrupted, session and tree counts; --by-root and --by-agent widen the key.
+    startup: rows per (day of session_started_at, branch_prefix, is_root) with count and the median, p90 (nearest rank),
+    min and max of the first-call input total (tokens_input + cache_read + cache_creation) plus the per-class medians.
+    branch_prefix is literal: "claude/project-thread" for a branch starting claude/project-thread-, else the text before
+    the first "/", else "(none)".
+  - >-
+    Tests. test_ducklake_model_usage_rollup.py: test_verb_matches_oracle_on_every_golden_tree (all corpus and verification
+    trees loaded as in test_ducklake_event_verification_verbs.py; verb rows == derive.model_usage_rollup rows);
+    test_sub_agent_model_rows_sum_into_the_root_tree (a two-model tree: one row per model, sub-agent tokens counted in the
+    root's tree); test_totals_are_null_when_no_call_reports_them; test_conflicted_grain_key_marks_the_tree (clone_row);
+    test_non_real_projects_and_out_of_window_trees_are_excluded. test_ducklake_event_read_tool_usage.py:
+    test_tool_use_counts_by_name_and_server_across_sessions (two trees, root and sub-agent calls, an mcp__github__ tool, an
+    error close: one count per observation, the error split, the server segment); test_verb_matches_oracle_on_every_golden_tree.
+    test_ducklake_event_read_startup_baseline.py: test_first_model_call_baseline_per_session_and_agent_run (the earliest
+    call wins over a later larger one, the 1h/5m split is carried, a sub-agent row carries its agent_name, a session with
+    no call reads 0 and NULLs); test_verb_matches_oracle_on_every_golden_tree. test_telemetry_usage.py (fake reader):
+    test_usage_verbs_are_registered_agent_facing_window_verbs (binding window, max_window_days 7, agent_facing, params
+    day_from/day_to, VERB_FIELDS present), test_twenty_days_make_three_exact_chunks, test_chunk_sums_equal_a_single_window_sum,
+    test_a_failed_chunk_prints_no_total_and_exits_1 (504 and 503 cases, stderr names the window), test_413_halves_the_window,
+    test_max_windows_refused_before_any_call, test_cache_read_ratio_null_on_zero_denominator, test_branch_prefix_literal.
+    The smoke-gate node per scope.
+  - Execute the Verification Plan -- run each pre-deploy step; loop until pass; on an unrecoverable V3 failure stop and RCA (Decision 55).
+  - >-
+    Before merging, message the coordinator that the merge redeploys the telemetry reader and data-pipeline through CI and
+    wait for its go-ahead on sequencing. Squash-merge with "Resolves: rec-4719, rec-4702, rec-4703" in the body, then run
+    the post-deploy steps.
+  - 'Report: what was implemented, verification results'
+rollback: >-
+  Revert the merge commit; the governed deploy redeploys the prior reader bundle. The verbs read only and store nothing, so
+  no data needs repair.
