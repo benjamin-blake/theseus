@@ -39,7 +39,8 @@ scope:
       line per finding and one GitHub annotation line "::error title=IAM policy unknown at plan time::<n> ..." whose text
       carries only the count and a fixed remedy pointer. Unreadable file, invalid JSON, a non-object top level, or a
       missing string format_version -> "PLAN_TIME_POLICY: ERROR <fixed reason>" and exit 2; never an exception message,
-      path or JSON excerpt. Wrong argument count -> exit 2 with a fixed usage line. Module docstring states the Why above
+      path or JSON excerpt. Wrong argument count -> exit 2 with a fixed usage line. Module docstring states the Why above,
+      that rule (2) applies whatever consumes the document (a deferred trust or other document trips too, failing safe),
       and names the remedies:
       build the ARN from names (var.aws_region, var.account_id, a name local; `secret:<name>-*` for Secrets Manager), or
       create the resource in one PR and grant it in the next.
@@ -74,11 +75,13 @@ scope:
       Registered check (Decision 104), filesystem-only YAML parse of the workflows listed by
       scripts.checks.ci_guards._workflow_shell_bodies._iter_workflows (reused, as validate_masked_errexit_steps does),
       Decision 170 registry.examined/skipped. A job "posts the digest" when one of its steps' run body contains
-      "context=terraform-plan-digest". For every such job: exactly one step in the whole job has a run body matching
-      python3 -I \S*scripts/ci/plan_time_policy_check\.py (workspace-absolute or relative path), and that step comes
-      after the digest step in the steps list; that step's run body is exactly one effective line starting with
-      "python3 -I " and containing none of "||", "&&", ";", "set +e", "exit" or "true" (so it cannot be neutered on the
-      same line); its if: equals the digest step's if: after whitespace normalisation; it has no continue-on-error.
+      "context=terraform-plan-digest". For every such job: across all its run bodies, exactly one invocation of the
+      script exists, counting every spelling (any mention of scripts/ci/plan_time_policy_check.py or
+      scripts.ci.plan_time_policy_check, with or without -I); that one step comes after the digest step in the steps
+      list; its run body is exactly one effective line matching python3 -I \S*scripts/ci/plan_time_policy_check\.py
+      (workspace-absolute or relative path) and containing none of "|", "&", ";", "set +e", "exit" or "true" (so it
+      cannot be neutered on the same line); the step declares no shell: (the job default bash -e applies); its if:
+      equals the digest step's if: after whitespace normalisation; it has no continue-on-error.
       Fails when no workflow
       job posts the digest (the anchor moved: re-point this check, never delete it). Docstring: why anchored on the
       digest status (it is what the merge-time fetch verifies, fetch-saved-plan/action.yml:81-91), and that the trusted
@@ -88,8 +91,9 @@ scope:
     purpose: >-
       Mirror test. Real tree green with examined >= 1. Red cases on synthetic workflow trees: no digest-posting job; the
       check missing; the check before the digest step; one invocation before persist/digest plus one after; two
-      invocations after; a different if:; continue-on-error true; invoked without -I; "... || true"; "...; exit 0";
-      a second body line. Green case: the same wiring in a
+      invocations after; an extra "python3 scripts/ci/plan_time_policy_check.py" step before persist; a
+      "-m scripts.ci.plan_time_policy_check" step; a different if:; continue-on-error true; invoked without -I;
+      "... || true"; "...; exit 0"; "... | tee log"; a trailing "&"; shell: bash on the step; a second body line. Green case: the same wiring in a
       second workflow file (the trusted-job shape). Registration case: _manifest.ENTRIES holds an Entry named
       validate_plan_time_policy_check_wiring with pre=True, full_segment "full_after_lint", attr equal to the name and
       module scripts.checks.ci_guards.validate_plan_time_policy_check_wiring (red before: no such entry).
@@ -104,7 +108,7 @@ scope:
     purpose: >-
       Row validate_plan_time_policy_check_wiring -> environment (sibling workflow-wiring guards' class). The file is at
       500 of 500 effective lines (config class), so the same edit folds the Main Canary workflow row's three-line
-      `rationale: >-` onto one double-quoted line under 2,000 characters, text unchanged (net -1; the 40e02457
+      `rationale: >-` onto one double-quoted line under 2,000 characters, text unchanged (fold saves 3 effective lines, the row adds 1: net -2, 498; the 40e02457
       precedent). Never a raise.
   - file: .github/workflows/terraform-apply-sandbox.yml
     action: Modify
@@ -135,10 +139,10 @@ scope:
       Benjamin-approved wording (6b F3). speculative_plan_job.steps gains, after the "Persists plan.bin ..." item, the
       item "After persisting plan.bin and posting its digest status, fails the job (red; still no required check) if
       scripts/ci/plan_time_policy_check.py finds an IAM policy unknown at plan time." amendment_log gains at the top:
-      date of the build, semantic_break false, change_class field_add, summary "PLAN-pr-plan-opaque-iam-policy-check:
+      date of the build, semantic_break false, change_class field_add, and on its one summary: line the summary "PLAN-pr-plan-opaque-iam-policy-check:
       speculative_plan_job fails the job on an IAM policy unknown at plan time; scripts/ci/plan_time_policy_check.py joins
-      referenced_repo_paths." referenced_repo_paths gains scripts/ci/plan_time_policy_check.py (sorted). Stays at or under
-      500 effective lines (492 today).
+      referenced_repo_paths." referenced_repo_paths gains scripts/ci/plan_time_policy_check.py (sorted). Lands at 499 of
+      500 effective lines (492 today: step 1, amendment entry 5, path 1).
 bundled_recommendations: []
 followon_recs:
   - rec-4741
@@ -189,14 +193,21 @@ verification_plan:
     action: >-
       Neighbouring workflow guards: run-body ceilings, structural size, OIDC fail-open classifier, the PR-comment wiring
       tests and the contract evaluator.
-    command: >-
-      bin/venv-python -m pytest tests/test_plan_review_digest_fit_wiring.py tests/test_redaction_check.py
-      tests/checks/ci_guards/test_validate_composite_action_shell_bodies.py -q && bin/venv-python -c "
-      from scripts.checks.ci_guards.validate_composite_action_shell_bodies import validate_composite_action_shell_bodies as a;
-      from scripts.checks.structural.size_limits import validate_structural_size_limits as b;
-      from scripts.checks.ci_guards.validate_oidc_failopen_guards import validate_oidc_failopen_guards as c;
-      from scripts.checks.contracts.validate_terraform_cc_web_operations import validate_terraform_cc_web_operations as d;
-      f=[]; [g(f) for g in (a, b, c, d)]; print('GUARDS_OK' if not f else f); raise SystemExit(1 if f else 0)" &&
+    command: |-
+      set -e
+      bin/venv-python -m pytest tests/test_plan_review_digest_fit_wiring.py tests/test_redaction_check.py tests/checks/ci_guards/test_validate_composite_action_shell_bodies.py -q
+      bin/venv-python - <<'EOF'
+      import sys
+      from scripts.checks.ci_guards.validate_composite_action_shell_bodies import validate_composite_action_shell_bodies as a
+      from scripts.checks.structural.size_limits import validate_structural_size_limits as b
+      from scripts.checks.ci_guards.validate_oidc_failopen_guards import validate_oidc_failopen_guards as c
+      from scripts.checks.contracts.validate_terraform_cc_web_operations import validate_terraform_cc_web_operations as d
+      failed = []
+      for check in (a, b, c, d):
+          check(failed)
+      print("GUARDS_OK" if not failed else failed)
+      sys.exit(1 if failed else 0)
+      EOF
       test "$(grep -cF 'After persisting plan.bin and posting its digest status, fails the job (red; still no required check) if scripts/ci/plan_time_policy_check.py finds an IAM policy unknown at plan time.' docs/contracts/terraform-cc-web-operations.yaml)" -eq 1
     expected: >-
       exit 0 and GUARDS_OK printed; the workflow at most 546 effective lines, the contract and the taxonomy at most 500,
@@ -381,8 +392,10 @@ execution_steps:
     canary PR and both canary run ids, CI green by event-driven wake (never polled), merge SHA.
   - Open the canary draft PR and run VP 5 and VP 6; close it unmerged; record both run ids in the build PR body.
   - >-
-    Open the build PR; merge on code review PROCEED and green CI (standing rule; the contract wording is pre-approved);
-    then tell the thread so the S3 planning thread learns the step is live.
+    Open the build PR; merge on code review PROCEED and green CI (standing rule; the contract wording is pre-approved).
+    The PR body states that the workflow is a code-owned path, so the merge is the usual admin-bypass merge, and that the
+    canary branch was a branch_rule exception; both rest on Benjamin's 2026-10-29 22:52Z approval. Then tell the thread
+    so the S3 planning thread learns the step is live.
   - "Report: what was implemented, verification results, canary run ids, VP 7 status."
 rollback: >-
   Revert the PR. The speculative-plan job stops failing on opaque policies, the predicted-guard body returns to 11 lines
