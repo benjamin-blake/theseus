@@ -34,12 +34,13 @@ scope:
     action: Modify
     purpose: >-
       (1) New field host_run_ref: type str, iceberg_type string, nullable true, dq_intent {pattern:
-      "^(gha:[0-9]{1,20}/[0-9]{1,6}/[A-Za-z0-9_.-]{1,100}/[0-9]{1,3}|ecs:[A-Za-z0-9_.-]{1,255}/[A-Za-z0-9-]{1,64}|lambda:[A-Za-z0-9-]{1,64}|local:[A-Za-z0-9_.-]{1,64}/[A-Za-z0-9_.:-]{1,128})$"};
+      "^(gha:[0-9]{1,20}/[0-9]{1,6}/[A-Za-z0-9_.-]{1,100}/[1-9][0-9]{0,2}|ecs:[A-Za-z0-9_.-]{1,255}/[A-Za-z0-9-]{1,64}|lambda:[A-Za-z0-9-]{1,64}|local:[A-Za-z0-9_.-]{1,64}/[A-Za-z0-9_.-]{1,128})$"};
       description "The host's own identity for a top-level agent run, under an open prefix registry; NULL on a sub-agent
       run (its root's top-level row carries it)." semantics names the per-prefix grammar: gha:<run_id>/<run_attempt>/<job
       id>/<retry ordinal of the claude -p attempt, from 1>, ecs:<cluster>/<task id>, lambda:<request id>, local:<runtime>/<run
       id> (Decision 184: a free-tier local run fits); a new host is a new prefix and a contract widen (Decision 210 cl.3).
-      It never carries an ARN, account id or hostname (Decision 101); the per-host typed columns (workflow_run_id,
+      No prefix's character class admits ':' after the prefix, so an ARN cannot match; it never carries an ARN, account
+      id or hostname (Decision 101); the per-host typed columns (workflow_run_id,
       lambda_request_id) stay as typed join keys. populated_by "unproduced: T3.20:c9 (no producer writes it)". No
       required_when here: Decision 222 cl.1's auto-add refuses a column carrying one, so PLAN-claude-p-capture-adapter
       adds required_when {trigger: [<top-level values>]} after the production add. amendment_log field_add entry.
@@ -49,8 +50,11 @@ scope:
       verbatim for the event types the capture allow-list admits; eventbridge, manual and smoke_test are the non-Actions
       host triggers; cron_workflow is retired (no producer ever wrote it; GitHub's own name is schedule). The set is closed
       and write-enforced (Decision 210 cl.3); a new value is a contract widen. amendment_log entry semantic_break true,
-      change_class governance_note_add, migration_story "every stored row carries subagent_sync or subagent_background,
-      so no stored row breaks the rule".
+      change_class accepted_values_narrow (cron_workflow leaves the documented set), migration_story with the census
+      token "census: 0 violators (2026-10-29)": the only telemetry_agents writer is the claude_code producer, and every
+      version since slice 3a (ffc761ee, src/turn_capture/sessions.py _agent_row) writes subagent_sync or
+      subagent_background, so no stored row breaks the rule (source: producer history; no reader verb lists distinct
+      trigger values).
       (3) entity_ref: dq_intent_local gains pattern_when [{when: {trigger: [workflow_run, workflow_dispatch, push,
       schedule, eventbridge, manual, smoke_test]}, pattern: "^.+/run$"}]; governance_notes_local names both shapes (the
       spawning tool call's toolUseId on a sub-agent run; '<root session entity_ref>/run' on a top-level run).
@@ -122,7 +126,8 @@ scope:
     action: Modify
     purpose: >-
       A Class A document with two run_shapes parses; an unknown RunShape key, a session_id outside the literal set, and
-      run_shapes on a Class B or D document each raise.
+      run_shapes on a Class B or a Class C document each raise (Class D documents are already refused by
+      ContractDocument, so they cannot go red first).
   - file: config/lambda/ducklake/field_semantics.yaml
     action: Modify
     purpose: >-
@@ -145,10 +150,13 @@ scope:
     action: Modify
     purpose: >-
       _enforce_reconcile_pending_subset accepts reconcile_scope telemetry_catalog (error text names the three values) and
-      requires scope_reason on it, as exempt requires exempt_reason if the generator already does; nothing else changes.
+      requires a non-empty scope_reason string on a telemetry_catalog entry (new; the generator checks no reason key
+      today); nothing else changes.
   - file: tests/test_schema_to_field_semantics.py
     action: Modify
-    purpose: telemetry_catalog accepted; a bogus scope still raises naming the three values.
+    purpose: >-
+      telemetry_catalog with a scope_reason accepted; telemetry_catalog without one raises; a bogus scope still raises
+      naming the three values.
   - file: scripts/checks/ops_governance/validate_reconcile_pending_gate.py
     action: Modify
     purpose: >-
@@ -188,7 +196,9 @@ scope:
     purpose: >-
       New node test_production_telemetry_deploy_holds_while_a_column_add_is_pending: the hold step exists in
       deploy-telemetry before deploy_code, runs the gate module with --telemetry-hold into GITHUB_OUTPUT, and deploy_code's
-      if requires steps.hold.outputs.held == 'false'; config/lambda/ducklake/** stays a push path.
+      if requires steps.hold.outputs.held == 'false'; config/lambda/ducklake/** stays a push path; deploy-paths.yaml's
+      code-deploy recovery text names TELEMETRY PRODUCTION COLUMN HOLD and provision_telemetry_catalog, and
+      build-lambda.yaml's ducklake_functions.governed_channel names --telemetry-hold.
   - file: docs/contracts/storage-substrate.yaml
     action: Modify
     purpose: >-
@@ -205,7 +215,8 @@ scope:
     action: Modify
     purpose: >-
       The six entries stay status pre_production; reconcile_scope must now equal telemetry_catalog and scope_reason (was
-      exempt_reason) must name ducklake_telemetry, provision_telemetry_catalog and rec-4483 (planned change, see
+      exempt_reason) must name ducklake_telemetry, provision_telemetry_catalog and rec-4483; ops_tenants.yaml's
+      governance_notes must name telemetry_catalog and scope_reason and no longer say exempt_reason (planned change, see
       weakening_dispositions; the assertion is strictly narrower than before).
   - file: tests/telemetry/test_contract_lifecycle_friction.py
     action: Modify
@@ -217,6 +228,36 @@ scope:
     purpose: >-
       test_sessions_declares_workflow_attribution's token "T3.22 c5 owns the top-level vocabulary" becomes "a top-level
       run's root reads its agent's source_registry key" (planned change; every other token kept).
+  - file: tests/telemetry/test_contract_amendments.py
+    action: Modify
+    purpose: >-
+      The content_omitted_reason pin (accepted values ["oversize"]) widens to ["oversize", "withheld_by_policy"]; every
+      other assertion kept (planned change, see weakening_dispositions).
+  - file: tests/test_field_semantics_event_projection.py
+    action: Modify
+    purpose: >-
+      The projected content_omitted_reason accepted_values pin widens to ["oversize", "withheld_by_policy"] (planned
+      change, see weakening_dispositions).
+  - file: docs/contracts/ops_tenants.yaml
+    action: Modify
+    purpose: >-
+      governance_notes: "reconcile_scope exempt" and "its registry entry's exempt_reason" become "reconcile_scope
+      telemetry_catalog" and "scope_reason"; amendment_log entry (prose_improvement, meaning unchanged). Goes in the
+      always-ask paste with the other Class A text.
+  - file: docs/contracts/deploy-paths.yaml
+    action: Modify
+    purpose: >-
+      The code-deploy row's recovery text gains a TELEMETRY PRODUCTION COLUMN HOLD sentence: while a
+      reconcile_scope=telemetry_catalog table has a non-empty pending_reconcile, deploy-telemetry skips the production
+      telemetry writer and reader (green, TELEMETRY_PRODUCTION_HOLD notice) and the ducklake_code_drift sensor may file a
+      High rec for them; a redeploy or workflow_dispatch holds again. The remedy is the human-directed
+      provision_telemetry_catalog re-run (Decision 230 cl.4), then a sidecar PR moving the column into reconciled with
+      the response as evidence; break-glass stays the only bypass.
+  - file: docs/contracts/build-lambda.yaml
+    action: Modify
+    purpose: >-
+      deploy_channels.ducklake_functions.governed_channel: the deploy-telemetry clause adds "and skipped while a
+      reconcile_scope=telemetry_catalog table has a pending column (validate_reconcile_pending_gate --telemetry-hold)".
   - file: tests/checks/contracts/test_telemetry_top_level_agent_run.py
     action: Create
     purpose: >-
@@ -231,7 +272,9 @@ scope:
       and a top-level entity_ref without "/run" raises RowRuleError naming the rule and column; (e) telemetry_sessions
       surface is read-derived (timing read, realized false) and its description lists the seven values; (f) the
       telemetry_transcripts projection accepts a withheld_by_policy omission row with the empty digest and 0 bytes and
-      refuses one with any other digest or a non-zero size; (g) host_run_ref is unproduced under T3.20:c9 and no
+      refuses one with any other digest or a non-zero size; (g) host_run_ref "local:x/arn:aws:lambda:r:1:function:f" and
+      "gha:1/1/rca/0" are refused (the account-shaped run in that ARN is built at runtime, never typed); (h) the lexicon
+      defines "top-level run", "host run ref" and "surface"; (i) host_run_ref is unproduced under T3.20:c9 and no
       realization owner is T3.22:c5. Pure file reads plus src.row_rules; no network.
   - file: docs/DECISIONS.md
     action: Modify
@@ -274,6 +317,11 @@ followon_recs:
   - rec-4711
   - rec-4713
 infrastructure_dependencies:
+  - >-
+    Lambda gating disposition: compute_affected_artifacts also flags data-pipeline solely because
+    docs/ROADMAP-PLATFORM.yaml is a packaged asset in its manifest. The roadmap edit is bookkeeping prose with no handler
+    or runtime change, so no build, deploy or smoke step is owed for data-pipeline; the DuckLake functions are covered by
+    VP 11-14.
   - >-
     No Terraform and no IAM change. One admin step after merge, named here so it needs only Benjamin's word: the
     production column add, re-running provision_telemetry_catalog under PlatformAdmin, human-directed (Decision 230 cl.4,
@@ -365,7 +413,7 @@ verification_plan:
       tests/telemetry/test_retire_session_cli_contract_notes.py tests/telemetry/test_contract_amendments.py
       tests/checks/contracts/test_telemetry_event_journal_contracts.py tests/checks/contracts/test_validate_telemetry_field_realization.py
       tests/checks/contracts/test_write_time_enforcement_conformance.py tests/checks/contracts/test_validate_telemetry_lexicon_tables.py
-      tests/row_rules -q
+      tests/test_field_semantics_event_projection.py tests/row_rules -q
     expected: exit 0.
     fix_if: Fix the code or contract in scope; a pinned column list or vocabulary elsewhere is updated only where scope names it.
     hermetic: true
@@ -567,10 +615,10 @@ test_obligations:
     test_selector: tests/checks/contracts/test_telemetry_writer_ingestion_shape.py::test_production_column_set_is_recorded
     red_green_expectation: red before (text absent), green after.
   - source: docs/contracts/telemetry-lexicon.yaml
-    behavior: The three new terms and the agent term's root note keep the lexicon's table set valid.
-    verification_step: 4
-    test_selector: tests/checks/contracts/test_validate_telemetry_lexicon_tables.py
-    red_green_expectation: green before and after (term-level Class D text; the registered lexicon check runs in VP 6).
+    behavior: The lexicon defines the three new terms.
+    verification_step: 1
+    test_selector: tests/checks/contracts/test_telemetry_top_level_agent_run.py::test_top_level_run_shape_is_declared_and_write_enforced
+    red_green_expectation: red before (terms absent), green after.
   - source: config/lambda/ducklake/field_semantics.yaml
     behavior: The regenerated projection carries host_run_ref, the trigger set, the entity_ref and withheld rules.
     verification_step: 1
@@ -601,7 +649,28 @@ test_obligations:
     verification_step: 3
     test_selector: tests/verify_ci_workflow/test_ducklake_deploy_map_wiring.py::test_production_telemetry_deploy_holds_while_a_column_add_is_pending
     waiver_reason: Registry data shape-checked by validate_verification_registry in every tier; the guarded behaviour is this node, obligated above.
+  - source: docs/contracts/deploy-paths.yaml
+    behavior: The heal index names the held state and its remedy.
+    verification_step: 3
+    test_selector: tests/verify_ci_workflow/test_ducklake_deploy_map_wiring.py::test_production_telemetry_deploy_holds_while_a_column_add_is_pending
+    red_green_expectation: red before (text absent), green after.
+  - source: docs/contracts/build-lambda.yaml
+    behavior: The governed channel description names the hold.
+    verification_step: 3
+    test_selector: tests/verify_ci_workflow/test_ducklake_deploy_map_wiring.py::test_production_telemetry_deploy_holds_while_a_column_add_is_pending
+    red_green_expectation: red before (text absent), green after.
+  - source: docs/contracts/ops_tenants.yaml
+    behavior: governance_notes names the telemetry_catalog scope and scope_reason.
+    verification_step: 4
+    test_selector: tests/checks/contracts/test_telemetry_registry_status.py
+    red_green_expectation: red before (says exempt_reason), green after.
 weakening_dispositions:
+  - candidate: '[assertion-changed] tests/telemetry/test_contract_amendments.py::test_tool_result_capture_policy_declared'
+    cite: acceptance_criteria[3]
+    disposition: planned-change
+  - candidate: '[assertion-changed] tests/test_field_semantics_event_projection.py::test_row_rules_projected_from_contracts'
+    cite: acceptance_criteria[3]
+    disposition: planned-change
   - candidate: '[assertion-changed] tests/checks/contracts/test_telemetry_registry_status.py::test_telemetry_registry_stays_pre_production_with_the_production_column_path'
     cite: acceptance_criteria[5]
     disposition: planned-change
