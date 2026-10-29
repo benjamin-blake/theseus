@@ -33,7 +33,9 @@ scope:
       target for rec-4695, created in the UI and imported, never referenced by any OIDC trust, never by a job holding
       id-token or secrets. Also correct tf_gated_apply's stale header lines that say the apply role
       trust is "pinned to refs/heads/main" and "the sub is still refs/heads/main": Decision 94 made the trust list both
-      ref:refs/heads/main and environment:tf-gated-apply (comment-only; no attribute changes).
+      ref:refs/heads/main and environment:tf-gated-apply; and its lines saying protected_branches = true restricts the
+      job to main, which the tf_trusted_plan note in the same file contradicts under a ruleset-only main (comment-only;
+      no attribute changes).
   - file: terraform/github/imports.tf
     action: Modify
     purpose: >-
@@ -52,7 +54,8 @@ scope:
       gate opened. Job `bot-attempt`: if inputs.bot_leg, no environment, permissions exactly {contents: read, actions:
       read, deployments: write}, timeout-minutes 10; checkout, then `python3 -m scripts.session.deployment_approval_probe
       --leg ci-bot --repo "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --wait-pending 180` with GITHUB_TOKEN from secrets.GITHUB_TOKEN; the step
-      writes the verdict line to $GITHUB_STEP_SUMMARY and the job fails when the verdict is APPROVED or PROBE_INVALID. No
+      writes the JSON line to $GITHUB_STEP_SUMMARY and the job fails on any nonzero exit (APPROVED, PROBE_INVALID or
+      INCONCLUSIVE; no `|| true`, no continue-on-error). No
       id-token permission anywhere, no other secret, no setup-python install (the module is stdlib-only, so
       validate_workflow_dependency_install needs no install step). Header comment: inert, alarm-free manual probe for
       rec-4695; never a required check (Decision 83); never add id-token or secrets.
@@ -76,7 +79,12 @@ scope:
       .github/workflows/deployment-approval-probe.yml and its status waiting or in_progress, since in a bot_leg run the
       bot-attempt job is itself running), then poll GET pending_deployments up to --wait-pending seconds until exactly
       one pending entry exists and it is the environment named deployment-approval-probe (record its id,
-      current_user_can_approve and the reviewer logins). Any failure -> PROBE_INVALID and no POST. The POST body is
+      current_user_can_approve and the reviewer logins). When that read is proxy-blocked (the proxy blocks environment
+      reads, github-org-transfer.yaml), the leg records pending_read PROXY_BLOCKED and uses --environment-id (the id
+      the ci-bot leg read from GitHub, VP 7), with current_user_can_approve unknown; when both exist they must match.
+      The run pin still holds: a probe-workflow run only ever has the probe Environment pending, so no other id can be
+      approved. Any other failure -> PROBE_INVALID and no POST. The ci-bot leg always reports the environment id it
+      read. The POST body is
       {environment_ids: [that id], state: approved, comment: "rec-4695 probe leg <L>"}; the environment name, the
       workflow path and the state are module constants, there is no parameter that names another environment, run
       filter or state, and no reusable approve function is exported (Decision 233 cl.4 scout note).
@@ -85,12 +93,16 @@ scope:
       integration", or any X-Accepted-GitHub-Permissions header -> TOKEN_LACKS_PERMISSION; 403 or 422 with a request id
       while the precheck recorded current_user_can_approve false -> NOT_REVIEWER; any other 4xx (a 404, or a 403/422
       while current_user_can_approve was true), or a pending entry that is gone when re-read right after the POST ->
-      INCONCLUSIVE; 5xx or transport error -> UNAVAILABLE. Exit 0 for NOT_REVIEWER, TOKEN_LACKS_PERMISSION,
+      INCONCLUSIVE (also a 403/422 with a request id while current_user_can_approve is unknown); 5xx or transport error
+      -> UNAVAILABLE. Exit 0 for NOT_REVIEWER, TOKEN_LACKS_PERMISSION,
       PROXY_BLOCKED, UNAVAILABLE; 1 for APPROVED; 2 for PROBE_INVALID and INCONCLUSIVE.
       (2) `--capability --leg L`: read-only, no run needed: GET /repos/{repo} (permissions.admin, permissions.maintain),
       GET /user/installations (each installation's app_slug and permission map, for user-to-server tokens), GET
       /repos/{repo}/environments/deployment-approval-probe (reviewers, prevent_self_review, can_admins_bypass, branch
-      policy, protection rule types). Records the X-OAuth-Scopes and X-Accepted-GitHub-Permissions header values.
+      policy, protection rule types). Records each read's status and request-id presence (a proxy refusal is recorded as
+      PROXY_BLOCKED, never as an error) and the X-OAuth-Scopes and X-Accepted-GitHub-Permissions header values, and
+      reports environment-write capability as YES (an installation map with administration write), NO (a map without
+      it) or UNKNOWN (no map readable).
       (3) `--observe --run-id N`: read-only: GET /actions/runs/{N}/approvals (each review's state and user login) and
       the run's jobs (gated job status and conclusion).
       Output: one JSON line per invocation with the leg, run id, HTTP statuses, request-id presence, the allowlisted
@@ -108,7 +120,10 @@ scope:
       full_name differs from --repo, or that answers a redirect -> PROBE_INVALID; a run whose path is another workflow, a
       completed run, an in_progress run with no pending entry after the wait, a pending deployment for another environment
       (tf-gated-apply) and two pending environments each -> PROBE_INVALID with no POST sent; an in_progress run with one
-      pending probe entry (the ci-bot shape) proceeds to the POST; --repo is required; the POST body carries only the probe environment's id; an absent env variable, a placeholder token file, an
+      pending probe entry (the ci-bot shape) proceeds to the POST; a proxy-blocked pending read with --environment-id
+      proceeds with can_approve unknown, and a 422 then -> INCONCLUSIVE; a pending read whose id differs from
+      --environment-id -> PROBE_INVALID; --capability maps an installation map to YES/NO and no map to UNKNOWN; --repo is
+      required; the POST body carries only the probe environment's id; an absent env variable, a placeholder token file, an
       empty `git credential fill` answer -> UNAVAILABLE with no request sent; the proxy leg sends no Authorization
       header; a sentinel token value never appears in stdout, stderr or a raised exception's text for any leg; the module
       exposes no public function that takes an environment name or state; --capability and --observe send GET only.
@@ -145,7 +160,9 @@ scope:
       (any change to the Claude GitHub App's permissions, to repo ownership or admins, or to the reviewer set; command
       pointer to the plan's VP 5-9). Also correct the "State reconcile (rec-3136)" paragraph, which still says "the other
       four addresses" and "5 to import" while imports.tf holds 7 blocks (8 after this plan): name the count from
-      imports.tf instead of restating addresses.
+      imports.tf instead of restating addresses. Say that later terraform/github PR plans show "1 to import" for this
+      resource until the operator next applies the root, and that tf-gated-apply's protected_branches = true may not
+      restrict deploys to main under the ruleset-only main.
 bundled_recommendations: []
 followon_recs: []
 infrastructure_dependencies:
@@ -166,7 +183,8 @@ infrastructure_dependencies:
   - No IAM, no OIDC trust, no secret, no Lambda, no Neon resource is created or changed.
 acceptance_criteria:
   - The deployment-approval-probe Environment exists with the operator as its only required reviewer and
-    prevent_self_review false, read back from GitHub, and no Terraform or OIDC trust outside terraform/github names it.
+    prevent_self_review false, shown by VP 4's PR-time App plan (no change on the imported resource) and the operator's
+    Settings read, and no Terraform or OIDC trust outside terraform/github names it.
   - A positive-control run approved by the operator in the Actions UI shows an approved review by the operator and the
     gated job concluding success, so a refusal elsewhere is not vacuous; a rerun of that run waits for approval again.
   - Every session credential leg (proxy, gh-cli, the three env variables, token-file, git-credential) has a recorded
@@ -174,10 +192,14 @@ acceptance_criteria:
   - For every probe run other than the positive control, GitHub's approvals record is empty and the gated job never
     started, confirmed by --observe and by the operator in the Actions UI (GitHub's server-side record is the authority;
     the script's JSON is supporting evidence, Decision 202 spirit note).
-  - The result (premise HOLDS only if every available leg is NOT_REVIEWER, TOKEN_LACKS_PERMISSION, PROXY_BLOCKED or
-    UNAVAILABLE, none is APPROVED, PROBE_INVALID or INCONCLUSIVE, the proxy leg was available, and no capability read
-    shows environment write access) is recorded on rec-4695 with the named residuals, and reported to the content-reader
-    planning thread.
+  - The result is recorded on rec-4695 and reported to the content-reader planning thread, with the GitHub-refused legs
+    (NOT_REVIEWER, TOKEN_LACKS_PERMISSION) listed apart from the proxy-blocked ones, a note on whether the explicit
+    credential legs collapsed onto the proxy credential (same responses as the proxy leg), environment-write capability
+    (NO, YES or UNKNOWN; UNKNOWN is an open residual, never a pass) and the named residuals. Verdict -- FAILS if any leg
+    is APPROVED; INCONCLUSIVE if a PROBE_INVALID or INCONCLUSIVE leg remains or the proxy leg was unavailable;
+    HOLDS_BY_GITHUB if every available session leg was refused by GitHub; HOLDS_BY_PROXY_POLICY if no leg approved but
+    at least one was only proxy-blocked (the control then rests on Anthropic's proxy policy, outside GitHub and this
+    repo).
 verification_plan:
   - step: 1
     phase: pre-deploy
@@ -235,58 +257,74 @@ verification_plan:
     graduation: not-applicable
   - step: 5
     phase: post-deploy
-    action: After the operator creates the Environment in the UI, read its settings back before any dispatch.
+    action: >-
+      Confirm the Environment before any dispatch. Gating evidence: VP 4's PR-time App plan (1 to import and no change on
+      deployment_approval_probe, so its reviewers, prevent_self_review and branch policy match the resource) plus the
+      operator's own read in Settings (HUMAN; the agent proxy blocks environment reads, github-org-transfer.yaml
+      transfer_window_checklist step 3). Then record the non-gating capability read.
     command: >-
       bin/venv-python -m scripts.session.deployment_approval_probe --repo otl-labs/ontheloop --capability --leg proxy
     expected: >-
-      The environment answers 200 with one required_reviewers rule naming the operator only, prevent_self_review false;
-      the JSON also records the branch policy, permissions.admin and any installation permission map for the proxy
-      credential.
-    fix_if: 404 or no reviewer rule (the Environment is missing or misconfigured); do not dispatch.
+      One JSON line; the repository read answers 200 with full_name otl-labs/ontheloop; each other read is recorded with
+      its status and request-id presence (environment and installation reads may be PROXY_BLOCKED), and environment-write
+      capability is reported as NO, YES or UNKNOWN from whatever the installation permission map shows.
+    fix_if: >-
+      The repository read fails or redirects: stop (no dispatch) and bring the read path to the operator. A blocked
+      environment or installation read is recorded, not fixed.
     hermetic: false
   - step: 6
     phase: post-deploy
     action: >-
       Positive control: dispatch one run (bot_leg false) via mcp__github__actions_run_trigger run_workflow on ref main;
-      the operator approves it in the Actions UI; observe it; then rerun it and confirm it waits again, and cancel.
+      resolve its id with mcp__github__actions_list list_workflow_runs (resource_id deployment-approval-probe.yml, event
+      workflow_dispatch, status waiting, the newest run created after the dispatch); the operator approves it in the
+      Actions UI; observe it; then rerun it with rerun_workflow_run, confirm it waits again, and cancel it.
     command: >-
       bin/venv-python -m scripts.session.deployment_approval_probe --repo otl-labs/ontheloop --observe --run-id
-      <control run id, resolved as in VP 7>
+      <control run id>
     expected: >-
-      approvals lists one approved review by the operator; the gated job concluded success; after rerun_workflow_run the
-      gated job is waiting again.
-    fix_if: No approval recorded or the job never ran (the probe cannot see an approval; stop).
+      approvals lists one approved review by the operator; the gated job concluded success; after the rerun the gated
+      job is waiting again.
+    fix_if: >-
+      No approval recorded or the job never ran (the probe cannot see an approval; stop). If the observe reads are
+      proxy-blocked, the operator confirms the same in the Actions UI and the result says the observation was manual.
     hermetic: false
   - step: 7
     phase: post-deploy
     action: >-
-      One fresh run per session leg (bot_leg false), dispatched on main one at a time; resolve each run id with
-      mcp__github__actions_list list_workflow_runs (resource_id deployment-approval-probe.yml, event workflow_dispatch,
-      status waiting, the newest run created after that dispatch; the script's workflow-path pin is the backstop) and
-      record it for VP 9; run the leg; cancel the run with mcp__github__actions_run_trigger cancel_workflow_run.
+      CI-bot leg first, on its own run: dispatch with bot_leg true and resolve the run id as in VP 6. Its JSON (job log or
+      step summary, read with mcp__github__get_job_logs) records the probe Environment's numeric id from GitHub's own
+      pending_deployments answer; the session legs reuse that id when the proxy blocks their pending read.
     command: >-
-      for L in proxy gh-cli env:GH_TOKEN env:GITHUB_TOKEN env:GITHUB_PERSONAL_ACCESS_TOKEN token-file git-credential; do
-      bin/venv-python -m scripts.session.deployment_approval_probe --repo otl-labs/ontheloop --leg "$L" --run-id
-      "<run id resolved for $L>" --wait-pending 180; done
+      mcp__github__actions_run_trigger(method="run_workflow", owner="otl-labs", repo="ontheloop",
+      workflow_id="deployment-approval-probe.yml", ref="main", inputs={"bot_leg": true}); then
+      mcp__github__get_job_logs for the bot-attempt job; then bin/venv-python -m scripts.session.deployment_approval_probe
+      --repo otl-labs/ontheloop --observe --run-id <bot run id>
     expected: >-
-      One JSON line per leg; no verdict is APPROVED, PROBE_INVALID or INCONCLUSIVE; the proxy leg is not UNAVAILABLE.
+      bot-attempt concluded success with a NOT_REVIEWER or TOKEN_LACKS_PERMISSION verdict and an environment_id; the
+      approvals record is empty; the gated job is still waiting (then cancelled).
     fix_if: >-
-      APPROVED on any leg: stop dispatching, cancel, record which leg, and bring the remedy to the operator.
-      PROBE_INVALID or INCONCLUSIVE: fix the run selection and re-run that leg on a fresh run; a repeat INCONCLUSIVE is
-      reported to the operator as not-HOLDS.
+      bot-attempt failed: APPROVED -> stop and report; PROBE_INVALID or INCONCLUSIVE -> fix the cause and re-run on a
+      fresh run.
     hermetic: false
   - step: 8
     phase: post-deploy
-    action: CI-bot leg on its own run (bot_leg true).
+    action: >-
+      Session legs, one fresh run each (bot_leg false), as a per-leg sequence: dispatch on main, resolve the run id as in
+      VP 6 and record it for VP 9, run the leg, cancel the run with mcp__github__actions_run_trigger cancel_workflow_run.
+      Legs in order: proxy, gh-cli, env:GH_TOKEN, env:GITHUB_TOKEN, env:GITHUB_PERSONAL_ACCESS_TOKEN, token-file,
+      git-credential.
     command: >-
-      mcp__github__actions_run_trigger(method="run_workflow", owner="otl-labs", repo="ontheloop",
-      workflow_id="deployment-approval-probe.yml", ref="main", inputs={"bot_leg": true}), resolve the run id as in VP 7,
-      then bin/venv-python -m scripts.session.deployment_approval_probe --repo otl-labs/ontheloop --observe --run-id
-      <bot run id>
+      bin/venv-python -m scripts.session.deployment_approval_probe --repo otl-labs/ontheloop --leg <leg> --run-id
+      <that leg's run id> --environment-id <id from VP 7> --wait-pending 180
     expected: >-
-      bot-attempt concluded success with a NOT_REVIEWER or TOKEN_LACKS_PERMISSION summary; approvals empty; gated job
-      still waiting (then cancelled).
-    fix_if: bot-attempt failed with APPROVED (stop, report) or PROBE_INVALID/INCONCLUSIVE (fix and re-run).
+      One JSON line per leg; no verdict is APPROVED; each available leg is NOT_REVIEWER, TOKEN_LACKS_PERMISSION or
+      PROXY_BLOCKED; the proxy leg is not UNAVAILABLE.
+    fix_if: >-
+      APPROVED on any leg: stop dispatching, cancel, record which leg, and bring the remedy to the operator.
+      PROBE_INVALID because the proxy blocks the run read itself: stop the session legs and bring the read path to the
+      operator (do not retry). Any other PROBE_INVALID or INCONCLUSIVE: fix the run selection and re-run that leg on a
+      fresh run once; a repeat is reported as not-HOLDS.
     hermetic: false
   - step: 9
     phase: post-deploy
@@ -294,11 +332,12 @@ verification_plan:
       Server-side record for every probe run except the control, plus the hosted GitHub MCP surface check (it exposes no
       raw-API tool, so it is a tool-surface leg, not an HTTP leg).
     command: >-
-      for R in <every run id recorded in VP 7 and 8>; do bin/venv-python -m scripts.session.deployment_approval_probe --repo
-      otl-labs/ontheloop --observe --run-id "$R"; done; ToolSearch(query="+github deployment review approve pending")
+      bin/venv-python -m scripts.session.deployment_approval_probe --repo otl-labs/ontheloop --observe --run-id <each run
+      id recorded in VP 7 and 8>; ToolSearch(query="+github deployment review approve pending")
     expected: >-
       Every approvals list empty and every gated job cancelled without starting; no mcp__github__ tool approves or
-      reviews a deployment. The operator confirms the same in the Actions UI.
+      reviews a deployment. The operator confirms the same in the Actions UI (the authority if observe reads are
+      blocked).
     fix_if: Any approval recorded on a leg run (premise fails; report).
     hermetic: false
   - step: 10
@@ -309,9 +348,11 @@ verification_plan:
       context plus the per-leg verdicts and run ids>" (plus --status closed --resolution "<verdict>" when the premise
       HOLDS); result JSON written to /mnt/project-files/deployment-approval-probe/RESULT.json
     expected: >-
-      rec-4695 carries the verdict. HOLDS: rec-4695 closed with the evidence (re-run triggers live in
-      terraform/github/CLAUDE.md, so no follow-on rec is needed). FAILS or not-HOLDS: rec-4695 stays open, re-scoped to
-      the remedy, and the operator is asked.
+      rec-4695 carries the verdict. HOLDS_BY_GITHUB with environment-write NO: rec-4695 closed with the evidence
+      (re-run triggers live in terraform/github/CLAUDE.md, so no follow-on rec is needed). Any other verdict: rec-4695
+      stays open with the result, and the operator decides (whether proxy policy is enough, or the remedy); the report
+      also points at Decision 233's reversal condition approval-authority-absent and T4.33 c3, which rest on the same
+      premise.
     fix_if: Portal write fails loudly; restore connectivity and re-file (Decision 84 I-4).
     hermetic: false
   - step: 11
@@ -333,7 +374,7 @@ verification_plan:
     command: >-
       bin/venv-python -c "from src.common.ducklake_reader_client import make_reader, fetch_recs_by_ids;
       print(fetch_recs_by_ids(make_reader(profile='agent_platform'), ['rec-4695'])[0][0]['status'])"
-    expected: Status closed when the premise HOLDS; open with the remedy context otherwise.
+    expected: Status closed only for HOLDS_BY_GITHUB with environment-write NO; open with the result otherwise.
     fix_if: Status does not match the verdict; re-run VP 10's update.
     hermetic: false
 test_obligations:
@@ -373,10 +414,11 @@ constraints:
   - Do not approve anything real. The only approval in this plan is the operator's own click on the positive-control run
     of the inert probe Environment. Never point the script at tf-gated-apply, tf-trusted-plan or any run of another
     workflow.
-  - Session credential legs, probe dispatches and the conditional throwaway-environment edit check run under the
-    operator's go-ahead (message cmsg_012XgaFy8VaDQbxP5D8nC958FPB3hao7EcZcmdHLojyBFb, answering the setup posted in
+  - Session credential legs and probe dispatches run under the operator's go-ahead (message cmsg_012XgaFy8VaDQbxP5D8nC958FPB3hao7EcZcmdHLojyBFb, answering the setup posted in
     cmsg_012XgaFy8VaDQbxP5D8nC958H1VRVd9VnJnPVBS91S6K5W); relay both ids to the implementation thread.
   - Never print, log, commit or store a token value or Authorization header (Decision 101, public repo).
+  - No Environment is created, edited or deleted by an agent. Environment-write capability is read from permission maps
+    only; when unreadable it is reported UNKNOWN (an open residual), never tested by a mutation.
   - The gh-cli leg's `gh api` subprocess is a deliberate, leg-confined exception to the AGENTS.md mcp-over-gh rule (gh is
     a credential surface under test); no other code path uses gh.
   - terraform/github is applied by the operator only (Decision 126 admin tier; never CI, never an agent). The probe needs
@@ -388,7 +430,7 @@ constraints:
 context:
   - "Decision-scout verdict: FLAGS_FOUND (Decisions triaged: 190 of 190; Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1). CITE: Decision 92, 94, 143, 126, 233, 24."
   - "Scout flags handled: 233 NOTE (approve call pinned to the probe environment, no exported approve verb, tested); 202 SPIRIT NOTE (GitHub's approvals record and the operator's UI check are the authority, script JSON supporting); 24 (admin bypass default inherited by the mirror)."
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE (round 1, 12 findings fixed), round 2 pending"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE (round 1, 12 findings fixed), REVISE (round 2, 4 required + 5 recommended fixed), round 3 pending"
   - "red_overlap: clear (no open reds, slo_hours 4)."
   - "Fable advice: /mnt/project-files/deployment-approval-probe/fable-independent-advice.md (forks F1-F6 adopted)."
   - "Known limits stated in the result: admin bypass via REST is untestable while the reviewer is also the admin; a clean result depends on the GitHub App's permission grant, which can change; github_ci_apply also trusts ref:refs/heads/main (terraform/bootstrap/github_ci_apply.tf), so any ungated main job can assume the apply role and the Environment gate is not the role boundary (Decision 94)."
@@ -409,9 +451,11 @@ execution_steps:
     taxonomy row, the r3_workflows baseline entries and the CLAUDE.md section; run VP 1-3, the fast tier and VP 11 (full
     tier, before the commit that hands off); open the PR.
   - VP 4 on the PR; merge under the standing rule once code review is PROCEED and CI is green (no DuckLake deploy).
-  - Run VP 5 (the operator created the Environment in the UI before the PR). Do not dispatch before VP 5 passes.
+  - Run VP 5 (the operator created the Environment in the UI before the PR and confirms it in Settings). Do not
+    dispatch before VP 5 passes.
   - Run VP 6 (positive control; the operator approves one run in the Actions UI).
-  - Run VP 7, 8 and 9, one fresh run per leg, cancelling each run after its leg.
+  - Run VP 7 (ci-bot leg, which also yields the environment id), then VP 8 (session legs, one fresh run each,
+    cancelling each run after its leg), then VP 9.
   - Run VP 10; report the result to the operator and the content-reader planning thread.
   - 'Report: what was implemented, verification results'
 rollback: >-
