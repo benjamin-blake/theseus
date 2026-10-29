@@ -24,7 +24,7 @@ scope:
       Per attempt: a fresh uuid (`/proc/sys/kernel/random/uuid`, else `python3 -c 'import uuid;print(uuid.uuid4())'`)
       passed as `--session-id <uuid>` ahead of the caller's args; append (never truncate) two compact JSON lines to
       "${OUTPUT_FILE}.sessions.jsonl": BEFORE invoking claude {"attempt": n, "session_id": "<uuid>", "started_at":
-      "<UTC ISO-8601 Z>"} (so a session killed by a step timeout is still found), and after it {"session_id": "<uuid>",
+      "<UTC ISO-8601 with milliseconds, Z>"} (`date -u +%Y-%m-%dT%H:%M:%S.%3NZ`) (so a session killed by a step timeout is still found), and after it {"session_id": "<uuid>",
       "exit": <int>, "transient": <bool>} (attempt counts per wrapper invocation; two invocations in one job, as
       reconcile does, append to the same file). A manifest write failure is ignored and never changes the exit code. A
       caller passing --session-id, --resume, --continue, --fork-session or --no-session-persistence gets the usage exit 1
@@ -53,11 +53,11 @@ scope:
     purpose: >-
       `ci-pass`: takes the manifest globs and every host fact as arguments (Decision 212: no GITHUB_* read here):
       --manifest (repeatable glob), --workflow-path, --ref, --repository, --run-id, --run-attempt, --job, --event-name,
-      --sha, --projects-dir (default $HOME/.claude/projects), --budget-s (default 180). Validates each fact (run id and
+      --sha (the triggering commit), --checkout-sha (optional: the checked-out commit), --projects-dir (default $HOME/.claude/projects), --budget-s (default 180). Validates each fact (run id and
       attempt digits; job [A-Za-z0-9_.-]{1,100}; event one of the closed Actions trigger values plan 1 declares (workflow_run,
-      workflow_dispatch, push, schedule; any other event is off reason unsupported_event); sha 40 or 64 hex; workflow path under
+      workflow_dispatch, push, schedule; any other event is off reason unsupported_event); sha and checkout-sha 40 or 64 hex; workflow path under
       .github/workflows/), else off reason bad_host_fact. Reads every manifest line (malformed lines counted), merges the start and
-      result lines by session_id (a start line alone is a killed attempt, still captured), and gives each session retry_ordinal = its 1-based rank by (started_at, session_id) across all
+      result lines by session_id (a start line alone is a killed attempt, still captured), and gives each session retry_ordinal = its 1-based rank by (started_at, then manifest order: file order, then line order) across all
       lines read, so one call per job covers every invocation. ci_gate first; off prints one line and exits 0. Per
       session: exactly one <projects-dir>/*/<sid>.jsonl (none: transcript_absent; several: transcript_ambiguous);
       writes <sid>/host-run.json by temp file and os.replace, unless a sidecar exists: identical bytes reuse it,
@@ -66,7 +66,8 @@ scope:
       hook in <repo root>/.claude/settings.json, read by the SW-3 order like capture.yaml and parsed with
       transcript.hook_script and PIN_FLAG; none or several -> off reason no_project_ref. Sidecar = canonical JSON
       {schema_version: 1, project_ref, agent, content_policy, host: {kind: gha, run_id, run_attempt,
-      job, retry_ordinal, event_name, repository, workflow_path, ref, sha}} (the gate's entry supplies agent and
+      job, retry_ordinal, event_name, repository, workflow_path, ref, sha, checkout_sha (absent when not given)}} (the
+      gate's entry supplies agent and
       content_policy).
       Then run_pass(event "ci_final", final=True, ci_gate=gate, budget = the remaining total budget). Never runs the
       in-session source check or any reader call. Prints only counts and fixed tokens (Decision 101: no id, ref, sha,
@@ -103,12 +104,15 @@ scope:
       GITHUB_STEP_SUMMARY. Repo root = three levels above the script's own directory (github.action_path), so a caller
       can run a main-tooling copy while its root checkout is another commit. Derives the workflow path from
       GITHUB_WORKFLOW_REF (strip "${GITHUB_REPOSITORY}/" and "@<ref>") and passes GITHUB_REF, GITHUB_REPOSITORY,
-      GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT, GITHUB_JOB, GITHUB_EVENT_NAME and GITHUB_SHA as ci-pass arguments, one
+      GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT, GITHUB_JOB, GITHUB_EVENT_NAME and GITHUB_SHA (--sha, the triggering commit) as
+      ci-pass arguments, plus --checkout-sha from `git -C "$GITHUB_WORKSPACE" rev-parse HEAD` when that succeeds (for
+      workflow_run, GITHUB_SHA is main's head, not the checked-out failing commit), one
       --manifest per non-empty CAPTURE_MANIFESTS line. When all three CAPTURE_AWS_* are set, ci-pass runs under `env -u
       AWS_PROFILE -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN -u AWS_SECURITY_TOKEN` with only
       those three set. Runs `<root>/bin/venv-python -m scripts.telemetry_capture ci-pass` from <root> under `timeout
       240`; no executable venv python prints `CI_CAPTURE skipped reason=no_python`; a timeout prints `CI_CAPTURE
-      skipped reason=timeout`. Echoes only ci-pass's CI_CAPTURE lines.
+      skipped reason=timeout`. Echoes only ci-pass's CI_CAPTURE lines; a nonzero exit or no CI_CAPTURE line prints `CI_CAPTURE skipped
+      reason=ci_pass_failed` (for example an import failure on old code).
   - file: .github/workflows/ci-rca.yml
     action: Modify
     purpose: >-
@@ -151,30 +155,28 @@ scope:
     purpose: >-
       Ctx gains host and content_policy fields. When content_policy is "withheld", every row that would carry content
       is a typed omission instead: content_omitted_reason withheld_by_policy, content and content_uri absent,
-      content_sha256 and content_bytes of the raw source text before scrub (the sibling contract's definition); so no
+      content_sha256 = SHA-256 of the empty byte string and content_bytes 0 (plan 1's write-enforced definition; a raw
+      digest of a short reply is guessable, Decision 238 cl.1); so no
       blob is delivered for such a tree. "full" is today's behaviour.
   - file: src/turn_capture/sessions.py
     action: Modify
     purpose: >-
       With a sidecar: the root open row's workflow is the sidecar agent (the source_registry key, plan 1's rule; ahead
       of WA-1..WA-3); checkout_sha,
-      checkout_base_sha and checkout_dirty come from the hook pin where present, else checkout_sha = the sidecar sha
-      (counted checkout_from_host_run). Without a sidecar: unchanged.
+      checkout_base_sha and checkout_dirty come from the hook pin where present, else checkout_sha = the sidecar's
+      checkout_sha when present (counted checkout_from_host_run; never the triggering sha). Without a sidecar: unchanged.
   - file: config/telemetry/parser_versions.yaml
     action: Modify
     purpose: claude_code current 8 and a v8 history entry (date, regenerated golden_digest, reason naming P-5, the sidecar and the top-level rows).
   - file: tests/fixtures/turn_capture/golden/index.json
     action: Modify
-    purpose: List the five new v8 cases after the existing 53 (purpose text unchanged).
+    purpose: List the four new v8 cases after the existing 53 (purpose text unchanged).
   - file: tests/fixtures/turn_capture/golden/ci_rca_hook_pin_and_host_run.json
     action: Create
-    purpose: Two-turn claude -p root with the repo pin hook attachment and a full-policy sidecar; top-level open and close rows, workflow ci-rca, checkout facts from the hook pin.
+    purpose: Two-turn claude -p root with the repo pin hook attachment and a full-policy sidecar; top-level open and close rows, agent_type and workflow ci_rca (the source_registry key), checkout facts from the hook pin.
   - file: tests/fixtures/turn_capture/golden/host_run_only_withheld.json
     action: Create
-    purpose: Hookless root (plan-review shape) with a withheld-policy sidecar; withheld_by_policy omissions, checkout_sha from the sidecar.
-  - file: tests/fixtures/turn_capture/golden/host_run_pin_conflict.json
-    action: Create
-    purpose: Hook pin and sidecar disagree on project_ref; the corpus consumer asserts resolve_pin returns pin_conflict and the case's expected_rows is empty.
+    purpose: Hookless root (plan-review shape) with a withheld-policy sidecar; withheld_by_policy omissions (empty-string digest, 0 bytes), checkout_sha from the sidecar checkout_sha.
   - file: tests/fixtures/turn_capture/golden/host_run_malformed.json
     action: Create
     purpose: A hook-pinned root with a malformed sidecar; rows as without a sidecar (no top-level rows), host_run_malformed counted.
@@ -183,7 +185,10 @@ scope:
     purpose: A retry's second session (retry_ordinal 2) whose close outcome is failed on an API-error record; host_run_ref ends /2.
   - file: tests/fixtures/turn_capture_v8_cases.py
     action: Create
-    purpose: Builders for the five v8 cases (the v6 builders' shape).
+    purpose: >-
+      Builders for the four v8 cases (the v6 builders' shape). No pin-conflict corpus case: every corpus consumer calls
+      record_turn with a fixed project_ref, and P-5 lives in the runner and pass, so the conflict is proven in
+      test_host_run.py (P-5 table), test_runner.py (deferred pin_conflict) and test_main.py (pass refusal).
   - file: tests/fixtures/turn_capture/golden/pin_first_record_without_uuid.json
     action: Modify
     purpose: Regenerated expected_rows at parser_version 8 (the parser_version field only; no row added or removed).
@@ -347,7 +352,8 @@ scope:
     action: Modify
     purpose: >-
       Header parser_version 7 -> 8 (test_derive.py pins it). No existing tree's emitted rows change at v8 (no sidecar), so
-      no expectation is re-authored; the header move cites this plan in its why.
+      no expectation is re-authored and the new v8 cases get no entries (the oracle reconciliation covers them); the header
+      move cites this plan in its why.
   - file: tests/telemetry/fixtures/derived_golden_rollups.yaml
     action: Modify
     purpose: Header parser_version 7 -> 8, as derived_golden_state.yaml.
@@ -361,10 +367,10 @@ scope:
     purpose: host_run() on FsTree (file present, absent) and MemTree; project_ref_pin unchanged by a sidecar.
   - file: tests/turn_capture/test_sessions.py
     action: Modify
-    purpose: With a sidecar the root open row's workflow is the sidecar agent and checkout_sha falls back to the sidecar sha (checkout_from_host_run counted); the hook pin wins where present.
+    purpose: With a sidecar the root open row's workflow is the sidecar agent and checkout_sha falls back to the sidecar checkout_sha (checkout_from_host_run counted), never its triggering sha; the hook pin wins where present.
   - file: tests/turn_capture/test_transcripts.py
     action: Modify
-    purpose: content_policy withheld yields withheld_by_policy omissions with the raw (pre-scrub) sha256 and byte size and no content or content_uri; full is unchanged.
+    purpose: content_policy withheld yields withheld_by_policy omissions with the empty-string sha256, content_bytes 0 and no content or content_uri (never the raw digest); full is unchanged.
   - file: tests/telemetry_capture/test_runner.py
     action: Modify
     purpose: run_pass with a ci gate runs under GITHUB_ACTIONS; without one it stays off; a P-5 conflict finishes deferred with pin_conflict.
@@ -379,7 +385,7 @@ scope:
     purpose: CursorTree.host_run() returns the wrapped tree's bytes and None when absent.
   - file: tests/turn_capture/test_host_run.py
     action: Create
-    purpose: P-5 table, sidecar grammar, host_run_ref rendering, top-level rows (open due rule, close only on final, no observation_ref), withheld omissions.
+    purpose: P-5 table, sidecar grammar, host_run_ref rendering, top-level rows (open due rule, close only on final, no observation_ref), withheld omissions (content and content_uri absent, empty-string sha256, content_bytes 0), the P-5 pin_conflict case.
   - file: docs/contracts/telemetry_agents.yaml
     action: Modify
     purpose: >-
@@ -444,17 +450,19 @@ scope:
       or taxonomy row). Rule 1 also scans .github/actions/**/*.{yml,yaml,sh} for unwrapped claude -p. Rule 2 (pairing):
       a call site is a workflow job whose run bodies invoke claude_p_retry.sh or that uses a local composite action whose
       files invoke it; every such job holds exactly one step whose uses path ends with
-      .github/actions/telemetry-ci-capture, unless every action it reaches is a ci_uncaptured call_site; every
+      .github/actions/telemetry-ci-capture, unless the job invokes the wrapper in no run body of its own and every
+      claude-invoking action it uses is a ci_uncaptured call_site; a paired job's workflow must be a ci_workflows entry
+      or hold a ci_uncaptured call site (else it would read off not_allow_listed silently); every
       ci_workflows entry names an existing workflow whose call-site jobs all pair; .github/workflows/claude.yml appears
       in neither list; every ci_uncaptured entry names an existing call site and a rec-NNNN owner (a stale entry fails).
       examined counts the files read (unit claude_p_files).
   - file: tests/checks/ci_guards/test_validate_claude_p_retry_wrapper.py
     action: Modify
-    purpose: Fixtures for unwrapped calls in actions, a paired job, an unpaired job, a job with two capture steps, a ci_uncaptured exemption, a stale exemption, claude.yml listed, and the real tree passing.
+    purpose: Fixtures for unwrapped calls in actions, a paired job, an unpaired job, a job with two capture steps, a ci_uncaptured exemption, a stale exemption, claude.yml listed, a paired job in an unlisted workflow, and the real tree passing. The accounting nodes' unit and count pins move from workflow_files to claude_p_files over workflows and actions -- moved, not weakened.
   - file: docs/contracts/project-configuration.yaml
     action: Modify
     purpose: >-
-      Decision 224 cl.6: a new project-kind row telemetry.capture.ci_workflows (the CI capture allow-list: repository,
+      Decision 224 cl.6: a new project-kind row project.telemetry_capture.ci_workflows (the CI capture allow-list: repository,
       entries, pending exemptions; homes platform_file on every substrate; readers scripts/telemetry_capture/switch.py,
       scripts/telemetry_capture/ci_pass.py and scripts/checks/ci_guards/validate_claude_p_retry_wrapper.py; set_by user;
       this_repository current_home config/telemetry/capture.yaml, status open, owning_item T4.24:c16), and the
@@ -482,7 +490,8 @@ scope:
   - file: tests/telemetry_capture/test_ci_pass.py
     action: Create
     purpose: >-
-      Manifest parsing and ranking, transcript discovery, sidecar write-once and conflict, gate off paths, budget split, counts-only output (no uuid, sha or path in any printed line), no verify or reader call, exit 0, and an AST test that no GITHUB_ name is read in ci_pass.py, runner.py or
+      Manifest parsing and ranking, transcript discovery, sidecar write-once and conflict, gate off paths, budget split, counts-only output (no uuid, sha or path in any printed line), no verify or reader call, exit 0, and an AST test that no environment read (os.environ[...] / .get, os.getenv, env.get, or a subscript) with a GITHUB_
+      literal key occurs in ci_pass.py, runner.py or
       src/turn_capture (switch.py's GITHUB_ACTIONS hook veto is the one allowed read).
   - file: tests/test_telemetry_ci_capture_action.py
     action: Create
@@ -492,7 +501,7 @@ scope:
     purpose: >-
       The v8 notes exist in the four Class A contracts and the realization moves; host_run_ref's required_when is exactly
       the seven top-level trigger values and undated; ducklake_reader.yaml's telemetry_root_sessions line names
-      host_run_ref; project-configuration.yaml carries the telemetry.capture.ci_workflows row and project.ref's new reader;
+      host_run_ref; project-configuration.yaml carries the project.telemetry_capture.ci_workflows row and project.ref's new reader;
       ports.yaml's PC-01 names ci_pass.py and SA-03 exists with its location and owning_item; each with one amendment_log
       entry.
 bundled_recommendations:
@@ -512,7 +521,7 @@ acceptance_criteria:
   - ci-pass captures an allow-listed workflow on refs/heads/main of otl-labs/ontheloop and is off, with one fixed token, for every other gate input; no GITHUB_* is read by ci_pass.py, runner.py or src/turn_capture (switch.py's GITHUB_ACTIONS hook veto is the sole exception).
   - Hook capture stays off in Actions (switch_mode without a gate is unchanged); a switch git-show timeout after a resolved ref reads OFF (rec-4424).
   - The sidecar is written once and never overwritten with different content; rule P-5 defers a project_ref conflict.
-  - Parser v8 writes one top-level telemetry_agents open/close pair per root session with observation_id NULL, host_run_ref, workflow_run_id and trigger; workflow = the source_registry key; withheld policy yields withheld_by_policy omissions; the golden corpus, registry and digest are at 8.
+  - Parser v8 writes one top-level telemetry_agents open/close pair per root session whose tree carries a valid host-run sidecar, with observation_id NULL, host_run_ref, workflow_run_id and trigger; workflow = the source_registry key; withheld policy yields plan 1's withheld_by_policy omissions (empty-string digest, 0 bytes); the golden corpus, registry and digest are at 8.
   - The writer rejects a top-level telemetry_agents row without host_run_ref and accepts sub-agent rows unchanged.
   - Completeness counts top-level-run roots as captured_host_runs, never as captured_without_key.
   - The pairing rule fails an unpaired claude_p_retry.sh call site, a stale exemption and a listed claude.yml, and passes the real tree.
@@ -634,7 +643,8 @@ verification_plan:
     action: >-
       Local integration on the pinned CLI (counts only), run AFTER the build commit. Install CLI 2.1.148 into a scratch
       dir (both npm packages, then node install.cjs by hand, per the probe note), shallow-clone the committed branch into
-      a scratch git dir (so its .claude/settings.json pin hook fires), run the real wrapper there twice with a one-word
+      a scratch git dir (so its .claude/settings.json pin hook fires; OTL_TURN_CAPTURE=off keeps the clone's interactive
+      capture hooks from sending the probe sessions to production), run the real wrapper there twice with a one-word
       prompt against one output file, then run ci-pass with a repository the gate refuses (deterministic before merge,
       since the gate reads origin/main first), and parse each found tree locally with record_turn and a hand-written
       sidecar.
@@ -643,7 +653,7 @@ verification_plan:
       @anthropic-ai/claude-code-linux-x64@2.1.148 && (cd "$S/cli/node_modules/@anthropic-ai/claude-code" && node
       install.cjs) && git clone -q --depth 1 "file://$PWD" "$S/repo" && (cd "$S/repo" && for i in 1 2; do printf 'Reply
       ok.' | env -u CLAUDE_CODE_INCLUDE_PARTIAL_MESSAGES -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_REMOTE_SESSION_ID -u
-      CLAUDE_CODE_CHILD_SESSION PATH="$S/cli/node_modules/.bin:$PATH" bash scripts/ci/claude_p_retry.sh "$S/out.json" --
+      CLAUDE_CODE_CHILD_SESSION OTL_TURN_CAPTURE=off PATH="$S/cli/node_modules/.bin:$PATH" bash scripts/ci/claude_p_retry.sh "$S/out.json" --
       --output-format json --max-turns 1 >/dev/null 2>&1; done) && wc -l < "$S/out.json.sessions.jsonl" &&
       bin/venv-python -m scripts.telemetry_capture ci-pass --manifest "$S/out.json.sessions.jsonl" --workflow-path
       .github/workflows/ci-rca.yml --ref refs/heads/main --repository otl-labs/probe --run-id 1 --run-attempt 1 --job rca
@@ -679,7 +689,8 @@ verification_plan:
   - step: 12
     phase: post-deploy
     action: >-
-      The first ci-rca run after the merge whose agent step ran (not dedup-skipped) is captured end to end: its job is
+      The first ci-rca run whose failing commit (workflow_run.head_sha) includes the merge and whose agent step ran (not
+      dedup-skipped) is captured end to end (an earlier failing commit lacks the action by design): its job is
       green, its capture step printed CI_CAPTURE done with sent >= 1 and halted 0, and the production store holds the
       run's top-level pair. Wait for a natural run (about 0.7 a day); never dispatch ci-rca to manufacture one.
     command: >-
@@ -780,7 +791,7 @@ test_obligations:
     test_selector: tests/telemetry/test_parser_version_registry.py
     red_green_expectation: red before (registry current 7 against the new digest), green after
   - source: src/turn_capture/transcripts.py
-    behavior: withheld policy yields withheld_by_policy omissions with raw digest and size.
+    behavior: withheld policy yields withheld_by_policy omissions with the empty-string digest and 0 bytes.
     verification_step: 5
     test_selector: tests/turn_capture/test_transcripts.py
     red_green_expectation: red before (node absent), green after
@@ -923,7 +934,12 @@ pre_implementation_checklist:
     Shape check against the merged telemetry_agents.yaml and telemetry_transcripts.yaml, verbatim: run_shapes.top_level
     (entity_ref /run, external_ref #0/open and #0/close, observation_id NULL, agent_type), trigger accepted_values (the
     nine values incl. the seven top-level ones), the host_run_ref pattern, the workflow = source_registry key rule and the
-    withheld_by_policy definition; STOP on any mismatch and bring it back to planning
+    withheld_by_policy definition (content and content_uri NULL, content_sha256 = SHA-256 of b"", content_bytes 0); STOP
+    on any mismatch and bring it back to planning
+  - >-
+    Plan 1 taught scripts/telemetry_verify (oracle, derive, dedupe) and the agent_run_* verbs the top-level pair
+    (test_derived_layer_reconciliation.py runs every corpus tree, the new v8 cases included, through them); otherwise
+    STOP and tell the coordinator
   - PARSER_VERSION is still 7 and the golden index lists 53 cases, and the producer-admission build has not merged; otherwise STOP and tell the coordinator
   - All files in scope located and readable
 execution_steps:
@@ -942,10 +958,11 @@ execution_steps:
     6. capture.yaml, the composite action and ci-rca.yml with test_telemetry_ci_capture_action.py; VP 4. Then the
     pairing rule with its tests; VP 8.
   - >-
-    7. Version and corpus: PARSER_VERSION 8, PRODUCER_VERSION turn-capture-8, the five builders and cases, the index.
+    7. Version and corpus: PARSER_VERSION 8, PRODUCER_VERSION turn-capture-8, the four builders and cases, the index.
     Only after step 4's tests pass, regenerate every expected_rows and review the diff by kind (parser_version on every
-    row; new rows only in new cases); set the registry v8 entry with the regenerated digest; re-author the derived golden
-    files by hand where the new cases add rows. VP 5.
+    row; new rows only in new cases); set the registry v8 entry with the regenerated digest; move the two derived golden
+    headers to 8 (header only: existing trees emit the same rows, and the new cases get no hand-authored entries; the
+    oracle reconciliation covers them). VP 5.
   - >-
     8. Contracts: telemetry_agents.yaml (rule, populated_by, realization, note), envelope, transcripts, sessions,
     ducklake_reader.yaml, ports.yaml SA-03, project-configuration.yaml, each with an amendment_log entry dated the build
