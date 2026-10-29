@@ -33,7 +33,7 @@ scope:
       EVENT_READS gains model_usage_rollup, tool_use_rollup and session_startup_baseline: binding window, params
       (day_from, day_to), max_window_days MAX_WINDOW_DAYS, agent_facing true, not paginable, descriptions built with
       _derived_rows_note naming the grain and "one tree is the rows sharing the root's tenant, project and
-      session_started_at".
+      session_started_at" (no description may contain the word "excluded": test_describe.py pins that).
   - file: src/common/event_usage_fields.py
     action: Create
     purpose: >-
@@ -59,7 +59,7 @@ scope:
     action: Create
     purpose: >-
       Agent CLI `bin/venv-python -m scripts.telemetry_usage {models|tools|startup} --from YYYY-MM-DD --to YYYY-MM-DD
-      [--by-root] [--max-windows N]` over scripts.telemetry_capture.read_route.TelemetryReader (PlatformDev profile via
+      [--by-root] [--by-agent] [--max-windows N]` over scripts.telemetry_capture.read_route.TelemetryReader (PlatformDev profile via
       resolve_aws_profile; no committed URL, Decision 101). Behaviour in execution_steps[3]: <=7-day chunking, exact
       client-side sums, fail-closed, typed-413 halving, bounded and printed call count (Decision 88), JSON on stdout.
   - file: docs/contracts/ducklake_telemetry_reader.yaml
@@ -251,7 +251,7 @@ verification_plan:
       bin/venv-python -c "import json; m = json.load(open('/tmp/usage-models.json')); t = json.load(open('/tmp/usage-tools.json'));
       s = json.load(open('/tmp/usage-startup.json')); print('calls', m['calls'], 'fable', any(r['model'] == 'claude-fable-5-1' and (r['tokens_output_total'] or 0) > 0 for r in m['rows']),
       'artifact', any(r['tool_name'] == 'Artifact' for r in t['rows']), 'kinds', sorted({r['is_root'] for r in s['rows']}))"
-    expected: calls 2, fable True, artifact True, kinds [False, True]; each command exits 0 and its stderr names two windows.
+    expected: each command exits 0 with windows=2 on stderr; calls is 2, or more when a typed 413/504 halved a window (correct behaviour); fable True, artifact True, kinds [False, True].
     fix_if: A non-zero exit names the failed window and error_type; diagnose it, never retry into a partial total.
     hermetic: false
   - step: 12
@@ -331,7 +331,7 @@ constraints:
   - No rescue agents or workaround loops (Decision 55).
 context:
   - "Decision-scout verdict FLAGS_FOUND; CITE 199, 236, 207, 88, 84, 128, 101; one SPIRIT NOTE (Decision 215: the CLI must fail closed on a failed chunk), folded into execution_steps[3]. Decisions triaged: 190 of 190. Roadmap items intersected: 3; CONFLICT: 0; RELATED: 3."
-  - "gates: decision-scout=FLAGS_FOUND (note accepted); plan-critique=REVISE round 1 (F1-F5 fixed), PROCEED round 2 (F1-F6 fixed); round 3 confirming"
+  - "gates: decision-scout=FLAGS_FOUND (note accepted); plan-critique=REVISE round 1 (F1-F5 fixed), PROCEED round 2 (F1-F6 fixed), REVISE round 3 (F1-F5 fixed); round 4 confirming"
   - "Evidence: /mnt/project-files/usage-report-check/REPORT.md (per-model hand walk, 22 trees), /mnt/project-files/context-composition-feedback/FINDINGS.md (startup baseline, tool counts); approach /mnt/project-files/usage-reader-verbs/step6b-presentation.md."
   - "Decided with notice: server cap stays 7 days, longer ranges are client chunks (exact: every tree row carries the root's partition pin, Decision 199 cl.2); rec-4331 not bundled (its text gates it behind the executor cost governor; the CLI prints a cache_read_ratio per model); rec-4703's step-change alarm split to rec-4725."
   - "Changed after the presentation, with notice: the presented read-time surface label is dropped (constraint 4); the CLI groups by a literal branch_prefix instead."
@@ -374,8 +374,8 @@ execution_steps:
     rule); a NULL model is its own row; ORDER BY session_started_at, root_session_id, model NULLS LAST.
     (b) TOOL_USE_ROLLUP_SQL over (observations, sessions, agents): tool_call observations; one row per (tree, is_root,
     agent_name, workflow, tool_name, mcp_server, attribution_mcp_server) with columns root_session_id, harness_session_key,
-    branch, session_started_at, roots_in_tree, is_root, agent_name, workflow, tool_name (name), mcp_server (the server
-    segment of a name of the form mcp__<server>__<tool>, else NULL), attribution_mcp_server (the open row's metadata key
+    branch, session_started_at, roots_in_tree, is_root, agent_name, workflow, tool_name (name), mcp_server (the text
+    between a leading mcp__ and the next __ of the name, NULL when there is no leading mcp__ or no second __), attribution_mcp_server (the open row's metadata key
     attribution_mcp_server, else NULL), call_count (distinct observation_id among open rows), error_count, blocked_count,
     interrupted_count (by each observation's current disposition: its latest close by event_timestamp, source_ordinal,
     event_id), session_count (distinct sessions with an open row), then the tree stamps; ORDER BY session_started_at,
@@ -396,7 +396,8 @@ execution_steps:
     rows across trees and windows. model_usage_rollup: one row per tree and model over the root and every sub-agent
     session's R5c-collapsed model_call rows, the four token classes and the 1h/5m creation split summed separately (NULL
     when no call carries a count), model_call_count, usage_missing_count and session_count. tool_use_rollup: one row per
-    tree, root or sub-agent, agent_name, workflow, tool name, MCP server (from an mcp__<server>__<tool> name) and the open
+    tree, root or sub-agent, agent_name, workflow, tool name, MCP server (the text between a leading mcp__ and the next __ of
+    the tool name, NULL when the name has no leading mcp__ or no second __) and the open
     row's attribution_mcp_server metadata key, with call_count over open rows, error, blocked and interrupted counts by each
     call's latest close, and session_count. session_startup_baseline: one row per session of each tree with its earliest
     model_call (event_timestamp, source_ordinal, event_id) and that call's model and token classes, or model_call_count 0
@@ -433,14 +434,17 @@ execution_steps:
     root's tree); test_totals_are_null_when_no_call_reports_them; test_conflicted_grain_key_marks_the_tree (clone_row);
     test_non_real_projects_and_out_of_window_trees_are_excluded. test_ducklake_event_read_tool_usage.py:
     test_tool_use_counts_by_name_and_server_across_sessions (two trees, root and sub-agent calls, an mcp__github__ tool, an
-    error close: one count per observation, the error split, the server segment); test_verb_matches_oracle_on_every_golden_tree.
+    error close, and two open rows of the same tool name, one whose metadata carries attribution_mcp_server "github" and
+    one without the key: one count per observation, the error split, the server segment, and the two attribution values
+    ("github" and NULL) on separate rows; every committed golden stores the key as null, so only this case tells a wrong
+    JSON path from a right one); test_verb_matches_oracle_on_every_golden_tree.
     test_ducklake_event_read_startup_baseline.py: test_first_model_call_baseline_per_session_and_agent_run (the earliest
     call wins over a later larger one, the 1h/5m split is carried, a sub-agent row carries its agent_name, a session with
     no call reads 0 and NULLs); test_verb_matches_oracle_on_every_golden_tree. test_telemetry_usage.py (fake reader):
     test_usage_verbs_are_registered_agent_facing_window_verbs (binding window, max_window_days 7, agent_facing, params
     day_from/day_to, VERB_FIELDS present), test_reader_contract_declares_the_usage_verbs (ducklake_telemetry_reader.yaml audit_invariants name all three verbs and the latest amendment_log entry is a field_add naming them), test_twenty_days_make_three_exact_chunks, test_chunk_sums_equal_a_single_window_sum,
-    test_a_failed_chunk_prints_no_total_and_exits_1 (504 and 503 cases, stderr names the window), test_413_and_504_halve_the_window,
-    test_max_windows_refused_before_any_call, test_halving_past_the_call_cap_fails_closed, test_cache_read_ratio_null_on_zero_denominator, test_branch_prefix_literal.
+    test_a_failed_chunk_prints_no_total_and_exits_1 (a 504 at the 1-day floor and a 503 after the client's transient retries; stderr names the window), test_413_and_504_halve_the_window,
+    test_max_windows_refused_before_any_call, test_halving_past_the_call_cap_fails_closed, test_cache_read_ratio_null_on_zero_denominator, test_branch_prefix_literal, test_by_root_and_by_agent_widen_the_key.
     The smoke-gate node per scope.
   - Execute the Verification Plan -- run each pre-deploy step; loop until pass; on an unrecoverable V3 failure stop and RCA (Decision 55).
   - >-
