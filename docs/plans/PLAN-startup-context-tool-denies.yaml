@@ -1,0 +1,232 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "startup-context-tool-denies"
+intent: >-
+  Strip always-loaded but unused harness tools (the cloud environment-setup and computer-folder
+  tools, the Artifact family and the Claude Docs connector) from every cloud web session's startup
+  context with blanket permissions.deny rules in .claude/settings.json, cutting an estimated 17-24k
+  tokens from a measured 94,959-token first-call baseline in every session and every subagent; then
+  report the measured cost and the workaround upstream to the platform team.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-startup-context-tool-denies.yaml
+phase: >-
+  user_explicit_out_of_scope soft-warn exception category (user-directed startup-context trim); no
+  tier_item criterion claimed. Adjacent: T3.14 (context-budget metric, deferred_post_mvp) -- not
+  advanced. Sibling: rec-2982 (retire github-full) is planned separately, next.
+scope:
+  - file: .claude/settings.json
+    action: Modify
+    purpose: >-
+      Populate permissions.deny (empty today) with eleven blanket entries: Artifact,
+      ArtifactComments, ArtifactData, mcp__Claude_Docs, and mcp__claude-code-remote__ +
+      create_environment, update_environment, get_environment, switch_environment,
+      request_credential, list_computer_folders, request_computer_folder.
+  - file: tests/hooks/test_settings_tool_denies.py
+    action: Create
+    purpose: >-
+      TestContextTrimDenies guards the deny set: each entry present and blanket, no repo workflow
+      surface names a denied tool, no allow entry is shadowed by a deny entry, and a tmp_path
+      self-test proving the reference scan flags a workflow that names a denied tool.
+bundled_recommendations: []
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    .claude/settings.json permissions.deny contains all eleven entries named in scope, each blanket
+    (no parenthesised specifier) -- a specifier rule only gates calls and leaves the definition in
+    context.
+  - >-
+    No file under .claude/skills, .claude/commands, .claude/agents, .claude/hooks or docs/contracts,
+    and not AGENTS.md, names a denied tool or server prefix as a whole word; no permissions.allow
+    entry equals or falls under a deny entry.
+  - >-
+    The plugin's rendered hooks file stays the render of the settings
+    (tests/hooks/test_plugin_hooks.py render test passes unchanged).
+  - >-
+    In a fresh cloud session on main after merge, the first API call's input total
+    (input + cache_creation + cache_read) is at least 10,000 below the recorded 94,959 baseline,
+    with Claude Code version and ambient-load files checked unchanged as controls.
+  - >-
+    The measured figures and the workaround are sent as a reply in the user's existing Anthropic
+    trusted-tester feedback thread, only after the user replies 'send' to the text shown in chat.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: >-
+      Run the TestContextTrimDenies class. The class does not exist today, so the red-before replay
+      classifies target_absent (pytest exit 4); after the change all four tests pass.
+    command: bin/venv-python -m pytest tests/hooks/test_settings_tool_denies.py::TestContextTrimDenies -q
+    expected: >-
+      exit 0, four tests passed. Before the change pytest reports the class not found.
+    fix_if: >-
+      A deny entry missing or carrying a specifier -- fix the settings entry. A workflow surface
+      names a denied tool -- stop and ask the user whether that workflow needs the tool; never
+      narrow the scan roots or the required set to pass.
+    hermetic: true
+    expected_literals: ["4 passed"]
+    graduation: graduate
+    graduation_check_id: settings-context-trim-denies
+  - step: 2
+    phase: pre-deploy
+    action: >-
+      Confirm the plugin wiring is untouched: the committed .claude/hooks/hooks.json is still the
+      render of .claude/settings.json (render reads only the hooks key).
+    command: bin/venv-python -m pytest tests/hooks/test_plugin_hooks.py::test_the_committed_hooks_file_is_the_render_of_the_settings -q
+    expected: exit 0, one test passed, before and after the change.
+    fix_if: >-
+      Fails -- the edit touched the hooks key; restore it. Never regenerate hooks.json to absorb an
+      unintended hooks change.
+    hermetic: true
+    expected_literals: ["1 passed"]
+    graduation: waive
+    graduation_waiver_reason: >-
+      Green before and after by design (a no-regression probe, not a red-before probe), and it
+      re-runs an existing standing test in tests/hooks/test_plugin_hooks.py.
+  - step: 3
+    phase: pre-deploy
+    action: Full-tier handoff obligation, run to completion.
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0; the Validation Summary lists no failure.
+    fix_if: >-
+      A failure in scope is fixed on the branch; one outside scope becomes a rec via
+      scripts.ops_data_portal (Decision 59, Decision 55). Never skip or weaken a check.
+    hermetic: false
+    graduation: not-applicable
+  - step: 4
+    phase: post-deploy
+    action: >-
+      In a FRESH cloud session started on main after the merge (its first message is the short
+      pasteable prompt from execution step 7), read the session's own transcript: the first
+      assistant entry's usage total is the startup baseline the deny rules move. Controls: the
+      Claude Code version and the ambient-load files since the baseline commit.
+    command: >-
+      bin/venv-python -c "import json,glob,os; f=max(glob.glob(os.path.expanduser('~/.claude/projects/*/*.jsonl')),key=os.path.getmtime); u=next(d['message']['usage'] for d in map(json.loads,open(f)) if d.get('type')=='assistant'); print('first_call_input_total', u['input_tokens']+u['cache_creation_input_tokens']+u['cache_read_input_tokens'], 'claude_code', os.environ.get('CLAUDE_CODE_VERSION'))"
+      && git diff --stat af368683 origin/main -- AGENTS.md CLAUDE.md .mcp.json .claude/skills .claude/commands .claude/agents
+    expected: >-
+      first_call_input_total at most 84959 (baseline 94959 minus 10000); claude_code 2.1.42; the
+      diff --stat prints nothing. Record the exact total for execution step 8.
+    fix_if: >-
+      Version or ambient files changed -- the total is confounded; attribute instead from the
+      context panel's per-line figures (ask the user to read MCP tools and System tools) and
+      confirm the eleven names are absent. Denied tools still present in a fresh session -- the
+      deny does not strip them on this surface; record that as a finding for the upstream reply
+      and file a rec. Never move the threshold to make the step pass (rec-3976, Decision 181).
+    hermetic: false
+    graduation: not-applicable
+test_obligations:
+  - source: .claude/settings.json
+    behavior: >-
+      The eleven context-trim tools stay blanket-denied, and no repo workflow surface comes to
+      depend on a tool the settings deny.
+    verification_step: 1
+    test_selector: tests/hooks/test_settings_tool_denies.py::TestContextTrimDenies
+    red_green_expectation: >-
+      red before, green after -- the class does not resolve today (pytest exit 4, not found) and
+      its four tests pass once the deny list and test land.
+constraints:
+  - No rescue agents or workaround loops (Decision 55).
+  - >-
+    Deny exactly the eleven user-approved entries, all blanket. No other harness tool (the user
+    excluded ShowOnboardingRolePicker, SuggestPluginInstall, SuggestSkills, SearchPlugins).
+  - >-
+    Out of scope: .mcp.json and github-full (rec-2982, next plan); AGENTS.md (user deferred it to the
+    persona-context consolidation); the plugin manifest and marketplace files.
+  - >-
+    PUBLIC repository (Decision 101): no recipient name, address, thread id or email text in any
+    committed file, commit message or PR body. The email exists only in the user's mailbox.
+  - >-
+    The upstream reply is sent only after the user's explicit 'send' to the exact text shown in
+    chat; never sent unprompted, never to a new thread.
+  - >-
+    Test colocation follows tests/hooks/ (tests/hooks/test_plugin_hooks.py already reads
+    .claude/settings.json; Decision 131 maps no home for it); no cross-test imports; no exact-count
+    assertion on the deny list -- assert a membership floor; module stays under 500 SLOC (Decision 130).
+  - >-
+    Leave every other settings key byte-identical, including the PreToolUse registrations (Decision
+    203) and the hooks key the plugin render reads.
+context:
+  - >-
+    Decision-scout verdict NO_FLAGS. CITE list (verbatim): Decision 132, Decision 189, Decision 163,
+    Decision 101. Decisions triaged: 190 of 190. Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1.
+  - "gates: decision-scout=NO_FLAGS; project-alignment=write-the-plan r1; plan-critique=<pending>"
+  - "red_overlap: verdict clear, reds [] (Decision 226)."
+  - >-
+    Baseline: 2026-10-29 session on main af368683, Claude Code 2.1.42 -- first call wrote 94,959
+    tokens before any work (panel: MCP tools 33.4k, system tools 22.8k, system prompt 11.9k, memory
+    7.3k, skills 6.3k, MCP instructions 3k). Figures stay in tokens, never money (Decision 101).
+  - >-
+    Mechanism evidence: adding these entries mid-session made the harness report the eight MCP tools
+    "Denied by a permission rule" while keeping cached definitions (no mid-session drop); a subagent
+    spawned meanwhile lacked all eight and kept the other 27 claude-code-remote tools. Artifact
+    absence in a subagent is inconclusive -- step 4 settles it.
+  - >-
+    git-ops.yaml cc_web_permission_gotcha forbids ALLOW entries for the send_later/trigger tools to
+    silence prompts; these are DENY entries for a disjoint tool set. send_later, create_trigger,
+    delete_trigger and the other session/trigger tools stay undenied (overseer safety_net uses them).
+  - >-
+    Gotchas: .claude/settings.json is in the handoff gate's never_exempt_paths (Decision 203) -- push
+    needs full-tier evidence; the test names ".claude/settings.json" as a quoted token so --pre's
+    data-edge selection picks it up (Decision 135); request_credential's denial removes no documented
+    recovery path (Decision 113: key rotation is a Settings edit).
+  - >-
+    Known gaps: project threads never load .claude/settings.json; the plugin ships the same file
+    (marketplace source ./.claude) but plugin permission rules are unverified. Claude Docs' server
+    instructions (~0.7k) persist unless the connector is switched off account-wide.
+  - >-
+    Forks decided by the user (AskUserQuestion, this session): rec-2982 separate plan next; deny set =
+    environment-setup tools + Artifact family + Claude Docs (extras excluded); email = agent shows
+    text in chat, sends on the user's 'send'. Not bundled: rec-2982, rec-4519, rec-3976 (step 4
+    carries its version and ambient-file controls).
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - Only the plan-cited decision sections read
+  - .claude/settings.json and tests/hooks/test_plugin_hooks.py read
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - >-
+    .claude/settings.json -- replace "deny": [] with the eleven blanket entries named in scope;
+    touch no other key.
+  - >-
+    tests/hooks/test_settings_tool_denies.py -- class TestContextTrimDenies: (a) required set is a
+    subset of permissions.deny and every required entry has no "(" specifier; (b) a reference scan
+    over .claude/skills, .claude/commands, .claude/agents, .claude/hooks, docs/contracts and
+    AGENTS.md finds no denied entry as a case-sensitive whole word (a server-prefix entry matches
+    its prefix); (c) no permissions.allow entry equals a deny entry or starts with a deny entry
+    followed by "__"; (d) tmp_path self-test: a fake tree whose skill names a denied tool is flagged
+    by the same scan helper (proves (b) can fail). Name ".claude/settings.json" as a quoted path
+    token (Decision 135 data-edge selection). Exact deny entries only, case-sensitive -- the
+    mcp__Claude_Code_Remote__* wildcard prose in git-ops.yaml and the overseer files must not match.
+  - >-
+    Prove (a) bites: capture VP step 1's red output first; then temporarily drop "Artifact" from the
+    deny list and confirm (a) fails; restore and confirm git diff shows only the intended entries.
+  - Execute VP steps 1-3; loop until pass (Decision 55).
+  - >-
+    Commit, push and open the PR per docs/contracts/git-ops.yaml; subscribe to PR activity; on green
+    CI squash-merge and unsubscribe.
+  - >-
+    After the merge, hand back to the user with a pasteable prompt for a FRESH cloud session on
+    main: "Run the post-merge steps of docs/plans/PLAN-startup-context-tool-denies.yaml: VP step 4,
+    then the upstream reply step." (A fresh session is required: a running session keeps tool
+    definitions it already sent.)
+  - >-
+    Fresh session: run VP step 4 and record the total; ask the user to read the context panel's MCP
+    tools and System tools figures for the reply.
+  - >-
+    Fresh session, upstream reply: find the user's existing Anthropic trusted-tester thread on cloud
+    environment setup in their sent mail (the user confirms the thread). Compose a reply of at most
+    ten lines: (i) the environment-setup tools are always loaded, not deferred -- measured cost per
+    session and per subagent for a one-time setup flow; (ii) the workaround -- blanket
+    permissions.deny in the repo settings, with the merged PR link; (iii) the ask -- load these tools
+    on demand (tool search) or only when the user asks to set up an environment; (iv) a one-line
+    P.S. that plugin skills are not de-duplicated against identical repo skills in web sessions.
+    Show the text in chat; send it as a reply in that thread only after the user replies 'send'.
+  - 'Report: what was implemented, verification results, the measured figures, and whether the reply was sent.'
+work_areas: []
+rollback: >-
+  Revert the merge commit (settings entries, test module and the graduated shard
+  config/agent/verification_registry/entries/settings-context-trim-denies.yaml). The tools return in
+  the next fresh session; no data or infrastructure changes.
