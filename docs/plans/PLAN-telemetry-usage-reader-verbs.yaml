@@ -53,7 +53,8 @@ scope:
       Independent oracle functions model_usage_rollup, tool_use_rollup and session_startup_baseline over deduped stored
       rows (pure Python, no SQL, written from the contract text in execution_steps[2], never from the SQL), signature
       (tables, projects, day_from, day_to) like derive.sessions_window, reusing dedupe.py and derive.py's helpers by
-      import. A sibling, not derive.py (335 SLOC), so neither crosses 500; test_package_boundary.py scans it
+      import. Column names come from ducklake_reader_client.VERB_FIELDS as derive.py does, never by importing
+      src.common.event_usage_fields (outside the oracle allowlist). A sibling, not derive.py (335 SLOC), so neither crosses 500; test_package_boundary.py scans it
       automatically (no reader SQL, duckdb or tests import).
   - file: scripts/telemetry_usage.py
     action: Create
@@ -331,7 +332,7 @@ constraints:
   - No rescue agents or workaround loops (Decision 55).
 context:
   - "Decision-scout verdict FLAGS_FOUND; CITE 199, 236, 207, 88, 84, 128, 101; one SPIRIT NOTE (Decision 215: the CLI must fail closed on a failed chunk), folded into execution_steps[3]. Decisions triaged: 190 of 190. Roadmap items intersected: 3; CONFLICT: 0; RELATED: 3."
-  - "gates: decision-scout=FLAGS_FOUND (note accepted); plan-critique=REVISE round 1 (F1-F5 fixed), PROCEED round 2 (F1-F6 fixed), REVISE round 3 (F1-F5 fixed); round 4 confirming"
+  - "gates: decision-scout=FLAGS_FOUND (note accepted); plan-critique=REVISE round 1 (F1-F5 fixed), PROCEED round 2 (F1-F6 fixed), REVISE round 3 (F1-F5 fixed), PROCEED round 4 confirming (J1, M1, J2 folded in)"
   - "Evidence: /mnt/project-files/usage-report-check/REPORT.md (per-model hand walk, 22 trees), /mnt/project-files/context-composition-feedback/FINDINGS.md (startup baseline, tool counts); approach /mnt/project-files/usage-reader-verbs/step6b-presentation.md."
   - "Decided with notice: server cap stays 7 days, longer ranges are client chunks (exact: every tree row carries the root's partition pin, Decision 199 cl.2); rec-4331 not bundled (its text gates it behind the executor cost governor; the CLI prints a cache_read_ratio per model); rec-4703's step-change alarm split to rec-4725."
   - "Changed after the presentation, with notice: the presented read-time surface label is dropped (constraint 4); the CLI groups by a literal branch_prefix instead."
@@ -340,7 +341,7 @@ context:
   - "TELEMETRY_PRODUCTION_HOLD (PLAN-telemetry-top-level-agent-run): while a telemetry column add is pending, deploy-telemetry skips the production reader; VP 9 stops on that notice."
   - "Live probe 2026-10-29: telemetry_root_sessions over 7 days 10.6 s, sessions_window 5.9 s; 57 roots 23-29 Oct (51 claude/project-thread-*, 6 agent/*)."
   - "Neighbours not in scope: rec-4713 (surface verb), rec-4701 (skill name on Skill calls; until then Skill counts as one tool), rec-4704 (loaded-surface capture), rec-4720 (a Fable capture gap: this verb reports what was captured), rec-4363 (no offset on paginable verbs; these verbs are not paginable)."
-  - "red_overlap 2026-10-29: blocked by rec-4718 (Critical, terraform/personal/oidc_ci_roles.tf sandbox-apply IAM reviewer REVISE), shared only through transitive test residue (tests/test_security_detector_liveness_workflow.py, tests/test_terraform_github_pr_plan.py). Deferral rationale: this plan touches no terraform, IAM or workflow file and cannot repair or worsen that red; the build re-runs red_overlap before merge and waits if the red is then past its SLO."
+  - "red_overlap 2026-10-29: blocked by rec-4718 (Critical, terraform/personal/oidc_ci_roles.tf sandbox-apply IAM reviewer REVISE), shared only through transitive test residue (tests/test_security_detector_liveness_workflow.py, tests/test_terraform_github_pr_plan.py). Deferral rationale: this plan touches no terraform, IAM or workflow file and cannot repair or worsen that red; the build re-runs red_overlap before merge and waits if the red is then past its SLO. Round-4 re-run 2026-10-29T19:55Z: blocked, rule slo_breached, shared [] (red-main-recovery.yaml halt rule 1); the build dispatch waits for the rec-4718 repair or an explicit human override."
   - "rec-4733 (filed at critique round 1): the tool_call metadata key attribution_mcp_server the producer writes is undeclared in Class A telemetry_observations.yaml; this plan reads it and declares it only in the Class B reader contract."
   - "Class B field_add on a provisional_v0 contract: not on the always-ask list; standing merge rule once code review PROCEEDs and CI is green."
 pre_implementation_checklist:
@@ -422,7 +423,9 @@ execution_steps:
     conflicted_rows, rows}. models: rows per model with trees, sessions, model_call_count, the six token totals (NULL-aware
     sums), usage_missing_count and cache_read_ratio = cache_read / (input + cache_read + cache_creation), NULL when the
     denominator is NULL or 0; --by-root adds per-tree rows keyed by harness_session_key. tools: rows per (tool_name,
-    mcp_server) with call, error, blocked, interrupted, session and tree counts; --by-root and --by-agent widen the key.
+    mcp_server) with call, error, blocked, interrupted, session and tree counts (tree count = distinct tree keys; session_count
+    is the sum over verb rows, so a session whose calls of one tool differ in attribution_mcp_server counts once per
+    value: the --help text and the JSON key session_row_count say so); --by-root and --by-agent widen the key.
     startup: rows per (day of session_started_at, branch_prefix, is_root) with count and the median, p90 (nearest rank),
     min and max of the first-call input total (tokens_input + cache_read + cache_creation) plus the per-class medians.
     branch_prefix is literal: "claude/project-thread" for a branch starting claude/project-thread-, else the text before
