@@ -342,3 +342,14 @@ def test_narrow_plan_shape_is_reviewable() -> None:
     assert digest.count("Sids +[] -[Dsn]") == 2
     assert "Resource 2->1" in digest
     assert "deferred data read: data.aws_iam_policy_document.ci_branch" in digest
+
+
+@pytest.mark.parametrize("literals", [None, frozenset({"value", "aws_ssm_parameter", "SecureString"})])
+def test_secure_string_parameter_value_is_named_never_printed(literals: frozenset | None) -> None:
+    sentinel = "postgresql://sentinel-user:sentinel-pass@sentinel-host/db"  # pragma: allowlist secret
+    after = {"name": "/secret/example", "type": "SecureString", "value": sentinel, "tier": "Standard"}
+    plan = {"resource_changes": [_rc("aws_ssm_parameter", ["create"], None, after)]}
+    digest = build_digest(plan, literals) if literals else build_digest(plan)
+    assert "aws_ssm_parameter.example" in digest
+    assert "sentinel" not in digest
+    assert "value" in digest
