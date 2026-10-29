@@ -36,7 +36,7 @@ def test_ingestion_shape_is_per_request_commit_with_three_triggers() -> None:
 
 def test_production_column_set_is_recorded() -> None:
     column_set = _telemetry_tables()["production_column_set"]
-    assert column_set["rec"] == "rec-4292"
+    assert column_set["plan"] == "PLAN-telemetry-production-catalog"
     assert set(column_set["typed_by_decision_222"]) == {"cache_creation_1h_tokens", "cache_creation_5m_tokens"}
     assert column_set["metadata_only"] == ["prefix_hash"]
 

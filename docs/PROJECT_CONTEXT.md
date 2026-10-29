@@ -121,7 +121,7 @@ Current constraints are the temporary strategic/executor freeze, telemetry blind
 
 ### Source of truth
 
-Warehouse state is authoritative. The decisions JSONL under `logs/` is a read cache, never a write source; recommendations have no local cache (Decision 215). Recommendations, decisions, priority queue, and execution plans use DuckLake-on-Neon. Session log remains on its legacy path pending disposition; telemetry re-lands as the T2.36 four-table DuckLake model.
+Warehouse state is authoritative. The decisions JSONL under `logs/` is a read cache, never a write source; recommendations have no local cache (Decision 215). Recommendations, decisions, priority queue, and execution plans use DuckLake-on-Neon. Session log retired (T3.20 c6); preflight reads recent sessions from telemetry; telemetry re-lands as the T2.36 four-table DuckLake model.
 
 ### Portal discipline
 

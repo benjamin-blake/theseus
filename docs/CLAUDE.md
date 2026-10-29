@@ -14,8 +14,8 @@ Allowed governance root files: `CLAUDE.md` (this file), `PROJECT_CONTEXT.md`,
 `ROADMAP-PLATFORM-ARCHIVE.yaml`, `ROADMAP-SEMANTO.yaml`).
 
 Grandfathered retiring sets (allowed now, retire on their own schedule -- do not add to them):
-`DECISIONS.md` / `DECISIONS_ARCHIVE.md` (owner T1.5), `SESSION_LOG.md` /
-`SESSION_LOG_ARCHIVE.md` (owner T2.26 / T-1.9).
+`DECISIONS.md` / `DECISIONS_ARCHIVE.md` (owner T1.5), `SESSION_LOG_ARCHIVE.md`
+(owner T2.26 / T-1.9).
 
 ## Class -> home map
 Every non-governance doc class has a subtree home; put new files there, not at the root:

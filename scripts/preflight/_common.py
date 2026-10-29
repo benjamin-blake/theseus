@@ -16,7 +16,6 @@ from src.common.ducklake_reader_client import make_reader as _make_reader  # noq
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 TERRAFORM_DIR = ROOT / "terraform"
-SESSION_LOG_FILE = ROOT / "docs" / "SESSION_LOG.md"
 ROADMAP_FILE = ROOT / "docs" / "ROADMAP-PLATFORM.yaml"
 ROADMAP_PLATFORM_PATH = ROOT / "docs" / "ROADMAP-PLATFORM.yaml"
 DECISIONS_FILE = ROOT / "docs" / "DECISIONS.md"
