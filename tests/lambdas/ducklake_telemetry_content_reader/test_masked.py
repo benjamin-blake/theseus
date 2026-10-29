@@ -179,3 +179,11 @@ def test_low_remaining_time_stops_before_a_fetch(monkeypatch: pytest.MonkeyPatch
     blob = lambda i: _srow(i, None, content_uri="s3://b/k", content_bytes=4, total=5)  # noqa: E731
     (env,), _ = masked.serve_session([blob(0), blob(1), blob(2)], _values(), True, lambda: masked.MIN_REMAINING_MS - 1)
     assert len(env["rows"]) == 1 and env["next_offset"] == 1 and len(store.calls) == 1
+
+
+def test_a_blob_row_that_cannot_fit_the_remaining_budget_is_not_fetched(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = _Store(b"a" * 3_000_000)
+    monkeypatch.setattr(content, "BLOB_STORE", store)
+    rows = [_srow(i, None, content_uri="s3://b/k", content_bytes=3_000_000, total=2) for i in range(2)]
+    (env,), _ = masked.serve_session(rows, _values(), True, None)
+    assert len(env["rows"]) == 1 and env["next_offset"] == 1 and len(store.calls) == 1

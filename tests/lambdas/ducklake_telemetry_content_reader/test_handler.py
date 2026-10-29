@@ -422,3 +422,22 @@ def test_runtime_and_version_faults_carry_no_exception_text(wiring: dict[str, An
     monkeypatch.setattr(rt, "open_connection", boom)
     status, body = _call(_row_read(ulid_aged(1)))
     assert status == 500 and body == {"ok": False, "error_type": "runtime"}
+
+
+def test_include_tool_output_true_and_dict_bodies_are_served(wiring: dict[str, Any]) -> None:
+    wiring["columns"] = SESSION_COLUMNS
+    wiring["rows"] = [_tree_row(datetime.now(timezone.utc) - timedelta(days=1))]
+    assert _call(_session_read(ulid_aged(1), include_tool_output=True))[0] == 200
+    event = caller_event(_session_read(ulid_aged(1)))
+    event["body"] = _session_read(ulid_aged(1))
+    assert h.handler(event)["statusCode"] == 200
+    assert h.handler(_session_read(ulid_aged(91)))["statusCode"] == 404
+
+
+def test_version_mismatch_is_a_value_free_500(wiring: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(**_: Any) -> Any:
+        raise rt.VersionMismatchError("duckdb 9.9 at /private/path")
+
+    monkeypatch.setattr(rt, "open_connection", boom)
+    status, body = _call(_row_read(ulid_aged(1)))
+    assert status == 500 and body == {"ok": False, "error_type": "version_mismatch"}

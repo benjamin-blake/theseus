@@ -669,7 +669,7 @@ decided_date: "2026-10-20"
 amends: [81, 126, 213, 216]
 significance:
   value: numbered_decision
-  justification: "Durable catalog-identity and data-plane commitments amending Decisions 216, 126, 213 and 81; ducklake_maintenance.yaml and deploy-paths.yaml can index the procedures but cannot widen a ratified rule or carve-out, nor can an amendment_forms annotation (Decision 204 cl.4 precedent)."
+  justification: "Catalog-identity and data-plane commitments amending Decisions 216, 126, 213 and 81; ducklake_maintenance.yaml and deploy-paths.yaml can index the procedures but cannot widen a ratified rule, nor can an amendment_forms annotation (Decision 204 cl.4)."
 ```
 
 **Status:** Decided
@@ -708,7 +708,7 @@ conditions:
 **Related:** Decision 216, 213, 81, 214, 222, 204, 143, 144, 202, 126, 88, 181.
 
 [Amendment 2026-10-27, Decision 237: cl.4 logins live in /secret/.]
-[See Decision 239.]
+[Amendment 2026-10-29, Decision 239: content reader.]
 
 
 ---

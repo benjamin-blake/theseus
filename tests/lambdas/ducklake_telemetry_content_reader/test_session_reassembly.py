@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-duckdb = pytest.importorskip("duckdb")
+duckdb = pytest.importorskip("duckdb", reason="env: duckdb is not installed in the fast tier")
 
 from scripts.telemetry_verify import decode_rows, read_tree  # noqa: E402
 from scripts.telemetry_verify.dedupe import compute_generations, resolve_table  # noqa: E402
