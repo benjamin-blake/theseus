@@ -164,7 +164,7 @@ def _template_block(script: str, admin: bool) -> str:
     body = [line.removeprefix("    ") for line in dev if line.startswith("    ")]
     body = [line for line in body if not line.startswith("cd /home/user/ontheloop")]
     if admin:
-        admin_lines = _header_block(script, "# ADMIN environment", "# and set these")
+        admin_lines = _header_block(script, "# ADMIN environment", "# and set this")
         start = next(i for i, line in enumerate(admin_lines) if line.startswith("    [profile"))
         profile = [line.removeprefix("    ") for line in admin_lines[start:] if line.startswith("    ")]
         eof = max(i for i, line in enumerate(body) if line == "EOF")
@@ -247,3 +247,12 @@ def test_header_template_has_no_static_key_and_current_path() -> None:
     assert allowed is not None
     assert allowed.group(1) == "sts.eu-west-2.amazonaws.com"
     assert "network secret" in script
+
+
+def test_admin_template_sets_install_terraform_inline() -> None:
+    script = SETUP_SCRIPT.read_text(encoding="utf-8")
+    admin = "\n".join(_header_block(script, "# ADMIN environment", "# Identity checks"))
+    assert "cd /home/user/ontheloop && INSTALL_TERRAFORM=1 bash bin/setup-cloud-env.sh" in admin
+    assert "BEFORE or AFTER" in admin
+    dev = "\n".join(_header_block(script, "# DEV environment", "# boto3 then resolves"))
+    assert "INSTALL_TERRAFORM" not in dev

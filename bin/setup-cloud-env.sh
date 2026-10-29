@@ -58,9 +58,13 @@
 #     sts_regional_endpoints = regional
 #     output = json
 #
-# and set these in the (non-secret) env-var field:
+# and set this in the (non-secret) env-var field:
 #     AWS_PROFILE=agent_platform_admin
-#     INSTALL_TERRAFORM=1
+#
+# The ADMIN block's last line passes the flag inline instead of relying on the env-var field:
+#     cd /home/user/ontheloop && INSTALL_TERRAFORM=1 bash bin/setup-cloud-env.sh
+# The CC-web harness is unreliable about whether it sets environment variables BEFORE or AFTER the setup
+# script runs; setting INSTALL_TERRAFORM=1 in the script itself is reliable.
 #
 # Identity checks: an unpinned `aws sts get-caller-identity` returns the IAM user under the proxy. Use
 # `bin/venv-python -m scripts.aws_identity caller-arn --profile <p>` (reads the identity from a second region).
