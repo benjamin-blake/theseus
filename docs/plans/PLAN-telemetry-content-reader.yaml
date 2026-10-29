@@ -16,8 +16,8 @@ verification_tier: V2
 plan_path: docs/plans/PLAN-telemetry-content-reader.yaml
 phase: >-
   ad_hoc_rec (soft-warn category; no tier_item claimed). Plan 2 of 3 for rec-4481 (High), resolved here at its
-  acceptance test; planning-time split: the deploy half is rec-4696 (plan 3). Depends on PLAN-sensitive-value-detectors
-  (merged). closes_criteria is empty: no tier_item criterion names this work.
+  acceptance test; planning-time split: the deploy half is rec-4696 (plan 3). Depends on PLAN-sensitive-value-detectors,
+  which must merge first (pre_implementation_checklist). closes_criteria is empty: no tier_item criterion names this work.
 closes_criteria: []
 amends:
   - dec:236#2
@@ -47,7 +47,8 @@ scope:
     action: Create
     purpose: >-
       Class B contract, provisional_v0, mirroring docs/contracts/ducklake_telemetry_reader.yaml's shape:
-      principal_classes PlatformDev (and github_ci_branch for the read-back gate); actions describe and named_read with
+      principal_classes PlatformDev only (Decision 143 cl.1 least privilege; rec-4696 adds the environment-bound
+      read-back role); actions describe and named_read with
       the two served verbs, payload_schema_ref, response_codes and typed_errors: unknown_verb 400, bad_request 400,
       named_read_input 400, outside_read_window 404, response_too_large 413, grain_conflict 500, content_not_text 500,
       blob_integrity 500, blob_misconfigured 500, runtime 500, version_mismatch 500, blob_unavailable 503,
@@ -100,7 +101,9 @@ scope:
     purpose: >-
       Entrypoint with the telemetry reader's handler shape (parse, _handle, size guard, terminal errors, log_invocation
       on every path) and its own helpers where ducklake_event_reads' are keyed on EVENT_READS: actions describe
-      (CONTENT_READS rows with params_schema and content_read_version) and named_read only; SERVED_VERBS =
+      (CONTENT_READS rows with content_read_version and params_schema from ev._described_params, plus include_tool_output
+      as an optional boolean on session_transcript_masked, so the self-describing surface names every accepted
+      parameter) and named_read only; SERVED_VERBS =
       frozenset(CONTENT_READS). named_read order, each step before any connection: unknown verb 400; a deadline_ms or
       window key in the payload 400 bad_request; include_tool_output popped from params and validated as a boolean
       (session verb only, default false; 400 named_read_input otherwise); ev.bind_values(entry, params) (400 on
@@ -109,7 +112,9 @@ scope:
       dsn_secret_id=TELEMETRY_DSN_SECRET_ID, read_only=True), the statement under deadline.runner(remaining_ms, None,
       mark) where mark adds ev.TELEMETRY_SLOT to ev._INTERRUPTED_SLOTS (the set the acquirer probes, read through the
       module), ev.execute_entry, the dead-connection reopen, then masked.serve_row or masked.serve_session with the
-      remaining-time callable. access_log.write runs once per named_read in a finally, success or typed failure.
+      remaining-time callable. The entrypoint writes access_log once per named_read AFTER the size guard, with the
+      final status (a 413 logs 413 and masked_bytes 0), on success and on every typed failure; session_id is logged
+      only once ev.bind_values has accepted it as a canonical ULID, otherwise null.
   - file: src/lambdas/ducklake_telemetry_content_reader/masked.py
     action: Create
     purpose: >-
@@ -117,7 +122,9 @@ scope:
       copied; grain_conflict 500, inline preferred), reads the WHOLE payload (inline content, or the blob through
       ducklake_event_content.BLOB_STORE.get_blob at offset 0 for its full size, HEAD and ETag bound), decodes UTF-8
       strictly (content_not_text 500), masks with mask(text, "read_masked"), then pages the masked UTF-8 bytes as
-      base64 pages of at most 3 MiB (offset past masked_bytes 400). Envelope (one row, as serve_content): storage,
+      base64 pages of window = max(1, min(max_bytes, ducklake_event_content.MAX_CHUNK_BYTES)) bytes, serve_content's
+      rule (offset past masked_bytes 400). A zero-length blob row is served as empty text with no get_blob call (a
+      0-byte range would ask for bytes=0--1). Envelope (one row, as serve_content): storage,
       encoding, offset, length, content_bytes, content_sha256 (raw, as stored), masked_bytes, masked_sha256,
       mask_counts, detector (the read_masked fingerprint), data_class "untrusted_transcript", data, omitted_reason.
       serve_session(rows, include_tool_output, remaining_ms): one envelope row {rows, next_offset, total_rows,
@@ -132,7 +139,8 @@ scope:
   - file: src/lambdas/ducklake_telemetry_content_reader/access_log.py
     action: Create
     purpose: >-
-      write(event, verb, status, rows, masked_bytes, mask_counts, request_id, session_id): prints one JSON line
+      write(event, verb, status, rows, masked_bytes, mask_counts, request_id, session_id), session_id a canonical
+      ULID that bind_values accepted or None: prints one JSON line
       {event: telemetry_content_read, role, verb, status, session_id, rows, masked_bytes, mask_counts, request_id}.
       role is the assumed-role name parsed from requestContext.authorizer.iam.userArn (the telemetry writer's
       _principal parsing) passed through mask(.., "read_masked"); a missing identity logs role "unknown" (the Function
@@ -166,8 +174,8 @@ scope:
     action: Create
     purpose: >-
       Agent CLI: `bin/venv-python -m scripts.telemetry_content session <session_id> [--include-tool-output]` and
-      `row <session_id> <producer> <event_id> <parser_version>`. Pages to completion (session: follows next_offset and
-      halves max_rows on ResponseTooLargeError down to 1, the scripts/telemetry_verify/rows.py read_tree precedent;
+      `row <session_id> <producer> <event_id> <parser_version>`. Pages to completion (session: starts at max_rows 200,
+      follows next_offset and halves max_rows on ResponseTooLargeError down to 1, the scripts/telemetry_verify/rows.py read_tree precedent;
       a too_large row is fetched through the row verb), verifies every row's masked_sha256 over the reassembled text,
       and prints the text between a BEGIN and an END line that each carry a per-invocation nonce (secrets.token_hex(8))
       with a one-line header (session, rows, mask counts, detector). Any content line that starts with the frame
@@ -180,7 +188,10 @@ scope:
       the third registry; the failure text names the three registries.
   - file: tests/checks/contracts/test_validate_read_engine_verbs.py
     action: Modify
-    purpose: Add a case that a content verb missing from the contract's grouping fails the check.
+    purpose: >-
+      Add a case that a content verb missing from the contract's grouping fails the check. Planned change: the existing
+      assertion at :45 on the failure text ("NAMED_READS and EVENT_READS derive") follows the new text naming the three
+      registries.
   - file: docs/contracts/read-engine.yaml
     action: Modify
     purpose: >-
@@ -198,11 +209,16 @@ scope:
   - file: tests/checks/contracts/test_telemetry_production_cutover.py
     action: Modify
     purpose: >-
-      The PC-06 pin (the rec-4292 stale-reference guard precedent) requires rec-4696 instead of rec-4481
-      (planned-change: rec-4481 closes with this plan).
+      The PC-06 pin requires rec-4696 instead of rec-4481 (planned-change: rec-4481 closes with this plan).
+      rec_4292_hits generalises to closed_rec_hits(pattern, contracts, code), and test_no_live_text_names_rec_4292
+      becomes test_no_live_text_names_a_closed_rec over rec-4292 and rec-4481 (live contract lines with amendment_log
+      and previous_versions skipped, plus src/, scripts/, terraform/ and .github/), keeping the existing red cases and
+      adding a rec-4481 one.
   - file: docs/contracts/ducklake_reader.yaml
     action: Modify
-    purpose: Two owner pointers rec-4481 -> rec-4696 (the transcript_content audit invariant and the typed-fault note); amendment_log provenance entry.
+    purpose: >-
+      One live owner pointer rec-4481 -> rec-4696 (the transcript_content audit invariant, :160); the amendment_log
+      entry at :301 is history and stays verbatim; amendment_log provenance entry.
   - file: docs/contracts/ducklake_telemetry_reader.yaml
     action: Modify
     purpose: >-
@@ -214,6 +230,29 @@ scope:
   - file: scripts/ducklake_smoke/lambda_telemetry_blob_gates.py
     action: Modify
     purpose: Docstring owner pointer rec-4481 -> rec-4699 (content read-back of a blob row). No code change.
+  - file: scripts/checks/misc/sensitive_value_detectors.py
+    action: Modify
+    purpose: >-
+      PROTECTED gains src/lambdas/ducklake_telemetry_content_reader/, src/common/ducklake_content_read_verbs.py,
+      docs/contracts/ducklake_telemetry_content_reader.yaml and tests/lambdas/ducklake_telemetry_content_reader/, so
+      the new Decision cl.5's early warnings (CODEOWNERS, boundary_patterns, the ratchet) cover the content reader
+      through plan 1's one check rather than a second one; a widening, which check (e) admits.
+  - file: .github/CODEOWNERS
+    action: Modify
+    purpose: >-
+      Four lines owned by the operator: /src/lambdas/ducklake_telemetry_content_reader/,
+      /src/common/ducklake_content_read_verbs.py, /docs/contracts/ducklake_telemetry_content_reader.yaml,
+      /tests/lambdas/ducklake_telemetry_content_reader/. Procedural until rec-2827; the binding control is rec-4696's
+      deploy lock.
+  - file: config/agent/executor/capabilities.yaml
+    action: Modify
+    purpose: boundary_patterns gain the same four paths (Decision 117).
+  - file: tests/checks/misc/test_sensitive_value_detectors.py
+    action: Modify
+    purpose: >-
+      test_content_reader_paths_are_protected: the four paths are in PROTECTED, and on the committed tree each is owned
+      in CODEOWNERS and matches a boundary_patterns entry (check (d) passes); a fixture tree without one of the
+      CODEOWNERS lines fails (d).
   - file: tests/lambdas/ducklake_telemetry_content_reader/__init__.py
     action: Create
     purpose: Package marker.
@@ -223,10 +262,11 @@ scope:
       Fake-connection handler tests mirroring the telemetry reader's: served set is exactly CONTENT_READS and excludes
       every EVENT_READS verb; unserved verb 400, caller deadline_ms or window 400, non-boolean include_tool_output 400
       and a refused bind 400, each before connect; a session_id whose time prefix is 91 days old 404 before connect;
-      production pin and reader secret with read_only; describe lists the two verbs with content_read_version; typed
-      errors; 413 guard; dead-connection reopen; test_every_read_writes_an_access_log_row (rec-4481's acceptance: one
-      telemetry_content_read line per named_read across success, 400, 404 and 500, with the closed field set and no
-      ARN, account-shaped run or content); test_every_served_byte_is_masked (a planted runtime-built credential,
+      production pin and reader secret with read_only; describe lists the two verbs with content_read_version and
+      advertises include_tool_output on the session verb; typed errors; 413 guard; dead-connection reopen;
+      test_every_read_writes_an_access_log_row (rec-4481's acceptance: one telemetry_content_read line per named_read
+      across success, 400, 404, 413 and 500, each with its final status, the closed field set, session_id null when
+      bind refused it, an account-shaped invalid session_id never logged, and no ARN, account-shaped run or content); test_every_served_byte_is_masked (a planted runtime-built credential,
       account id and DSN password in inline and blob rows never appear in any page or session response, and
       masked_sha256 matches the decoded data).
   - file: tests/lambdas/ducklake_telemetry_content_reader/test_masked.py
@@ -248,9 +288,12 @@ scope:
       Real DuckDB, full tier (module importorskip, as tests/common/test_ducklake_event_verification_verbs.py):
       test_every_golden_tree_reassembles -- every golden-chain tree appended through the real kernel into the
       in-memory telemetry catalog, then read through session_transcript_masked page by page; the reassembled row keys
-      equal the R4/R5-deduped stored transcript rows of the tree (oracle: scripts.telemetry_verify's read_tree for the
-      keys, plus the stored content read from the catalog by grain key, since read_tree carries no content), in the
-      declared order, each masked text equal to mask(stored, "read_masked"); conflicts are the tree's only.
+      equal the R4/R5-deduped stored transcript rows of the tree, in the declared order, each masked text equal to
+      mask(stored, "read_masked"); conflicts are the tree's only. The oracle never reuses the SQL under test:
+      scripts.telemetry_verify.rows.read_tree over session_tree_rows, decode_rows, then
+      scripts.telemetry_verify.dedupe.resolve_table("telemetry_transcripts", rows, compute_generations(the tree's
+      telemetry_sessions rows)) -- retire then collapse_events in Python -- for the surviving keys, plus each
+      survivor's stored content read from the catalog by grain key.
   - file: tests/lambdas/ducklake_telemetry_content_reader/test_packaging.py
     action: Create
     purpose: >-
@@ -321,11 +364,14 @@ acceptance_criteria:
   - >-
     storage-substrate.yaml's telemetry row names the production writer and both readers (rec-4692), read-engine.yaml
     and the check cover CONTENT_READS, and no live pointer names rec-4481 as an owner.
+  - >-
+    The content reader's package, verbs module, contract and tests are in the detector ratchet's PROTECTED set, each
+    with an operator CODEOWNERS line and a boundary_patterns entry.
   - rec-4481 and rec-4692 are closed after merge by the Resolves trailer, and the new Decision is in ops_decisions.
 verification_plan:
   - step: 1
     phase: pre-deploy
-    action: rec-4481's acceptance -- every read writes one access-log line.
+    action: rec-4481's acceptance -- every read writes one access-log line, with its final status and a validated session_id.
     command: >-
       bin/venv-python -m pytest
       tests/lambdas/ducklake_telemetry_content_reader/test_handler.py::test_every_read_writes_an_access_log_row -q
@@ -353,7 +399,8 @@ verification_plan:
     command: >-
       bin/venv-python -m pytest tests/lambdas/ducklake_telemetry_content_reader tests/common/test_ducklake_content_read_verbs.py
       tests/telemetry_capture/test_read_route.py tests/test_telemetry_content.py tests/lambdas/ducklake_telemetry_reader
-      tests/checks/contracts/test_validate_read_engine_verbs.py tests/checks/contracts/test_telemetry_production_cutover.py -q
+      tests/checks/contracts/test_validate_read_engine_verbs.py tests/checks/contracts/test_telemetry_production_cutover.py
+      tests/checks/misc/test_sensitive_value_detectors.py -q
     expected: exit 0.
     fix_if: Fix the code in scope; the telemetry reader suite failing means a shared module changed -- revert that change.
     hermetic: false
@@ -375,10 +422,11 @@ verification_plan:
     graduation_check_id: telemetry-content-session-reassembly
   - step: 5
     phase: pre-deploy
-    action: Decision, annotations, index, contracts and substrate row.
+    action: Decision, annotations, index, contracts, substrate row, and no live text naming rec-4481.
     command: >-
       bin/venv-python -m pytest
-      tests/checks/contracts/test_telemetry_dimension_contracts.py::test_substrate_row_names_the_production_boundaries -q &&
+      tests/checks/contracts/test_telemetry_dimension_contracts.py::test_substrate_row_names_the_production_boundaries
+      tests/checks/contracts/test_telemetry_production_cutover.py::test_no_live_text_names_a_closed_rec -q &&
       bin/venv-python -c "from scripts.checks.decisions.validate_decisions_index_freshness import validate_decisions_index_freshness as c; f=[]; c(f); print('INDEX_FAILS', len(f)); assert not f, f" &&
       bin/venv-python -c "from scripts.checks.contracts.validate_read_engine_verbs import validate_read_engine_verbs as c; f=[]; c(f); print('READ_ENGINE_FAILS', len(f)); assert not f, f" &&
       bin/venv-python -c "import pathlib, re; from scripts.checks.decisions.validate_decisions_size import validate_decisions_size as s; from scripts.checks.decisions.validate_decision_entry_conformance import validate_decision_entry_conformance as c; f=[]; s(f); c(f); t=pathlib.Path('docs/DECISIONS.md').read_text(encoding='utf-8'); n=len(re.findall(r'^\[Amendment 2026-10-29, Decision \d+: .*content reader', t, re.M)); print('ANNOTATIONS', n); print('DECISION_FAILS', len(f)); assert n == 4 and not f, f"
@@ -424,16 +472,13 @@ verification_plan:
     graduation: not-applicable
   - step: 9
     phase: post-deploy
-    action: >-
-      After merge: the new Decision reaches ops_decisions and rec-4481 and rec-4692 are closed by the Resolves trailer;
-      the deploy-ducklake-lambdas.yml run the merge triggers stays green and never names the content function.
+    action: After merge, the new Decision reaches ops_decisions and rec-4481 and rec-4692 are closed by the Resolves trailer.
     command: >-
       bin/venv-python -c "import re, pathlib; from src.common.ducklake_reader_client import fetch_recs_by_ids, make_reader; t=pathlib.Path('docs/DECISIONS.md').read_text(encoding='utf-8'); n=re.findall(r'^## Decision (\d+): Agents read production transcript text masked', t, re.M); assert len(n)==1, n; r=make_reader(profile='agent_platform'); d=r.named('decision_by_id', id='dec-'+n[0]); recs,_=fetch_recs_by_ids(r, ['rec-4481', 'rec-4692']); st=sorted((x['id'], x['status']) for x in recs); print('DECISION_ROWS', len(d)); print(st); assert len(d) == 1 and st == [('rec-4481', 'closed'), ('rec-4692', 'closed')]; print('POST_MERGE_OK')"
     expected: DECISION_ROWS 1, both recs closed, last line POST_MERGE_OK (rec-autoclose.yml's post-merge backfill wrote the Decision row).
     fix_if: >-
       No Decision row -- read the rec-autoclose run log and fix its cause; the sanctioned manual path is
-      `bin/venv-python -m scripts.ops_data_portal --backfill-decisions-md` (Decision 84 I-2). A red deploy run is
-      diagnosed on its own merits.
+      `bin/venv-python -m scripts.ops_data_portal --backfill-decisions-md` (Decision 84 I-2).
     hermetic: false
     graduation: not-applicable
 test_obligations:
@@ -446,6 +491,11 @@ test_obligations:
     behavior: Mask the whole payload, then page; session budget measured as the guard measures; too_large rows.
     verification_step: 2
     test_selector: tests/lambdas/ducklake_telemetry_content_reader/test_handler.py::test_every_served_byte_is_masked
+    red_green_expectation: red before (module missing), green after.
+  - source: src/lambdas/ducklake_telemetry_content_reader/masked.py
+    behavior: Page window per serve_content's rule, zero-length blobs, session budget and remaining-time stops, too_large rows.
+    verification_step: 3
+    test_selector: tests/lambdas/ducklake_telemetry_content_reader/test_masked.py
     red_green_expectation: red before (module missing), green after.
   - source: src/lambdas/ducklake_telemetry_content_reader/access_log.py
     behavior: Closed, value-free field set.
@@ -461,6 +511,11 @@ test_obligations:
     behavior: Window decided from the ULID prefix; ordered, deduped, tree-scoped reassembly.
     verification_step: 4
     test_selector: tests/lambdas/ducklake_telemetry_content_reader/test_session_reassembly.py::test_every_golden_tree_reassembles
+    red_green_expectation: red before (module missing), green after.
+  - source: src/common/ducklake_content_read_verbs.py
+    behavior: Entry params and bindings, rendered SQL, registry disjointness, the 89/90/91-day window, version stability.
+    verification_step: 3
+    test_selector: tests/common/test_ducklake_content_read_verbs.py
     red_green_expectation: red before (module missing), green after.
   - source: src/lambdas/ducklake_telemetry_content_reader/manifest.yaml
     behavior: Stub; complete import closure including blobs.py, request.py and the detector package.
@@ -503,6 +558,21 @@ test_obligations:
     verification_step: 3
     test_selector: tests/lambdas/ducklake_telemetry_content_reader/test_packaging.py
     red_green_expectation: red before (contract and node missing), green after.
+  - source: scripts/checks/misc/sensitive_value_detectors.py
+    behavior: PROTECTED covers the content reader's four paths.
+    verification_step: 3
+    test_selector: tests/checks/misc/test_sensitive_value_detectors.py
+    red_green_expectation: red before (the new node fails without the paths), green after.
+  - source: .github/CODEOWNERS
+    behavior: Every content reader path has an operator-owned CODEOWNERS line.
+    verification_step: 3
+    test_selector: tests/checks/misc/test_sensitive_value_detectors.py
+    red_green_expectation: red once PROTECTED names the paths without the lines (check (d)), green after.
+  - source: config/agent/executor/capabilities.yaml
+    behavior: Every content reader path matches a boundary_patterns entry.
+    verification_step: 3
+    test_selector: tests/checks/misc/test_sensitive_value_detectors.py
+    red_green_expectation: red once PROTECTED names the paths without the entries (check (d)), green after.
   - source: docs/contracts/storage-substrate.yaml
     behavior: Telemetry row names the production boundaries.
     verification_step: 5
@@ -515,29 +585,25 @@ test_obligations:
       bin/venv-python -c "from scripts.checks.decisions.validate_decisions_index_freshness import validate_decisions_index_freshness as c; f=[]; c(f); print('INDEX_FAILS', len(f)); assert not f, f"
     red_green_expectation: red when the Decision lands without regeneration, green after --write.
   - source: docs/contracts/ducklake_reader.yaml
-    behavior: Owner pointers name rec-4696.
+    behavior: The live owner pointer names rec-4696; no live line names rec-4481.
     verification_step: 3
     test_selector: tests/checks/contracts/test_telemetry_production_cutover.py
-    waiver_reason: >-
-      Meaning-free owner-pointer swap in a contract's prose; no check reads these sentences, and the closing rec's
-      stale-reference sweep is the execution step that edits them.
+    red_green_expectation: red before (test_no_live_text_names_a_closed_rec finds the :160 pointer), green after.
   - source: docs/contracts/ducklake_telemetry_reader.yaml
     behavior: The no-content invariant names rec-4696 and the separate content reader.
     verification_step: 3
     test_selector: tests/checks/contracts/test_telemetry_production_cutover.py
-    waiver_reason: >-
-      Owner-pointer swap and one clarifying clause in contract prose; the telemetry reader's served set, which the
-      invariant describes, is pinned by tests/lambdas/ducklake_telemetry_reader in step 3 and is unchanged.
+    red_green_expectation: red before (test_no_live_text_names_a_closed_rec finds the :80 pointer), green after.
   - source: scripts/ducklake_smoke/telemetry_blob_vectors.py
-    behavior: Docstring owner pointer only.
+    behavior: Docstring owner pointer names rec-4699, not rec-4481.
     verification_step: 3
-    test_selector: tests/lambdas/ducklake_telemetry_reader
-    waiver_reason: Docstring-only owner-pointer swap; no executable line changes, so no test can go red on it.
+    test_selector: tests/checks/contracts/test_telemetry_production_cutover.py
+    red_green_expectation: red before (test_no_live_text_names_a_closed_rec scans scripts/), green after.
   - source: scripts/ducklake_smoke/lambda_telemetry_blob_gates.py
-    behavior: Docstring owner pointer only.
+    behavior: Docstring owner pointer names rec-4699, not rec-4481.
     verification_step: 3
-    test_selector: tests/lambdas/ducklake_telemetry_reader
-    waiver_reason: Docstring-only owner-pointer swap; no executable line changes, so no test can go red on it.
+    test_selector: tests/checks/contracts/test_telemetry_production_cutover.py
+    red_green_expectation: red before (test_no_live_text_names_a_closed_rec scans scripts/), green after.
   - source: config/agent/verification_registry/entries/telemetry-content-reader-access-log.yaml
     behavior: Graduates VP step 1's node.
     verification_step: 1
@@ -570,7 +636,8 @@ context:
   - "Merging adds src/lambdas/ducklake_* and src/common/ducklake_* paths, so deploy-ducklake-lambdas.yml runs and redeploys the existing DuckLake functions with unchanged bundles; its function lists are explicit, so the content reader is never built there (VP 6 asserts neither deploy workflow names it)."
   - "Decision-scout (program-level 2026-10-29) FLAGS_FOUND: CONTRADICT 143 (cl.5 lock, residuals in cl.6), 230 (cl.3, cl.5 amended), 236 NOTE (cl.2, cl.6 amended). CITE 236, 199, 213, 144, 223, 126, 125, 79, 238, 172, 202, 237, 215, 88, 117, 181, 101, 167, 94 (inherited approval premise, reversal condition approval-bypass); SPIRIT 154, 187. Report /mnt/project-files/telemetry-content-reader/decision-scout-report.md."
   - "Decided with notice (critique round 1): the Decision drops its CloudTrail sentence (rec-4696 verifies Function URL invoke records) and gains the approval-bypass reversal condition; read-engine's check covers CONTENT_READS here rather than in a follow-on."
-  - "gates: decision-scout=FLAGS_FOUND (program); plan-critique=REVISE round 1 addressed, round 2 pending; Decision text awaits the operator's word"
+  - "Decided with notice (critique round 2): the contract declares PlatformDev only (github_ci_branch trusts agent/* branches and writes public logs); the content reader's paths join plan 1's PROTECTED set (one ratchet); rec-4696 owns the protected-path hook, CloudTrail data events and URL-only Deny (Decision 213 cl.1 and cl.4 apply: the access log trusts requestContext.authorizer.iam) and the access-log alarm (its context updated 2026-10-29). storage-substrate's word `live` is this contract's own vocabulary; rec-4483 decides field_semantics' status separately, so the two cannot be read as one answer. Low residual noted, not in the Decision: the raw content_sha256 beside masked text confirms a guessed masked value, practical only for 12-digit account ids agents already hold."
+  - "gates: decision-scout=FLAGS_FOUND (program); plan-critique=REVISE rounds 1-2 addressed, round 3 pending; Decision text and CODEOWNERS lines await the operator's word"
 pre_implementation_checklist:
   - Branch confirmed not on main
   - PLAN-sensitive-value-detectors merged (src/sensitive_values present)
@@ -641,10 +708,10 @@ execution_steps:
        reader has its own verb set.
 
     **Rationale:** Masking in the deployed function and a deploy only the operator approves are the two controls an agent
-    holding the operator's GitHub identity cannot satisfy for itself, while no session token can approve a pending
-    deployment (Decision 143 cl.1; rec-4695 proves it). Rejected: masking in the client (bypassable); one function with a
-    raw verb (IAM cannot split verbs); gating every telemetry function now (an approval a day during active work, for
-    paths rec-2827 closes anyway).
+    holding the operator's GitHub identity cannot satisfy for itself, provided no session token can approve a pending
+    deployment (Decision 143 cl.1; rec-4695's probe, pending). Rejected: masking in the client (bypassable); one function
+    with a raw verb (IAM cannot split verbs); gating every telemetry function now (an approval a day during active work,
+    for paths rec-2827 closes anyway).
 
     **Coverage (Decision 181 cl.2):** cl.1 -- the content reader's served-verb and bundle tests, and rec-4696's IAM pins;
     cl.2 -- test_every_served_byte_is_masked and validate_detector_ratchet; cl.3 -- a non-feature held by rec-4696's
@@ -699,9 +766,9 @@ execution_steps:
   - >-
     storage-substrate.yaml row and the renamed test (rec-4692); read-engine.yaml, its check and test; ports.yaml PC-01
     and PC-06 with the cutover pin; the owner-pointer swaps in ducklake_reader.yaml, ducklake_telemetry_reader.yaml and
-    the two smoke docstrings. Then `grep -rn "rec-4481" --exclude-dir=.git --exclude-dir=logs . | grep -v "^./docs/plans/"`
-    lists only DECISIONS.md history lines.
-  - Contract file.
+    the two smoke docstrings; then test_no_live_text_names_a_closed_rec passes (DECISIONS.md text and each contract's
+    amendment_log keep their rec-4481 lines as history).
+  - Contract file; PROTECTED, CODEOWNERS and boundary_patterns rows for the content reader's paths and their test.
   - Graduation shards for steps 1, 2 and 4.
   - Execute VP steps 1-8; on unrecoverable failure stop and RCA (Decision 55).
   - >-
