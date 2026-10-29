@@ -131,8 +131,9 @@ scope:
   - file: scripts/ci/quiet_run.sh
     action: Create
     purpose: >-
-      PR 2. Usage: quiet_run.sh LOG -- CMD [ARGS...]. The innermost wrapper of the trusted plan: runs CMD with stdout
-      and stderr redirected to LOG (under $RUNNER_TEMP) and exits with CMD's status, printing nothing. Innermost, so
+      PR 2. Usage: quiet_run.sh LOG [--stdout FILE] -- CMD [ARGS...]. The innermost wrapper of the trusted plan: runs
+      CMD with stderr redirected to LOG and stdout to FILE when given (else to LOG too), both under $RUNNER_TEMP, and
+      exits with CMD's status, printing nothing. Innermost, so
       the masks the outer wrappers (trusted_plan_env.sh, neon_api_key.sh run) emit reach the runner and only
       Terraform's own output goes to the file. Refuses a LOG outside $RUNNER_TEMP. Decision 162 R2 argv.
   - file: scripts/ci/plan_names_core.py
@@ -191,14 +192,15 @@ scope:
       "$GITHUB_WORKSPACE/scripts/ci/neon_api_key.sh" run -- bash "$GITHUB_WORKSPACE/scripts/ci/quiet_run.sh"
       "$RUNNER_TEMP/tf-plan.log" -- terraform plan -lock=false -input=false -out=plan.bin (full refresh, no
       -refresh=false, no -var-file; only Terraform's output goes to the never-printed log, so every mask the
-      wrappers emit reaches the runner); then terraform show -json plan.bin into $RUNNER_TEMP/plan.json through
-      quiet_run.sh as well; (10) backstop: python3 -I scripts/ci/terraform_hcl_screen.py backstop; (11) guard: python3
+      wrappers emit reaches the runner); then terraform show -json plan.bin through quiet_run.sh
+      "$RUNNER_TEMP/tf-show.log" --stdout "$RUNNER_TEMP/plan.json" (stdout only reaches plan.json); (10) backstop: python3 -I scripts/ci/terraform_hcl_screen.py backstop; (11) guard: python3
       -I scripts/terraform_apply_guard.py on plan.json with output to a file, exit code mapped to PASS / BLOCKED /
       ERROR; (12) persist plan.bin to the data-lake bucket's tfplan/personal/<pr>/<head sha>.bin; (13) post the
       terraform-plan-digest commit status (python3 -I scripts/ci/plan_digest.py emit) on HEAD_SHA, context and
       description shape unchanged (Decision 77, fetch-saved-plan unchanged); (14a) refusal comment, if: always() and
-      the assume step did not succeed: python3 -I scripts/ci/terraform_personal_plan_report.py --refusal with the
-      category (OVERLAY_REFUSED, SCREEN_REFUSED or ASSUME_FAILED), no credential and no tfvars, body self-validated
+      the overlay step ran and the assume step did not succeed (a job that fails before the overlay posts no comment):
+      python3 -I scripts/ci/terraform_personal_plan_report.py --refusal with the category (OVERLAY_REFUSED,
+      SCREEN_REFUSED or ASSUME_FAILED), no credential and no tfvars, body self-validated
       by the closed grammar, then gh pr comment; (14b) plan comment, if: always() and the assume step succeeded: BODY=$(
       bash trusted_plan_env.sh --scrub-only -- python3 -I scripts/ci/terraform_personal_plan_report.py ...) with the
       category of the first failing step or the plan result, then printf the body into python3 -I
@@ -268,14 +270,17 @@ scope:
       bodies and local uses: of every local composite action a governed job uses (one level, then recursively),
       so scripts a composite runs must be code-owned too; and the static import closure of every executed .py file
       (an AST walk of its scripts.* and src.* imports, including each package __init__.py on the way), each of which
-      must be code-owned. New predicate (i): every non-local uses: in a governed job is
+      must be code-owned; and no executed .py file inserts the repo root at sys.path position 0 (each appends it,
+      then checks that the imported scripts package resolved under the repo root and exits with a fixed message
+      otherwise). New predicate (i): every non-local uses: in a governed job is
       pinned to a 40-hex commit SHA. registry.examined goes from 8 to 9; docstring lists (i).
   - file: tests/checks/ci_guards/test_validate_trusted_plan_environment.py
     action: Modify
     purpose: >-
       PR 3 (named rewrite: the existing cases built on the claims-probe job are re-pointed at job plan). Red cases: a
       git fetch in a governed run body; an unowned script reached through a composite; an unowned module in an executed
-      script's import closure; a tag-pinned action in a governed job; a claims-probe-no-env-style job now fails (d).
+      script's import closure; an executed script inserting the repo root at sys.path position 0; a tag-pinned
+      action in a governed job; a claims-probe-no-env-style job now fails (d).
       Real tree green.
   - file: scripts/checks/iam_tf/_read_coverage.py
     action: Modify
@@ -369,7 +374,8 @@ scope:
     action: Modify
     purpose: >-
       PR 3. The repo-root sys.path entry is appended instead of inserted at 0, so the stdlib always wins in the trusted
-      job; behaviour otherwise unchanged (its existing tests pass unedited).
+      job, followed by the scripts-package location check (fixed message on a mismatch); behaviour otherwise
+      unchanged (its existing tests pass unedited; the location check gets one red case in its own suite).
   - file: tests/test_ci_neon_api_key.py
     action: Modify
     purpose: >-
@@ -413,7 +419,8 @@ scope:
       under a watched temp dir, no value on stdout, a malformed line fails closed without echoing it; --scrub-only
       exports the four scrub variables and no TF_VAR_*; materialise_tfvars.sh --stdout masks on stderr, writes no
       file, and its default mode is unchanged; quiet_run.sh sends only the child's output to the log, keeps its exit
-      status, prints nothing, and refuses a log outside $RUNNER_TEMP.
+      status, prints nothing, refuses a log outside $RUNNER_TEMP, and with --stdout a child's stderr line never
+      reaches the stdout file.
   - file: tests/test_terraform_personal_plan_report.py
     action: Create
     purpose: >-
@@ -451,7 +458,7 @@ scope:
     purpose: PR 2. Registry row for VP 3 (graduate).
   - file: config/agent/verification_registry/entries/trusted-plan-report.yaml
     action: Create
-    purpose: PR 2. Registry row for VP 4 (graduate).
+    purpose: PR 2. Registry row for VP 4 (graduate); its single selector is tests/test_terraform_personal_plan_report.py (the other two files stay in VP 4's command).
 bundled_recommendations:
   - rec-4637
 followon_recs:
@@ -536,8 +543,7 @@ verification_plan:
       test "$(grep -lE '^(terraform|provider) ' terraform/personal/*.tf)" = "terraform/personal/providers.tf" &&
       ! grep -qE '^(terraform|provider) ' terraform/personal/main.tf &&
       ! grep -q '^provider ' terraform/personal/neon_ducklake_catalog.tf &&
-      ! grep -q 'variable "neon_api_key"' terraform/personal/variables.tf &&
-      ! grep -qE '^variable "(aws_region|aws_profile|owner_email)"' terraform/personal/variables.tf &&
+      ! grep -qE '^variable "(aws_region|aws_profile|owner_email|neon_api_key)"' terraform/personal/variables.tf &&
       grep -cE '^variable "(aws_region|aws_profile|owner_email|neon_api_key)"' terraform/personal/providers.tf &&
       terraform fmt -check terraform/personal && echo PROVIDERS_FILE_OK
     expected: prints 4 then PROVIDERS_FILE_OK
@@ -713,7 +719,7 @@ test_obligations:
   - source: terraform/personal/variables.tf
     behavior: neon_api_key and the provider-read variables are declared only in providers.tf
     verification_step: 7
-    command: "! grep -q 'variable \"neon_api_key\"' terraform/personal/variables.tf"
+    command: "! grep -qE '^variable \"(aws_region|aws_profile|owner_email|neon_api_key)\"' terraform/personal/variables.tf"
     red_green_expectation: red before, green after
   - source: docs/contracts/secret-material-handling.yaml
     behavior: the Neon key domain names providers.tf, and the ephemeral-input pattern no longer says PR plans use a stub
@@ -811,10 +817,10 @@ test_obligations:
     test_selector: tests/checks/iam_tf/test__read_coverage_trusted.py
     red_green_expectation: red before (file absent), green after
   - source: scripts/ci/terraform_plan_digest.py
-    behavior: repo root appended to sys.path; output unchanged
+    behavior: repo root appended to sys.path, scripts package location checked; output unchanged
     verification_step: 6
-    test_selector: tests/test_terraform_plan_digest.py
-    red_green_expectation: green before and after (refactor guard; the unedited suite is the oracle)
+    test_selector: tests/checks/ci_guards/test_validate_trusted_plan_environment.py
+    red_green_expectation: red before (predicate h fails an insert at position 0), green after; tests/test_terraform_plan_digest.py stays green
   - source: tests/test_ci_neon_api_key.py
     behavior: check skips only pull_request and fetches on pull_request_target
     verification_step: 6
@@ -938,7 +944,7 @@ context:
   - "Approvals (Benjamin, 2026-10-29): 'write the plan' 18:43Z, cmsg_01Cqz6E4mzSv6kkGCSCub3WM995TPdiJkaUht2355U8VLp, taking every 6b recommendation (F1-A..F7-A) and the speculative_plan_job text in /mnt/project-files/trusted-plan-executor/s3-executor-cutover/step6b-presentation.md; explanation of F1/F3/F4 given at 18:39Z. Addendum wording and the plan-shape residual: PENDING, asked 2026-10-29 (cmsg_01Cqz6E4mzSv6kkGCSCub3WM1b6ppA2dWeeeLEyFYRNYG7; text in /mnt/project-files/trusted-plan-executor/s3-executor-cutover/contract-addendum.md)."
   - "Addendum (PENDING Benjamin's word; PR 1: terraform-cc-web-operations.yaml declared_in of owner_email and neon_api_key becomes terraform/personal/providers.tf, and the secret-material-handling domains line; PR 3, exact text): capability_split's Planner PR-sub sentence becomes 'Planner PR-sub (T2.49 merged plan+drift): since the Decision 238 cutover it only builds the PR's DuckLake artifacts (the ducklake-artifacts job) until rec-4640 deletes it; it keeps tfstate READ and the refresh-read metadata surface meanwhile (accepted interim risk, Decision 238 cl.6), tfplan WRITE until rec-4637's last PR removes it, and no Secrets Manager value read except the tfvars secret.' tfplan_s3_prefix becomes '`s3://agent-platform-data-lake/tfplan/personal/<pr>/<pr-head-sha>.bin` -- written by the trusted plan job under agent-platform-github-ci-trusted-plan (Decision 238); the planner PR-sub statement keeps a write grant until rec-4637's last PR removes it. Read is `github_ci_apply` via its existing `DataLakeObjectIO` bucket-wide grant.' role_creation_guard_blocked's last sentence becomes 'The drift workflow's and the ducklake-artifacts job's `continue-on-error` on the assume-role step covers any residual bootstrap window; the trusted plan job has none.' PR 4 deletes both 'until rec-4637's last PR removes it' clauses (and the 'tfplan WRITE ... ,' phrase)."
   - "Decision-scout verdict: FLAGS_FOUND (Decisions triaged: 190 of 190; Roadmap items intersected: 4; CONFLICT: 0; RELATED: 4). CITE: 238, 77, 154, 92, 144, 83, 101, 119, 120, 129, 162, 166, 237, 223, 235, 183. Flags resolved: 238 config-overlay WARN by F4-A (config from main, refuse on change; no Decision text change); 205 WARN by deferring the reviewer (F5-A); 77 WARN by F1-A (build stays on the PR-sub, no grant in S3's PRs). Report: /mnt/project-files/trusted-plan-executor/s3-executor-cutover/decision-scout-report.md."
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED (round 1 REVISE, 19 findings folded in; round 2 PROCEED at 069d851d, its 5 low findings folded in)"
   - "red-overlap (2026-10-29, main aa702109; first run overlap, re-run after critique round 1): {\"verdict\": \"blocked\", \"slo_hours\": 4, \"reds\": [{\"id\": \"rec-4718\", \"rule\": \"slo_breached\", \"track\": \"product_regression\", \"age_hours\": 4.42, \"shared\": []}]} (the first run gave rule overlap on four transitively selected tests). Deferral rationale: this plan does not repair rec-4718 (the SSM expand push apply stopped at the plan reviewer because github_ci_branch's policy is a deferred data read, so the expand diff is still unapplied). No S3 PR opens while rec-4718 is open: the build thread re-runs red_overlap --plan before each PR and waits on blocked. PR 1 also needs the repair, since VP 8 expects a no-op plan and main's pending expand diff would show in it."
   - "Fable consult: /mnt/project-files/trusted-plan-executor/s3-executor-cutover/ADVICE.md; reconciliation in step6b-presentation.md."
   - "Decision 235 cl.1 named loosenings/rewrites: validate_planner_secret_value_reads (4); its _TF_CMD_RE widened for the trusted_plan_env.sh prefix and the quiet_run.sh inner wrapper; neon_api_key.sh check's pull_request_target skip removed, with test_ci_neon_api_key.py's skip assertion for that event; TEMP_NO_ENV_JOBS emptied; test_validate_trusted_plan_environment.py's claims-probe-based cases re-pointed at job plan; composite_action_body_baseline.yaml loses the retired bodies and gains entries for the new ones; the speculative_plan_job contract row retired."
