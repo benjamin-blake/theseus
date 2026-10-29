@@ -2,6 +2,99 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 239: Agents read production transcript text masked, through a dedicated content reader whose code only the operator can deploy (amends Decisions 236, 230, 81 and 91) (Decided)
+
+```yaml
+number: 239
+status: Decided
+decided_date: "2026-10-29"
+amends: [236, 230, 81, 91]
+significance:
+  value: numbered_decision
+  justification: >-
+    Fires Decision 236's content-consumer reversal condition, adds a third reader to the closed production read
+    boundary and a role to Decision 230 cl.5's fence; a contract note cannot amend those clauses.
+```
+
+**Status:** Decided
+**Date:** 2026-10-29
+**Warehouse ID:** dec-239 (per Decision 84 backfill)
+
+**Problem:** The feedback loop needs transcript text to see why agents made mistakes (operator, 2026-10-29), so
+Decision 236 cl.3's named consumer exists. Text an agent reads re-enters its own captured session and can reach a
+public pull request, and an agent that edits the reader could serve itself more. CODEOWNERS does not bind agent pull
+requests (rec-2827), and IAM grants invoke per function, not per verb.
+
+**Decision:**
+1. **Content reader (amends 236 cl.3).** Agents read production transcript text only through
+   agent-platform-ducklake-telemetry-content: masked verbs only (one row, one session tree), no other event verb, no
+   caller SQL; S3 read on the production telemetry data prefix and GetObject on the production blob root; the
+   telemetry reader's SELECT-only login as a second consumer of the same catalog binding (amends 230 cl.3: one login
+   per binding stands; its connection limit is summed across the functions that share it).
+2. **Masking inside the function.** Every served byte is masked inside the deployed function with the shared
+   read_masked profile (src/sensitive_values), over the whole payload before paging. ARNs keep role and resource
+   names, never account ids or session names. A response carries the raw content_sha256, masked_sha256, per-class
+   mask counts and the profile fingerprint, and labels its text untrusted data. Masking done by a caller is never a
+   control.
+3. **Raw content.** Byte-exact reads are a separate function, invocable only by an identity no agent can obtain
+   without review (Decision 238 cl.1), built when the security project names that identity (rec-4697). No
+   agent-reachable role is ever granted it.
+4. **Access log and window.** Each read writes one value-free log line (role name, verb, session, row, byte and mask
+   counts, request id; never an ARN, account id or text) to a log group kept at least 90 days. Reads cover sessions
+   started in the last 90 days. How long storage keeps transcripts is the operator's decision (rec-4698).
+5. **Change lock.** The content reader's code and configuration change only through a job the operator approves in a
+   reviewer-gated GitHub Environment, under a role bound to that environment and an exact job_workflow_ref on main
+   (Decision 238 cl.2). A permissions-boundary Deny refuses every other identity. The job builds from its own checkout
+   and deploys the digest it recorded (Decision 154). CODEOWNERS, boundary_patterns, the detector ratchet and a
+   protected-path edit hook are early warnings until rec-2827. rec-4696 delivers the lock and the deploy.
+6. **Residuals.** The telemetry reader, writer and maintenance functions can read inline content and still deploy
+   without review (operator's choice 2026-10-29; owner rec-2827). Admin credentials bypass the boundary (owner: the
+   security project's thread-startup work; an alarm on the access log flags unexpected roles). Masked text re-enters
+   capture, so a detector gap repeats (owner rec-4657). Read-back proves inline rows only until golden replay carries
+   a blob-tier row (owner rec-4699). Pre-flip transcripts on the smoke catalog (owner rec-4694).
+7. **Amendments.** Decision 236 cl.2 and cl.6 and Decision 81 cl.1 and cl.7: production telemetry has two readers, the
+   telemetry reader (no content) and the content reader (masked content only), so the closed read boundary is three
+   readers. Decision 230 cl.5: the fence's exceptions add the content reader's role. Decision 91 cl.1: the content
+   reader has its own verb set.
+
+**Rationale:** Masking in the deployed function and a deploy only the operator approves are the two controls an agent
+holding the operator's GitHub identity cannot satisfy for itself, provided no session token can approve a pending
+deployment (Decision 143 cl.1; rec-4695's probe, pending). Rejected: masking in the client (bypassable); one function
+with a raw verb (IAM cannot split verbs); gating every telemetry function now (daily approvals for paths rec-2827
+closes anyway).
+
+**Coverage (Decision 181 cl.2):** cl.1 -- the content reader's served-verb and bundle tests, and rec-4696's IAM pins;
+cl.2 -- test_every_served_byte_is_masked and validate_detector_ratchet; cl.3 -- a non-feature held by rec-4696's
+invoke-grant and url-only tests; cl.4 -- test_every_read_writes_an_access_log_row, the window test and rec-4696's
+log-retention pin; cl.5 -- rec-4696's lock tests and the gated deploy's digest check; cl.6 -- owned residuals, none
+enforced; cl.7 -- the bundle tests and rec-4696's boundary tests.
+
+```yaml reversal-conditions
+decision: 239
+review_by: 2027-04-30
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: detector-gap
+    kind: manual
+    description: "A value read_masked masks is found in a masked read's output: re-decide clause 2 and widen read_masked first."
+  - id: loop-needs-raw
+    kind: manual
+    description: "The feedback loop cannot work from masked text: re-decide clause 3."
+  - id: codeowners-binds
+    kind: manual
+    description: "rec-2827 closes: re-decide clause 5's scope across every telemetry function."
+  - id: approval-bypass
+    kind: manual
+    description: "A session token can approve a pending deployment (rec-4695): re-decide clause 5."
+  - id: boundary-size
+    kind: manual
+    description: "The permissions boundary passes Decision 230's 5,632 bytes: re-decide where the fence lives."
+```
+
+**Related:** Decisions 236, 230, 81, 91 (amended), 143, 154, 181, 199, 213, 235, 238, 101.
+
+---
+
 ## Decision 238: No agent-controlled identity reads Terraform state or saved plans -- the speculative plan runs from main's workflow on pull_request_target under a dedicated environment- and workflow-bound role and shows names only (amends Decisions 92 and 144) (Decided)
 
 ```yaml
@@ -248,6 +341,8 @@ conditions:
 ```
 
 **Related:** Decisions 230, 81, 91, 199, 200 (amended), 143, 188, 192, 209, 213, 216, 88, 181, 177.
+
+[Amendment 2026-10-29, Decision 239: cl.3's content consumer exists; agents read production transcript text masked, only through the telemetry content reader; cl.2 and cl.6 count two production telemetry readers, so the closed read boundary is three readers.]
 
 ---
 
@@ -608,6 +703,8 @@ conditions:
 **Related:** Decision 216, 213, 81, 214, 222, 204, 143, 144, 202, 126, 88, 181.
 
 [Amendment 2026-10-27, Decision 237: cl.4 logins live in /secret/.]
+
+[Amendment 2026-10-29, Decision 239: cl.3's telemetry reader login is shared with the content reader, its connection limit summed across both; cl.5's fence exceptions add the content reader's role.]
 
 ---
 
@@ -9607,6 +9704,8 @@ is now split into DuckLakeInvokeUrl and DuckLakeInvokeViaUrlOnly, so a direct in
 
 [Amendment 2026-10-25, PLAN-telemetry-reader-and-smoke-twin (Decision 236 cl.6): the telemetry reader serves its own verb set, the event verbs minus transcript_content.]
 
+[Amendment 2026-10-29, Decision 239: the telemetry content reader serves its own verb set, transcript_row_masked and session_transcript_masked.]
+
 ---
 
 ## Decision 90: Four-Tier Workflow Architecture (Decided)
@@ -10110,6 +10209,8 @@ provision_telemetry_login, invocable by an ADMIN-container agent only under expl
 [Amendment 2026-10-20, Decision 230: cl.6's agent carve-outs gain provision_catalog_owner and provision_telemetry_catalog under explicit human direction.]
 
 [Amendment 2026-10-25, PLAN-telemetry-reader-and-smoke-twin (Decision 236 cl.6): runtime artifacts add the smoke telemetry writer twin and the telemetry reader; the closed read boundary is two readers.]
+
+[Amendment 2026-10-29, Decision 239: runtime artifacts add the telemetry content reader; the closed read boundary is three readers.]
 
 ---
 
