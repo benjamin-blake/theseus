@@ -85,6 +85,19 @@ data "aws_iam_policy_document" "github_ci_trusted_plan" {
   }
 
   statement {
+    # Decision 237 (trailer 2026-10-29): the SSM twin of PlanSecretValueRead, for the same single trusted subject.
+    # secrets-to-ssm-retire deletes PlanSecretValueRead. Needed once a full refresh decrypts the DSN parameter and
+    # once scripts/ci/neon_api_key.sh reads SSM.
+    sid     = "PlanSecretParameterRead"
+    effect  = "Allow"
+    actions = ["ssm:GetParameter"]
+    resources = [
+      "arn:aws:ssm:${var.aws_region}:${var.account_id}:parameter/secret/neon-api-key",
+      "arn:aws:ssm:${var.aws_region}:${var.account_id}:parameter/secret/ducklake-neon-catalog-dsn",
+    ]
+  }
+
+  statement {
     # The GitHub-root plan reads that root's state: the ONE state object, no write (plans run -lock=false).
     sid       = "TfstateGithubRead"
     effect    = "Allow"

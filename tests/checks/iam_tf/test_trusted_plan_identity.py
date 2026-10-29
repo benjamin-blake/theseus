@@ -1,7 +1,7 @@
 """Standing guard for PLAN-trusted-plan-identity (rec-4636).
 
 The trusted speculative-plan role: one environment- and job_workflow_ref-bound trust statement, exactly
-its four Sids over the shared refresh-read surface, no state write or saved-plan read, and both apply-side
+its pinned Sids over the shared refresh-read surface, no state write or saved-plan read, and both apply-side
 read lists naming it. The planner's TfplanWrite is upload-only.
 """
 
@@ -30,12 +30,17 @@ _ROLE_ARN = f"arn:aws:iam::${{var.account_id}}:role/{_ROLE_NAME}"
 _BUCKET = "${aws_s3_bucket.data_lake.arn}"
 _BOUNDARY = "arn:aws:iam::${var.account_id}:policy/agent-platform-github-ci-apply-boundary"
 _SM_ARN = "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:"
+_SSM_ARN = "arn:aws:ssm:${var.aws_region}:${var.account_id}:parameter/secret/"
 _EXPECTED_SIDS = {
     "TfplanPersonalWrite": (["s3:PutObject"], [f"{_BUCKET}/tfplan/personal/*"]),
     "ProviderMirrorRead": (["s3:GetObject"], [f"{_BUCKET}/tf-provider-mirror/*"]),
     "PlanSecretValueRead": (
         ["secretsmanager:GetSecretValue"],
         [f"{_SM_ARN}neon-api-key-*", f"{_SM_ARN}ducklake-neon-catalog-dsn-*"],
+    ),
+    "PlanSecretParameterRead": (
+        ["ssm:GetParameter"],
+        [f"{_SSM_ARN}neon-api-key", f"{_SSM_ARN}ducklake-neon-catalog-dsn"],
     ),
     "TfstateGithubRead": (["s3:GetObject"], [f"{_BUCKET}/tfstate/github/terraform.tfstate"]),
 }

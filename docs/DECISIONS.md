@@ -166,6 +166,11 @@ conditions:
 
 **Related:** Decisions 157, 175, 101, 171, 202, 213, 230, 144, 156, 223.
 
+> **Update (2026-10-29, PLAN-secrets-to-ssm-expand, rec-4683):** the trusted speculative-plan role of Decision 238 is a
+> declared consumer of the Neon key and catalog DSN parameters. Its reads carry no session condition: its one trusted
+> subject is the tf-trusted-plan Environment bound to main's workflow, so clause 2's drift-session condition, written
+> for the planner's PR session, does not apply to it.
+
 ---
 
 ## Decision 236: Production telemetry is proved by a smoke canary and read through its own reader -- disposable proofs stay on smoke, production serves no transcript content, read-side tenancy is the function boundary, and maintenance covers the catalog from its first write (amends Decisions 81, 91, 199 and 200) (Decided)

@@ -45,6 +45,7 @@ _READER_ACTIONS = {
     "logs:CreateLogStream",
     "logs:PutLogEvents",
     "secretsmanager:GetSecretValue",
+    "ssm:GetParameter",
     "s3:GetObject",
     "s3:ListBucket",
     "s3:GetBucketLocation",
@@ -129,7 +130,13 @@ def reader_problems(text: str) -> list[str]:
     problems = _common_problems(role, function)
     statements = _statements(policy)
     sids = {_sid(s) for s in statements}
-    want = {"Logs", "TelemetryReaderDsnRead", "TelemetryCatalogDataRead", "TelemetryCatalogDataList"}
+    want = {
+        "Logs",
+        "TelemetryReaderDsnRead",
+        "TelemetryReaderDsnParameterRead",
+        "TelemetryCatalogDataRead",
+        "TelemetryCatalogDataList",
+    }
     if sids != want:
         problems.append(f"reader statements are {sorted(sids)}")
     for stmt in statements:
@@ -146,6 +153,11 @@ def reader_problems(text: str) -> list[str]:
     secrets = re.findall(r"aws_secretsmanager_secret\.\w+", policy)
     if secrets != [_READER_SECRET]:
         problems.append(f"reader reads secrets {secrets}")
+    parameters = re.findall(r'"arn:aws:ssm:[^"]*:parameter/secret/[^"]*"', policy)
+    if parameters != [
+        '"arn:aws:ssm:${var.aws_region}:${var.account_id}:parameter/secret/agent-platform-ducklake-telemetry-reader-dsn"'
+    ]:
+        problems.append(f"reader reads parameters {parameters}")
     return problems
 
 
