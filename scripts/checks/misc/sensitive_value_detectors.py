@@ -52,8 +52,9 @@ def case_key(profile: str, case: corpus.Case) -> str:
 
 
 def measure(profile: str, case: corpus.Case) -> int:
+    planted, class_id = case.planted_value or "", case.class_id or ""
     result = mask(case.text, profile)
-    return int(case.planted_value not in result.text and result.counts.get(case.class_id, 0) >= 1)
+    return int(planted not in result.text and result.counts.get(class_id, 0) >= 1)
 
 
 def live_keys() -> dict[str, int]:
@@ -152,6 +153,14 @@ def _load_registry(text: str) -> dict[str, int] | None:
     return None
 
 
+def _weakened(base: object, head: object) -> bool:
+    return isinstance(base, int) and isinstance(head, int) and head < base
+
+
+def _gates_deletion(base: object) -> bool:
+    return isinstance(base, int) and base > 0
+
+
 def registry_spec() -> _marker_guard.RegistrySpec:
     extractor = _marker_guard.make_flat_extractor(TOKEN, int, require_reason=True)
 
@@ -168,8 +177,8 @@ def registry_spec() -> _marker_guard.RegistrySpec:
         mention_candidates=lambda key: [key],
         reason_required=True,
         state_extractor=state_extractor,
-        weakened=lambda base, head: head < base,
-        gates_deletion=lambda base: base > 0,
+        weakened=_weakened,
+        gates_deletion=_gates_deletion,
     )
 
 
