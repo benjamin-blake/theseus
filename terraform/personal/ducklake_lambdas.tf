@@ -180,6 +180,13 @@ resource "aws_iam_role_policy" "ducklake_writer" {
         Resource = [aws_secretsmanager_secret.ducklake_neon_catalog_dsn.arn]
       },
       {
+        # Decision 237: SSM twin of the Secrets Manager read above; secrets-to-ssm-retire removes the old one.
+        Sid      = "NeonDsnParameterRead"
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter"]
+        Resource = ["arn:aws:ssm:${var.aws_region}:${var.account_id}:parameter/secret/ducklake-neon-catalog-dsn"]
+      },
+      {
         # Writer is the SOLE write authority for ops_* (CD.33 clause 4): RW on the production
         # ducklake/ data path AND the retained smoke prefix (T2.17 gates / rollback).
         Sid    = "S3DataReadWrite"
@@ -248,6 +255,13 @@ resource "aws_iam_role_policy" "ducklake_reader" {
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
         Resource = [aws_secretsmanager_secret.ducklake_neon_catalog_dsn.arn]
+      },
+      {
+        # Decision 237: SSM twin of the Secrets Manager read above; secrets-to-ssm-retire removes the old one.
+        Sid      = "NeonDsnParameterRead"
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter"]
+        Resource = ["arn:aws:ssm:${var.aws_region}:${var.account_id}:parameter/secret/ducklake-neon-catalog-dsn"]
       },
       {
         # GetObject ONLY -- no PutObject/DeleteObject. A DuckLake write (Parquet PutObject) from this

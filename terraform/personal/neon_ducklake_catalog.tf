@@ -115,9 +115,8 @@ resource "aws_secretsmanager_secret" "ducklake_neon_catalog_dsn" {
   }
 }
 
-resource "aws_secretsmanager_secret_version" "ducklake_neon_catalog_dsn" {
-  secret_id = aws_secretsmanager_secret.ducklake_neon_catalog_dsn.id
-  secret_string = jsonencode({
+locals {
+  ducklake_neon_dsn_document = jsonencode({
     dsn         = local.ducklake_neon_dsn
     host        = neon_project.ducklake_catalog.database_host
     dbname      = neon_database.ducklake_ops.name
@@ -126,6 +125,24 @@ resource "aws_secretsmanager_secret_version" "ducklake_neon_catalog_dsn" {
     sslmode     = "require"
     meta_schema = "ducklake_ops"
   })
+}
+
+resource "aws_secretsmanager_secret_version" "ducklake_neon_catalog_dsn" {
+  secret_id     = aws_secretsmanager_secret.ducklake_neon_catalog_dsn.id
+  secret_string = local.ducklake_neon_dsn_document
+}
+
+resource "aws_ssm_parameter" "ducklake_neon_catalog_dsn" {
+  name        = "/secret/ducklake-neon-catalog-dsn"
+  type        = "SecureString"
+  tier        = "Standard"
+  value       = local.ducklake_neon_dsn_document
+  description = "DuckLake Neon catalog DSN (direct endpoint, sslmode=require). ROTATION: quarterly, calendar-reminded -- the Neon role password does not auto-rotate (CD.34 / Decision 37)."
+
+  tags = {
+    Name    = "DuckLake Neon Catalog DSN"
+    Purpose = "DuckLake catalog T2.16b CD.34 -- Lambda/smoke-test runtime-fetch"
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -197,4 +214,9 @@ output "ducklake_neon_catalog_dsn_secret_arn" {
 output "ducklake_neon_catalog_host_direct" {
   description = "Neon DIRECT (unpooled) endpoint host for the DuckLake catalog. Catalog writes use this host (multi-statement DuckLake txns vs transaction-mode pooling)."
   value       = neon_project.ducklake_catalog.database_host
+}
+
+output "ducklake_neon_catalog_dsn_parameter_name" {
+  description = "SSM SecureString parameter name of the DuckLake Neon catalog DSN JSON (Decision 237); nothing reads it until secrets-to-ssm-cutover."
+  value       = aws_ssm_parameter.ducklake_neon_catalog_dsn.name
 }
