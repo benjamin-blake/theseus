@@ -420,3 +420,29 @@ def test_reader_bundle_carries_the_dq_check_module():
     module = "src/common/ducklake_dq_checks.py"
     assert module in set(manifests["ducklake_reader"].includes)
     assert module in set(manifests["data-pipeline"].excludes)
+
+
+# ---------------------------------------------------------------------------
+# PLAN-sensitive-value-detectors: src/sensitive_values stays out of data-pipeline (stdlib leaf, rec-4481 plan 1).
+# ---------------------------------------------------------------------------
+
+
+def test_sensitive_values_excluded_from_data_pipeline(tmp_path):
+    manifests = load_all()
+    data_pipeline = manifests["data-pipeline"]
+    assert "src/sensitive_values" in set(data_pipeline.excludes), "data-pipeline manifest must exclude src/sensitive_values"
+
+    changed = [
+        "src/sensitive_values/__init__.py",
+        "src/sensitive_values/classes.py",
+        "src/sensitive_values/engine.py",
+        "src/sensitive_values/profiles.py",
+    ]
+    affected = compute_affected_artifacts(changed)
+    assert "data-pipeline" not in affected, affected
+
+    stage_dir = tmp_path / "stage"
+    stage_dir.mkdir()
+    stage_bundle(data_pipeline, stage_dir, skip_pip=True)
+    staged_paths = [p for p in stage_dir.rglob("*") if "sensitive_values" in p.parts]
+    assert staged_paths == [], f"src/sensitive_values leaked into data-pipeline.zip: {staged_paths}"
