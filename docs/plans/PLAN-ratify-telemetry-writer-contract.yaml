@@ -1,0 +1,349 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "ratify-telemetry-writer-contract"
+intent: >-
+  Re-ratify the telemetry writer's Class B verb contract (docs/contracts/ducklake_telemetry_writer.yaml) from provisional_v0
+  to ratified now that its re-ratification trigger (production_invocations >= 500) has fired, on a production traffic census
+  plus a test that pins every declared typed error to an asserting test, and make the census's one principal divergence true
+  before ratifying: turn capture signs as PlatformDev instead of the ADMIN environment's ambient AWS_PROFILE role.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-ratify-telemetry-writer-contract.yaml
+phase: >-
+  Decision 118 per-contract graduation of a provisional_v0 Class B contract (re_ratification_owner "human + Step 10
+  multi-perspective critique"); T2.36 (the writer's tier item) is complete, so no tier_item criterion is claimed. First
+  Class B provisional_v0 -> ratified transition in the repo.
+scope:
+  - file: docs/contracts/ducklake_telemetry_writer.yaml
+    action: Modify
+    purpose: >-
+      status provisional_v0 -> ratified with ratified_at and ratified_via; provisional_v0 keeps its trigger and gains
+      trigger_fired_at and ratification_census; audit_invariants gain the principal-classes line and the rec-4317 residual,
+      and the no-502 line points at that residual; one governance_note_add amendment_log entry. Exact text in
+      execution_steps 3-6.
+  - file: tests/checks/contracts/test_telemetry_writer_ratification.py
+    action: Create
+    purpose: >-
+      Class TestWriterContractRatification: the contract is ratified with its census and both new invariants; a
+      TYPED_ERROR_TESTS registry maps every (verb, typed_error) pair the contract declares to one asserting pytest node,
+      with the key set equal to the contract's (no missing, no extra) and every node resolving to a def in an existing
+      file; red cases on synthetic contracts and a synthetic registry.
+  - file: scripts/telemetry_capture/transport.py
+    action: Modify
+    purpose: >-
+      make_client resolves resolve_aws_profile(DEFAULT_SSO_PROFILE), so turn capture signs as PlatformDev
+      (agent_platform) whatever AWS_PROFILE names; CI and Lambda keep the ambient chain (resolve_aws_profile returns None
+      there).
+  - file: scripts/telemetry_capture/verify.py
+    action: Modify
+    purpose: credentials_available mirrors make_client's resolution (its docstring says it does), so it pins the same profile.
+  - file: scripts/telemetry_capture/read_route.py
+    action: Modify
+    purpose: >-
+      _client resolves resolve_aws_profile(profile or DEFAULT_SSO_PROFILE): an explicit profile still wins, the ambient
+      AWS_PROFILE no longer does (PlatformDev-default project rule, Benjamin 2026-10-29).
+  - file: tests/telemetry_capture/test_capture_profile.py
+    action: Create
+    purpose: >-
+      Class TestCaptureSignsAsPlatformDev: with AWS_PROFILE=agent_platform_admin and no ambient keys, make_client,
+      credentials_available and read_route's client open their boto3 Session under agent_platform; an explicit read_route
+      profile still wins; with AWS_ACCESS_KEY_ID set the profile is None (CI). A new file keeps test_verify.py (545 lines)
+      and test_transport.py unchanged.
+  - file: docs/plans/PLAN-ratify-telemetry-writer-contract.yaml
+    action: Create
+    purpose: This planning artefact.
+bundled_recommendations: []
+followon_recs:
+  - rec-4706
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    docs/contracts/ducklake_telemetry_writer.yaml loads through scripts.contracts.load_contract at status ratified,
+    contract_version 1, with ratified_at and a ratified_via naming PLAN-ratify-telemetry-writer-contract and Decision 118;
+    evaluate_provisional_trigger returns (False, None) for it; its provisional_v0 block carries trigger_fired_at
+    "2026-10-29" and the ratification_census text of execution step 4.
+  - >-
+    audit_invariants carry the principal-classes line and the rec-4317 declared residual verbatim from execution step 5, and
+    the no-502 line ends with the pointer sentence of execution step 5; the amendment_log's newest entry is execution step
+    6's governance_note_add entry with semantic_break false.
+  - >-
+    tests/checks/contracts/test_telemetry_writer_ratification.py::TestWriterContractRatification passes, and fails when a
+    declared typed error has no registry row, when a registry row names a pair the contract does not declare, or when a
+    registry node does not resolve.
+  - >-
+    Turn capture's three credential sites resolve agent_platform under AWS_PROFILE=agent_platform_admin, an explicit
+    read_route profile still wins, and the ambient chain (None) is kept when AWS_ACCESS_KEY_ID is set
+    (tests/telemetry_capture/test_capture_profile.py::TestCaptureSignsAsPlatformDev).
+  - The CD.25 contract-drift gate passes (no forbidden transition, no unrecorded description change) in the full tier.
+  - >-
+    After merge, a telemetry_probe sent from an ADMIN-environment session on main reaches the production writer signed as
+    PlatformDev (its C6 line's caller_role), not PlatformAdmin.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: >-
+      Run the capture-profile class. It does not exist today, so red-before replay sees pytest exit 4; after the change its
+      four tests pass.
+    command: bin/venv-python -m pytest tests/telemetry_capture/test_capture_profile.py::TestCaptureSignsAsPlatformDev -q
+    expected: exit 0, four tests passed. Before the change pytest reports the class not found.
+    fix_if: >-
+      A site still opens its Session under agent_platform_admin -- pass DEFAULT_SSO_PROFILE at that site. CI case not None
+      -- the call must go through resolve_aws_profile, never a hard-coded profile_name. Never change resolve_aws_profile's
+      precedence (other scripts depend on it; out of scope).
+    hermetic: true
+    expected_literals: ["4 passed"]
+    graduation: graduate
+    graduation_check_id: capture-signs-as-platform-dev
+  - step: 2
+    phase: pre-deploy
+    action: >-
+      Run the ratification class: contract ratified with census and invariants, typed-error registry equal to the
+      contract's declared set, every node resolvable, red cases. Absent today (exit 4).
+    command: bin/venv-python -m pytest tests/checks/contracts/test_telemetry_writer_ratification.py::TestWriterContractRatification -q
+    expected: exit 0, four tests passed. Before the change pytest reports the class not found.
+    fix_if: >-
+      A declared typed error with no asserting test -- find the test that asserts it (grep the error class or the literal
+      under tests/) and register it; if none exists, STOP and report: never ratify an unasserted error and never drop the
+      error from the contract to pass. A node that does not resolve -- correct the node id.
+    hermetic: true
+    expected_literals: ["4 passed"]
+    graduation: graduate
+    graduation_check_id: telemetry-writer-contract-ratified
+  - step: 3
+    phase: pre-deploy
+    action: >-
+      Re-run the existing writer-contract guards that read the edited contract (surfacing note, production binding, blob
+      contracts, producer identity model) to prove the edit kept them green.
+    command: >-
+      bin/venv-python -m pytest tests/checks/contracts/test_telemetry_production_cutover.py
+      tests/checks/contracts/test_telemetry_blob_contracts.py tests/checks/contracts/test_tenant_id_producer_identity_model.py
+      tests/telemetry_capture/test_transport.py tests/telemetry_capture/test_verify.py tests/telemetry_capture/test_read_route.py -q
+    expected: exit 0, no failures, before and after the change.
+    fix_if: >-
+      A guard fails -- the contract edit changed text a guard pins (e.g. provisional_v0.surfacing_note); restore that text.
+      Never edit a guard to pass.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      A no-regression re-run of existing standing test files (green before and after by design), and partly modified-file
+      whole-file selectors, which hermetic_authoring rule (v) keeps non-hermetic.
+  - step: 4
+    phase: pre-deploy
+    action: >-
+      Prove the status transition and trigger state through the real contract machinery, outside the new tests: the loader,
+      the Invariant-6 transition table and the provisional-trigger evaluator.
+    command: >-
+      bin/venv-python -c "from scripts.contracts import load_contract, validate_status_transition; from
+      scripts.contracts_enforcement import evaluate_provisional_trigger, check_re_ratification_trigger; d =
+      load_contract('docs/contracts/ducklake_telemetry_writer.yaml'); c = d.contract; assert c.status.value == 'ratified'
+      and c.contract_version == 1, c.status; assert 'PLAN-ratify-telemetry-writer-contract' in c.ratified_via and
+      'Decision 118' in c.ratified_via; assert c.ratified_at; assert validate_status_transition('provisional_v0',
+      'ratified'); assert evaluate_provisional_trigger(d, {'production_invocations': 10**9}) == (False, None); assert
+      check_re_ratification_trigger(d) == []; assert c.provisional_v0['trigger_fired_at'] == '2026-10-29';
+      print('WRITER_CONTRACT_RATIFIED', c.ratified_at)"
+    expected: Prints WRITER_CONTRACT_RATIFIED and the ratified_at date; exit 0. Today it fails on the status assertion.
+    fix_if: An AssertionError names the field to fix in the contract block (execution step 3/4 text).
+    hermetic: true
+    expected_literals: ["WRITER_CONTRACT_RATIFIED"]
+    graduation: waive
+    graduation_waiver_reason: >-
+      Duplicates step 2's graduated test_contract_is_ratified_with_census, which pins the same status, ratified_via and
+      provisional_v0 fields as a standing regression guard.
+  - step: 5
+    phase: pre-deploy
+    action: >-
+      Full-tier handoff on the committed, rebased, clean tree (git-ops.yaml handoff_sequence): the CD.25 contract-drift gate
+      checks the provisional_v0 -> ratified transition and the amendment record, plus every other gate; then attest HEAD.
+    command: bin/venv-python -m scripts.validate && bin/venv-python -m scripts.checks.validation_result --verify-head
+    expected: >-
+      exit 0; the Validation Summary lists no failure (Contract drift (CD.25) PASS) and --verify-head attests the checked
+      HEAD's tree.
+    fix_if: >-
+      A failure in scope is fixed on the branch, committed, and this step re-run from the start; one outside scope becomes a
+      rec via scripts.ops_data_portal (Decision 59, Decision 55). Never skip or weaken a check.
+    hermetic: false
+    graduation: not-applicable
+  - step: 6
+    phase: post-deploy
+    action: >-
+      After the squash merge, from this ADMIN-environment build session on a main checkout (AWS_PROFILE is
+      agent_platform_admin here), send one telemetry_probe through the capture transport for the session's own tree, then
+      read the production writer's C6 lines for telemetry_probe from the last 15 minutes with the PlatformDev profile and
+      count them by caller_role. Read-only verbs; no admin credential is used for the read.
+    command: >-
+      bin/venv-python -m scripts.telemetry_capture probe --tree "$(ls -t ~/.claude/projects/*/*.jsonl | head -1)"; bin/venv-python -c "import boto3,
+      json, time, collections; logs = boto3.Session(profile_name='agent_platform').client('logs', region_name='eu-west-2');
+      r = logs.filter_log_events(logGroupName='/aws/lambda/agent-platform-ducklake-telemetry-writer',
+      startTime=int((time.time() - 900) * 1000), filterPattern='telemetry_probe'); rows = [json.loads(e['message']) for e in
+      r['events'] if e['message'].startswith('{')]; c = collections.Counter(x.get('caller_role') for x in rows if
+      x.get('verb') == 'telemetry_probe'); print('PROBE_CALLERS', dict(c))"
+    expected: >-
+      The probe prints per-table grain counts (rows may be zero for a fresh session; the probe's own exit status is not the
+      assertion). PROBE_CALLERS shows at least one PlatformDev and zero PlatformAdmin.
+    fix_if: >-
+      PlatformAdmin present -- the probe ran on a pre-merge checkout or a site still honours AWS_PROFILE; confirm git log on
+      main and re-run. No telemetry_probe line -- the probe never reached the writer (read its printed reason); re-run once,
+      then report. Never use admin credentials for the read.
+    hermetic: false
+test_obligations:
+  - source: docs/contracts/ducklake_telemetry_writer.yaml
+    behavior: >-
+      The writer contract stays ratified with its census and invariants, and every typed error it declares stays pinned to
+      an asserting test (a new error without a registered test fails).
+    verification_step: 2
+    test_selector: tests/checks/contracts/test_telemetry_writer_ratification.py::TestWriterContractRatification
+    red_green_expectation: >-
+      red before, green after -- the class does not resolve today (pytest exit 4) and its four tests pass once the contract
+      edit and test land.
+  - source: scripts/telemetry_capture/transport.py
+    behavior: make_client opens its boto3 Session under agent_platform whatever AWS_PROFILE names; None on CI.
+    verification_step: 1
+    test_selector: tests/telemetry_capture/test_capture_profile.py::TestCaptureSignsAsPlatformDev
+    red_green_expectation: red before (class absent, exit 4), green after.
+  - source: scripts/telemetry_capture/verify.py
+    behavior: credentials_available resolves the same profile as make_client.
+    verification_step: 1
+    test_selector: tests/telemetry_capture/test_capture_profile.py::TestCaptureSignsAsPlatformDev
+    red_green_expectation: red before (class absent, exit 4), green after.
+  - source: scripts/telemetry_capture/read_route.py
+    behavior: read clients resolve an explicit profile first, then agent_platform, never the ambient AWS_PROFILE.
+    verification_step: 1
+    test_selector: tests/telemetry_capture/test_capture_profile.py::TestCaptureSignsAsPlatformDev
+    red_green_expectation: red before (class absent, exit 4), green after.
+constraints:
+  - No rescue agents or workaround loops (Decision 55).
+  - >-
+    Apply the contract text of execution steps 3-6 VERBATIM (it is the text Benjamin approved and the Step 10 critique
+    reviewed), filling only <BUILD_DATE>. Any wording change is a new approval: stop and ask.
+  - >-
+    Never add PlatformAdmin to contract.governance.principal_classes (Decision 113 two-principal semantic; Decision 144
+    cl.3; tenant-id.yaml producer identity note; rec-4420 owns admitting new producer identities). principal_classes,
+    every verb, response code and typed error stay byte-identical.
+  - >-
+    Never change scripts/aws_profile.py's precedence: the fix is at the three capture call sites only. The ADMIN
+    environment's AWS_PROFILE default is an environment setting outside this plan.
+  - >-
+    Keep the provisional_v0 block (tests/checks/contracts/test_telemetry_production_cutover.py reads its surfacing_note;
+    every provisional scan keys on status, so a ratified contract's block is inert). contract_version stays 1. No numbered
+    Decision (Decision 150 routing: a status flip routes to the owning contract).
+  - >-
+    No Lambda code change: rec-4317 and rec-4492 stay open (the first is recorded as a declared residual). No IAM, terraform,
+    Neon or secret change; no admin credential use (PlatformDev-default rule, Benjamin 2026-10-29).
+  - >-
+    PUBLIC repository (Decision 101): no account id, ARN, principal ref or hash of either in the contract, tests, commit or
+    PR body. Census figures are counts and role names only.
+  - >-
+    New test modules stay under 500 SLOC, import no other test module, and live in tests/checks/contracts/ and
+    tests/telemetry_capture/ beside the guards they extend.
+  - >-
+    Build merge needs Benjamin's own word (Class B contract ratification is on the always-ask list); no Lambda deploy is
+    triggered (compute_affected_artifacts over the scope is empty).
+context:
+  - >-
+    Decision-scout verdict FLAGS_FOUND (one SPIRIT NOTE, Decision 113: never legitimise routine PlatformAdmin capture;
+    resolved by the transport fix and the principal_classes constraint). CITE list (verbatim): Decision 118, Decision 150,
+    Decision 86, Decision 101, Decision 181, Decision 213, Decision 230, Decision 236, Decision 189, Decision 79. Decisions
+    triaged: 190 of 190. Roadmap items intersected: 2; CONFLICT: 0; RELATED: 1.
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<pending>; Step 10 critique on the pinned contract text=<pending>"
+  - >-
+    Evidence: /mnt/project-files/writer-contract-ratification/EVIDENCE.md (census 2026-10-27T11:39Z to 2026-10-29; log
+    retention is 14 days, so the census is snapshotted into the contract). Fable consult on the forks:
+    /mnt/project-files/writer-contract-ratification/fable-brief/BRIEF.md (writer alone; coverage test; keep provisional_v0;
+    version 1; no Decision).
+  - >-
+    Forks decided: admin signing -> bundle the transport fix (Benjamin's PlatformDev-default rule 2026-10-29 13:24Z, card
+    closed as option 1); scope writer only, reader follows via rec-4706 (Decision 118 per-contract graduation; the reader's
+    log line lacks verb and error_type).
+  - >-
+    Related residuals stay with their owners: rec-4317 (C6 emit outside try), rec-4492 (DuckDB spill dir), rec-4204
+    (non-URL invoke alarm), rec-4420 / T3.22 c4 (producer admission), rec-4482 (error-type EMF). rec-4692 (storage-substrate
+    row) belongs to the transcript-reads thread; this plan does not touch storage-substrate.yaml.
+  - >-
+    closes_criteria is empty: T2.36 is complete and no open roadmap criterion owns this re-ratification (roadmap criteria
+    rule, 2026-10-12).
+  - >-
+    Typed-error registry seeds: blob_grant_self_check and blob_store_access are asserted by the parametrized
+    tests/lambdas/ducklake_telemetry_writer/test_handler.py fault test (line ~618), not by a string literal; the error
+    classes live in src/common/ducklake_telemetry_blobstore.py.
+  - "Related-work check: scripts.ci_rca.red_overlap verdict clear (no reds) at plan write."
+  - "Lambda assessment: compute_affected_artifacts over the scope returns {} (no manifest-packaged file); V2 holds (Decision 79)."
+pre_implementation_checklist:
+  - Branch confirmed not on main.
+  - docs/PROJECT_CONTEXT.md read.
+  - Decision 118 and Decision 113 sections read (only the plan-cited ones needed).
+  - The writer contract, scripts/contracts.py, scripts/contracts_enforcement.py and the three capture modules read.
+  - Benjamin's approval of the execution-step contract text located in the planning thread before the contract edit.
+execution_steps:
+  - >-
+    1. Capture profile: in scripts/telemetry_capture/transport.py make_client and scripts/telemetry_capture/verify.py
+    credentials_available, call resolve_aws_profile(DEFAULT_SSO_PROFILE) (import DEFAULT_SSO_PROFILE from
+    scripts.aws_profile); in scripts/telemetry_capture/read_route.py _client, resolve_aws_profile(profile or
+    DEFAULT_SSO_PROFILE). Create tests/telemetry_capture/test_capture_profile.py with class TestCaptureSignsAsPlatformDev
+    (four tests: transport and verify sites under AWS_PROFILE=agent_platform_admin open agent_platform; read_route default
+    and explicit-profile cases; CI case with AWS_ACCESS_KEY_ID set gives None for all three sites). Fake boto3 the way
+    tests/telemetry_capture/test_transport.py and test_verify.py already do; monkeypatch env, never the real chain.
+  - >-
+    2. Create tests/checks/contracts/test_telemetry_writer_ratification.py, class TestWriterContractRatification, four tests:
+    test_contract_is_ratified_with_census (status, contract_version 1, ratified_via names the plan and Decision 118,
+    trigger_fired_at, census text present, both new audit invariant lines present, newest amendment_log entry is
+    governance_note_add with semantic_break false); test_typed_error_registry_matches_contract (TYPED_ERROR_TESTS key set ==
+    {(verb, key) for every verbs.<verb>.typed_errors key}); test_registry_nodes_resolve (each value 'path::test_name' names
+    an existing file containing 'def test_name', a parametrize suffix stripped); test_registry_check_fails_on_drift (pure
+    helper functions return problems on a synthetic contract with an extra typed error, a registry with an extra pair, and a
+    node naming a missing def). Seed TYPED_ERROR_TESTS by finding, per pair, a test that asserts that error_type for that
+    verb (or its exception class for the blob faults); prefer tests under tests/lambdas/ducklake_telemetry_writer/.
+  - >-
+    3. Contract header (docs/contracts/ducklake_telemetry_writer.yaml, contract block): replace `status: provisional_v0`
+    with these three lines, filling <BUILD_DATE> with the build commit's UTC date (YYYY-MM-DD):
+      status: ratified
+      ratified_at: "<BUILD_DATE>"
+      ratified_via: >-
+        Step 10 multi-perspective critique + PLAN-ratify-telemetry-writer-contract merge to main (re_ratification_trigger
+        production_invocations >= 500 fired 2026-10-29; Decision 118)
+  - >-
+    4. provisional_v0 block: after `re_ratification_owner: "human + Step 10 multi-perspective critique"` add, at the same
+    indent:
+      trigger_fired_at: "2026-10-29"
+      ratification_census: >-
+        Production traffic from the flip (2026-10-27T11:39:15Z) to 2026-10-29: 1,836 AWS/Lambda Invocations, Errors 0,
+        Url5xxCount 0; 1,835 C6 lines, one per answered invocation. Every contract verb answered 200 (append_telemetry 865,
+        describe 750, register_project 156, register_tenant 22, begin_blobs 8, provision_telemetry 8). Typed errors seen:
+        bad_request and the unknown-action 400 (gate probes) and one tenant_unresolved (the first append after the flip,
+        before registration). Limits reached: 2,000 rows in one table batch and 5,205,449 of 5,242,880 invoke bytes. 69% of
+        requests were PlatformAdmin-signed through the ADMIN environment's AWS_PROFILE until turn capture was pinned to
+        PlatformDev. Every other declared typed error is held by the test tests/checks/contracts/test_telemetry_writer_ratification.py
+        names for it.
+  - >-
+    5. audit_invariants: (a) append to the end of the line that starts "No request that reaches the handler answers the
+    Function URL's 502" the sentence " The C6 line's own emission is the one handler-level exception, declared below
+    (rec-4317)." (b) insert directly after that line:
+      - "Declared residual (rec-4317): handler() emits the C6 line after the answer is computed and outside any try, so an exception while building or printing that line would surface as the runtime 502. Production showed none: 1,835 C6 lines for 1,835 answered invocations from the flip to 2026-10-29."
+    (c) append as the last audit_invariants item:
+      - "Principal classes: routine traffic is signed by github_ci_branch (CI's ambient credentials) or PlatformDev; turn capture resolves the agent_platform (PlatformDev) profile, never the ambient AWS_PROFILE (scripts/telemetry_capture). PlatformAdmin can still invoke the URL as the unbounded operator (Decision 144 cl.3, Decision 230 cl.5, Decision 213's residual owned by rec-4204); the handler does not refuse it, and the C6 line's caller_role shows it. Admitting another producer identity follows rec-4420 (T3.22 c4)."
+  - >-
+    6. amendment_log: insert as the FIRST entry (the log is newest first):
+      - date: "<BUILD_DATE>"
+        semantic_break: false
+        change_class: governance_note_add
+        summary: >-
+          PLAN-ratify-telemetry-writer-contract: status provisional_v0 -> ratified after the re-ratification trigger
+          (production_invocations >= 500) fired on 2026-10-29. provisional_v0 keeps its trigger and gains trigger_fired_at
+          and the production census. audit_invariants add the principal-classes line (turn capture now signs as
+          PlatformDev) and the rec-4317 residual, and the no-502 line points at it. Every declared typed error is pinned to
+          an asserting test.
+        migration_story: >-
+          No verb, request, response or error changes. Turn capture signs as PlatformDev instead of the ambient AWS_PROFILE
+          role; the tenant is the signed account (Decision 200), so rows land in the same tenant and only caller_role
+          changes.
+  - Execute the Verification Plan -- run steps 1-5 before handoff; loop until they pass; stop and RCA on an unrecoverable failure (Decision 55).
+  - >-
+    Ask Benjamin for his word on the merge (paste the contract diff inline in the thread); squash-merge once CI is green and
+    he approves; then run VP step 6.
+  - "Report: contract ratified (status, census), typed-error registry size, capture profile fix, VP results incl. PROBE_CALLERS."
+rollback: >-
+  The capture-profile fix reverts on its own (git revert of its files). The contract cannot simply revert: the CD.25 drift
+  gate forbids ratified -> provisional_v0 (scripts/contracts.py _ALLOWED_TRANSITIONS), so a ratification found wrong is
+  corrected by an amendment_log-recorded amendment, or by deprecating or superseding the contract with a fresh
+  contract_version. No data, IAM or deploy state changes.
