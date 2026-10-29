@@ -179,16 +179,16 @@ class TestPlannerReads:
         text = _text("oidc.tf")
         tfvars = _sid_in_hcl(text, "SecretParameterTfvarsRead")
         assert 'actions   = ["ssm:GetParameter"]' in tfvars
-        assert f'"{_PREFIX}agent-platform-terraform-personal-tfvars"' in tfvars
+        assert _parameter_arns(tfvars) == [f"{_PREFIX}agent-platform-terraform-personal-tfvars"]
         meta = _sid_in_hcl(text, "SecretParameterMetadataRead")
         assert 'actions   = ["ssm:ListTagsForResource"]' in meta
-        assert f'"{_PREFIX}ducklake-neon-catalog-dsn"' in meta
+        assert _parameter_arns(meta) == [f"{_PREFIX}ducklake-neon-catalog-dsn"]
         assert "condition" not in tfvars + meta
 
     def test_neon_key_and_dsn_reads_are_drift_session_only(self) -> None:
         stmt = _sid_in_hcl(_text("oidc_pipeline_roles.tf"), "DriftSessionSecretParameterRead")
         assert 'actions = ["ssm:GetParameter"]' in stmt
-        assert f'"{_PREFIX}neon-api-key"' in stmt and f'"{_PREFIX}ducklake-neon-catalog-dsn"' in stmt
+        assert _parameter_arns(stmt) == [f"{_PREFIX}neon-api-key", f"{_PREFIX}ducklake-neon-catalog-dsn"]
         assert '"*:${local.convergence_writer_session_name}"' in stmt
         assert 'variable = "aws:userid"' in stmt and 'test     = "StringLike"' in stmt
 
