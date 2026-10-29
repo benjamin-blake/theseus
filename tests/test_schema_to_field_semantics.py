@@ -183,7 +183,7 @@ class TestReconcileScopeSubset:
         )
 
     def test_invalid_reconcile_scope_raises(self) -> None:
-        with pytest.raises(ValueError, match="reconcile_scope"):
+        with pytest.raises(ValueError, match="telemetry_catalog"):
             _enforce_reconcile_pending_subset(
                 "ops_decisions",
                 {"reconcile_scope": "bogus", "pending_reconcile": {}, "reconciled": {}},

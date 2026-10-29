@@ -1115,6 +1115,8 @@ conditions:
 
 **Related:** Decision 216, 143, 213, 210, 204, 126, 55, 177, 181, 101.
 
+[Amendment 2026-10-29: coverage -- clause 3's production ordering is pipeline-enforced (PLAN-telemetry-top-level-agent-run): a declared telemetry column stays in its table's pending_reconcile (reconcile_scope telemetry_catalog) until the owner-login provision_telemetry_catalog response lists it as added; the merge-time reconcile-pending gate fails a column added without that entry, and the governed deploy holds the production telemetry writer and reader while any entry is pending (validate_reconcile_pending_gate --telemetry-hold). Clause 2's smoke ordering stays the writer's 422 backstop.]
+
 ---
 
 ## Decision 223: One Terraform state per applier -- PlatformDev, PlatformAdmin and their inline policies move to the admin-only terraform/bootstrap root (amends Decision 180 clause 6 and Decision 183 point 4) (Decided)
