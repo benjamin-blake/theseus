@@ -2,13 +2,13 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
-## Decision 239: Agents read production transcript text masked, through a dedicated content reader whose code only the operator can deploy (amends Decisions 236, 230, 81 and 91) (Decided)
+## Decision 239: Agents read production transcript text masked, through a dedicated content reader whose code only the operator can deploy (amends Decisions 236, 230, 126, 81 and 91) (Decided)
 
 ```yaml
 number: 239
 status: Decided
 decided_date: "2026-10-29"
-amends: [236, 230, 81, 91]
+amends: [236, 230, 126, 81, 91]
 significance:
   value: numbered_decision
   justification: >-
@@ -42,11 +42,11 @@ requests (rec-2827), and IAM grants invoke per function, not per verb.
 4. **Access log and window.** Each read writes one value-free log line (role name, verb, session, row, byte and mask
    counts, request id; never an ARN, account id or text) to a log group kept at least 90 days. Reads cover sessions
    started in the last 90 days. How long storage keeps transcripts is the operator's decision (rec-4698).
-5. **Change lock.** The content reader's code and configuration change only through a job the operator approves in a
-   reviewer-gated GitHub Environment, under a role bound to that environment and an exact job_workflow_ref on main
-   (Decision 238 cl.2). A permissions-boundary Deny refuses every other identity. The job builds from its own checkout
-   and deploys the digest it recorded (Decision 154). CODEOWNERS, boundary_patterns, the detector ratchet and a
-   protected-path edit hook are early warnings until rec-2827. rec-4696 delivers the lock and the deploy.
+5. **Change lock (amends 126 cl.1).** The content reader's code and configuration change only through a job the
+   operator approves in a reviewer-gated GitHub Environment, under a role bound to that environment and an exact
+   job_workflow_ref on main (Decision 238 cl.2). A permissions-boundary Deny refuses every other identity. The job
+   deploys the digest it built (Decision 154). CODEOWNERS, boundary_patterns, the detector ratchet and a protected-path
+   edit hook are early warnings until rec-2827. rec-4696 delivers the lock and the deploy.
 6. **Residuals.** The telemetry reader, writer and maintenance functions can read inline content and still deploy
    without review (operator's choice 2026-10-29; owner rec-2827). Admin credentials bypass the boundary (owner: the
    security project's thread-startup work; an alarm on the access log flags unexpected roles). Masked text re-enters
@@ -59,9 +59,9 @@ requests (rec-2827), and IAM grants invoke per function, not per verb.
 
 **Rationale:** Masking in the deployed function and a deploy only the operator approves are the two controls an agent
 holding the operator's GitHub identity cannot satisfy for itself, provided no session token can approve a pending
-deployment (Decision 143 cl.1; rec-4695's probe, pending). Rejected: masking in the client (bypassable); one function
-with a raw verb (IAM cannot split verbs); gating every telemetry function now (daily approvals for paths rec-2827
-closes anyway).
+deployment (Decision 143 cl.1; rec-4695: the App lacks the grant). Rejected: masking in the client (bypassable); one
+function with a raw verb (IAM cannot split verbs); gating every telemetry function now (daily approvals for paths
+rec-2827 closes anyway).
 
 **Coverage (Decision 181 cl.2):** cl.1 -- the content reader's served-verb and bundle tests, and rec-4696's IAM pins;
 cl.2 -- test_every_served_byte_is_masked and validate_detector_ratchet; cl.3 -- a non-feature held by rec-4696's
@@ -91,8 +91,7 @@ conditions:
     description: "The permissions boundary passes Decision 230's 5,632 bytes: re-decide where the fence lives."
 ```
 
-**Related:** Decisions 236, 230, 81, 91 (amended), 143, 154, 181, 199, 213, 235, 238, 101.
-
+**Related:** Decisions 236, 230, 126, 81, 91 (amended), 143, 154, 181, 199, 213, 235, 238, 101.
 ---
 
 ## Decision 238: No agent-controlled identity reads Terraform state or saved plans -- the speculative plan runs from main's workflow on pull_request_target under a dedicated environment- and workflow-bound role and shows names only (amends Decisions 92 and 144) (Decided)
@@ -7757,6 +7756,8 @@ mutation. `deploy-paths.yaml`'s admin_out_of_band.scoped_login_provisioning inde
 
 [Amendment 2026-10-20, Decision 230: the admin tier admits provision_catalog_owner and provision_telemetry_catalog for an ADMIN-container agent under explicit human direction.]
 
+
+[Amendment 2026-10-29, Decision 239: the telemetry content reader's operator-approved deploy job changes its code and configuration, outside cl.1's UpdateFunctionCode-only scope.]
 ---
 
 ## Decision 125: Ratify decoupling DuckLake Lambda code deploys from terraform/personal infra apply (environment-taxonomy.md section 5 conformance) (Decided)
