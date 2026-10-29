@@ -3,7 +3,7 @@
 Loaded automatically when Claude reads or edits files in this directory. Universal rules in
 repo-root `CLAUDE.md` and `terraform/CLAUDE.md` still apply.
 
-This module manages GitHub repository settings for the repository named by `var.repository_name` via the
+This module manages GitHub repository settings for `benjamin-blake/theseus` via the
 `integrations/github` Terraform provider: GitHub Advanced Security (secret scanning + push
 protection), the `main` branch-protection ruleset, Actions permissions, and the
 `tf-gated-apply` GitHub Environment (CD.35 Wave 3 / T2.22 / Decision 92).

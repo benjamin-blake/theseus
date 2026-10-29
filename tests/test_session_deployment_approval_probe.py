@@ -420,3 +420,42 @@ class TestCoverageGaps:
     def test_read_failure_is_probe_invalid(self, monkeypatch, capsys) -> None:
         _, out = leg(monkeypatch, capsys, FakeOpener({}))
         assert out["verdict"] == "PROBE_INVALID"
+
+    def test_run_cmd_runs_a_subprocess(self) -> None:
+        assert probe._run_cmd(["echo", "hi"], None, None) == (0, "hi\n")
+
+    def test_gh_cli_failing_to_launch_is_inconclusive_after_send(self, monkeypatch, capsys) -> None:
+        def boom(a: Any, s: Any, e: Any) -> Any:
+            raise OSError("gh missing")
+
+        monkeypatch.setattr(probe, "_run_cmd", boom)
+        _, out = invoke(monkeypatch, capsys, self._post_routes(), "--leg", "gh-cli", "--run-id", "5")
+        assert out["verdict"] == "INCONCLUSIVE"
+
+    def test_missing_token_file_is_unavailable(self, monkeypatch, capsys) -> None:
+        _, out = invoke(monkeypatch, capsys, FakeOpener({}), "--leg", "token-file", "--run-id", "5")
+        assert out["verdict"] == "UNAVAILABLE"
+
+    def test_run_read_failure_is_probe_invalid(self, monkeypatch, capsys) -> None:
+        r = routes(FakeResponse(200, []))
+        r[("GET", "/runs/5")] = FakeResponse(404, {"message": "x"})
+        _, out = leg(monkeypatch, capsys, FakeOpener(r))
+        assert out["verdict"] == "PROBE_INVALID"
+
+    def test_unreachable_pending_read_without_id_is_probe_invalid(self, monkeypatch, capsys) -> None:
+        r = routes(FakeResponse(200, []))
+        del r[("GET", "/runs/5/pending_deployments")]
+        r[("GET", "/pending_deployments")] = urllib.error.URLError("down")
+        _, out = leg(monkeypatch, capsys, FakeOpener(r))
+        assert out["pending_read"] == "REFUSED"
+        assert out["verdict"] == "PROBE_INVALID"
+
+    @pytest.mark.parametrize("mode", [["--capability"], ["--observe", "--run-id", "5"]])
+    def test_read_modes_reject_repo_mismatch(self, monkeypatch, capsys, mode) -> None:
+        opener = FakeOpener({("GET", f"/repos/{REPO}"): FakeResponse(200, {"full_name": "x/y"})})
+        _, out = invoke(monkeypatch, capsys, opener, *mode)
+        assert out["verdict"] == "PROBE_INVALID"
+
+    def test_capability_without_credential_is_unavailable(self, monkeypatch, capsys) -> None:
+        _, out = invoke(monkeypatch, capsys, FakeOpener({}), "--capability", "--leg", "env:GH_TOKEN")
+        assert out["verdict"] == "UNAVAILABLE"

@@ -322,17 +322,14 @@ def _select_environment(ctx: _Ctx, run_id: int, wait: int, given_id: int | None)
 def _run_leg(ctx: _Ctx, run_id: int, wait: int, given_id: int | None) -> dict[str, Any]:
     if ctx.tx is None:
         return _finish(ctx, "UNAVAILABLE", ctx.record.pop("unavailable", "credential absent"))
-    try:
-        if not _check_repo(ctx):
-            return _finish(ctx, "PROBE_INVALID", "repository read failed, redirected or named another repository")
-        problem = _check_run(ctx, run_id)
-        if problem:
-            return _finish(ctx, "PROBE_INVALID", problem)
-        env_id, can_approve, problem = _select_environment(ctx, run_id, wait, given_id)
-        if env_id is None:
-            return _finish(ctx, "PROBE_INVALID", problem)
-    except _NoResponse as exc:
-        return _finish(ctx, "PROBE_INVALID", f"read failed: {exc}")
+    if not _check_repo(ctx):
+        return _finish(ctx, "PROBE_INVALID", "repository read failed, redirected or named another repository")
+    problem = _check_run(ctx, run_id)
+    if problem:
+        return _finish(ctx, "PROBE_INVALID", problem)
+    env_id, can_approve, problem = _select_environment(ctx, run_id, wait, given_id)
+    if env_id is None:
+        return _finish(ctx, "PROBE_INVALID", problem)
     try:
         resp = _post_approval(ctx, run_id, env_id)
     except _NoResponse as exc:
@@ -357,13 +354,10 @@ def _env_write_capability(maps: list[dict[str, Any]] | None) -> str:
 def _run_capability(ctx: _Ctx) -> dict[str, Any]:
     if ctx.tx is None:
         return _finish(ctx, "UNAVAILABLE", ctx.record.pop("unavailable", "credential absent"))
-    try:
-        if not _check_repo(ctx):
-            return _finish(ctx, "PROBE_INVALID", "repository read failed, redirected or named another repository")
-        inst = ctx.read("installations", "/user/installations")
-        env = ctx.read("environment", f"/repos/{ctx.repo}/environments/{_ENV_NAME}")
-    except _NoResponse as exc:
-        return _finish(ctx, "PROBE_INVALID", f"read failed: {exc}")
+    if not _check_repo(ctx):
+        return _finish(ctx, "PROBE_INVALID", "repository read failed, redirected or named another repository")
+    inst = ctx.read("installations", "/user/installations")
+    env = ctx.read("environment", f"/repos/{ctx.repo}/environments/{_ENV_NAME}")
     maps = None
     if inst is not None and inst.status == 200 and isinstance(inst.body, dict):
         maps = [
@@ -383,13 +377,10 @@ def _run_capability(ctx: _Ctx) -> dict[str, Any]:
 
 
 def _run_observe(ctx: _Ctx, run_id: int) -> dict[str, Any]:
-    try:
-        if not _check_repo(ctx):
-            return _finish(ctx, "PROBE_INVALID", "repository read failed, redirected or named another repository")
-        approvals = ctx.read("approvals", f"/repos/{ctx.repo}/actions/runs/{run_id}/approvals")
-        jobs = ctx.read("jobs", f"/repos/{ctx.repo}/actions/runs/{run_id}/jobs")
-    except _NoResponse as exc:
-        return _finish(ctx, "PROBE_INVALID", f"read failed: {exc}")
+    if not _check_repo(ctx):
+        return _finish(ctx, "PROBE_INVALID", "repository read failed, redirected or named another repository")
+    approvals = ctx.read("approvals", f"/repos/{ctx.repo}/actions/runs/{run_id}/approvals")
+    jobs = ctx.read("jobs", f"/repos/{ctx.repo}/actions/runs/{run_id}/jobs")
     if approvals is not None and approvals.status == 200 and isinstance(approvals.body, list):
         ctx.record["approvals"] = [
             {"state": a.get("state"), "user": (a.get("user") or {}).get("login")} for a in approvals.body
