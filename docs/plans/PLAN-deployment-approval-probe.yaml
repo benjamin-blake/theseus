@@ -30,8 +30,8 @@ scope:
       true / custom_branch_policies = false. No prevent_destroy (it is not a control). The operator creates the
       Environment in the GitHub UI first (infrastructure_dependencies); this resource codifies it and is adopted through
       the import block below on the next operator apply of this root, with no change. A header comment says: inert probe
-      target for rec-4695, created in the UI and imported, never referenced by any OIDC trust, never by a job holding
-      id-token or secrets. Also correct tf_gated_apply's stale header lines that say the apply role
+      target for rec-4695, created in the UI and imported (later terraform/github PR plans show it as an import until the
+      operator next applies the root), never referenced by any OIDC trust, never by a job holding id-token or secrets. Also correct tf_gated_apply's stale header lines that say the apply role
       trust is "pinned to refs/heads/main" and "the sub is still refs/heads/main": Decision 94 made the trust list both
       ref:refs/heads/main and environment:tf-gated-apply; and its lines saying protected_branches = true restricts the
       job to main, which the tf_trusted_plan note in the same file contradicts under a ruleset-only main (comment-only;
@@ -54,12 +54,15 @@ scope:
       gate opened. Job `bot-attempt`: if inputs.bot_leg, no environment, permissions exactly {contents: read, actions:
       read, deployments: write}, timeout-minutes 10; checkout, then `python3 -m scripts.session.deployment_approval_probe
       --leg ci-bot --repo "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --wait-pending 180` with GITHUB_TOKEN from secrets.GITHUB_TOKEN; the step
-      writes the JSON line to $GITHUB_STEP_SUMMARY and the job fails on any nonzero exit (APPROVED, PROBE_INVALID or
+      tees the JSON line to stdout (so mcp__github__get_job_logs can read it) and to $GITHUB_STEP_SUMMARY under
+      `set -o pipefail`, and the job fails on any nonzero exit (APPROVED, PROBE_INVALID or
       INCONCLUSIVE; no `|| true`, no continue-on-error). No
       id-token permission anywhere, no other secret, no setup-python install (the module is stdlib-only, so
       validate_workflow_dependency_install needs no install step). Header comment: inert, alarm-free manual probe for
       rec-4695; never a required check (Decision 83); never add id-token or secrets; separate from
-      tf-gated-apply-prototype.yml on purpose (approving that one assumes the apply role through OIDC).
+      tf-gated-apply-prototype.yml on purpose (approving that one assumes the apply role through OIDC); dispatch from
+      main only; re-run the probe (plan VP 5-9) after any change to the Claude GitHub App's permissions, repo ownership
+      or admins, or the reviewer set.
   - file: scripts/session/deployment_approval_probe.py
     action: Create
     purpose: >-
@@ -82,7 +85,8 @@ scope:
       bot-attempt job is itself running), then poll GET pending_deployments up to --wait-pending seconds until exactly
       one pending entry exists and it is the environment named deployment-approval-probe (record its id,
       current_user_can_approve and the reviewer logins). When that read is proxy-blocked (the proxy blocks environment
-      reads, github-org-transfer.yaml), the leg records pending_read PROXY_BLOCKED and uses --environment-id (the id
+      reads, github-org-transfer.yaml) or refused by GitHub itself (a 403 with a request id), the leg records
+      pending_read PROXY_BLOCKED or REFUSED and uses --environment-id (the id
       the ci-bot leg read from GitHub, VP 7), with current_user_can_approve unknown; when both exist they must match.
       The run pin still holds: a probe-workflow run only ever has the probe Environment pending, so no other id can be
       approved. Any other failure -> PROBE_INVALID and no POST. The ci-bot leg always reports the environment id it
@@ -131,7 +135,8 @@ scope:
       pending probe entry (the ci-bot shape) proceeds to the POST; a proxy-blocked pending read with --environment-id
       proceeds with can_approve unknown, and a 422 then -> INCONCLUSIVE; a pending read whose id differs from
       --environment-id -> PROBE_INVALID; --capability maps an installation map to YES/NO and no map to UNKNOWN; --repo is
-      required; the POST body carries only the probe environment's id; an absent env variable, a placeholder token file, an
+      required. If the file would pass 500 SLOC, split it by concern (classification, pinning, hygiene) into sibling test
+      files, never a budget raise; the POST body carries only the probe environment's id; an absent env variable, a placeholder token file, an
       empty `git credential fill` answer -> UNAVAILABLE with no request sent; the proxy leg sends no Authorization
       header; a sentinel token value never appears in stdout, stderr or a raised exception's text for any leg; the module
       exposes no public function that takes an environment name or state; --capability and --observe send GET only.
@@ -161,17 +166,14 @@ scope:
   - file: terraform/github/CLAUDE.md
     action: Modify
     purpose: >-
-      Add a short "deployment-approval-probe Environment" section: what it is (inert rec-4695 probe target mirroring
-      tf-gated-apply), that it was created in the GitHub UI and is adopted by its import block on the next run of the
-      existing apply runbook (same gated_apply_reviewer_user_ids var, no new variable),
-      that dispatches come from main, that no OIDC trust or secret may ever reference it, and when to re-run the probe
-      (any change to the Claude GitHub App's permissions, to repo ownership or admins, or to the reviewer set; command
-      pointer to the plan's VP 5-9). Also correct the "State reconcile (rec-3136)" paragraph, which still says "the other
-      four addresses" and "5 to import" while imports.tf holds 7 blocks (8 after this plan): name the count from
-      imports.tf instead of restating addresses; and line 6's pre-transfer repository name, which should name the root's
-      repository variable instead of a literal. Say that later terraform/github PR plans show "1 to import" for this
-      resource until the operator next applies the root, and that tf-gated-apply's protected_branches = true may not
-      restrict deploys to main under the ruleset-only main.
+      Net-non-positive in bytes (5,238 of a 5,253-byte prose budget, config/prose_budgets.yaml, which stays out of
+      scope; validate_prose_limits must stay green). Add one line: "deployment-approval-probe: inert rec-4695 probe
+      Environment, created in the UI and imported; see its block in environments.tf and the workflow header." Pay for it
+      by replacing the "State reconcile (rec-3136)" address restatement ("the other four addresses", "5 to import", stale
+      against 7 blocks, 8 after this plan) with a count pointer to imports.tf, by replacing line 6's pre-transfer
+      repository name with a pointer to the repository variable, by correcting the tf-gated-apply section's claim that
+      protected_branches = true restricts the job to main (it may not under the ruleset-only main), and by trimming
+      tf-gated-apply "Key constraints" bullets that environments.tf already carries. Measure bytes before and after.
 bundled_recommendations: []
 followon_recs: []
 infrastructure_dependencies:
@@ -207,10 +209,12 @@ acceptance_criteria:
     (NOT_REVIEWER, TOKEN_LACKS_PERMISSION) listed apart from the proxy-blocked ones, a note on whether the explicit
     credential legs collapsed onto the proxy credential (same responses as the proxy leg), environment-write capability
     (NO, YES or UNKNOWN; UNKNOWN is an open residual, never a pass) and the named residuals. Verdict -- FAILS if any leg
-    is APPROVED; INCONCLUSIVE if a PROBE_INVALID or INCONCLUSIVE leg remains or the proxy leg was unavailable;
-    HOLDS_BY_GITHUB if every available session leg was refused by GitHub; HOLDS_BY_PROXY_POLICY if no leg approved but
-    at least one was only proxy-blocked (the control then rests on Anthropic's proxy policy, outside GitHub and this
-    repo).
+    is APPROVED or the control rerun showed RERUN_INHERITS_APPROVAL; INCONCLUSIVE if a PROBE_INVALID, INCONCLUSIVE or
+    NOT_RUN leg remains or the proxy leg was unavailable; HOLDS_BY_IDENTITY if every available session leg was
+    NOT_REVIEWER (GitHub refused the identity); HOLDS_BY_GRANT if every available session leg was refused by GitHub and
+    at least one only as TOKEN_LACKS_PERMISSION (the hold depends on the Claude GitHub App's permission grant, which the
+    operator can widen by accepting a new App permission); HOLDS_BY_PROXY_POLICY if no leg approved but at least one was
+    only proxy-blocked (the control then rests on Anthropic's proxy policy, outside GitHub and this repo).
 verification_plan:
   - step: 1
     phase: pre-deploy
@@ -274,7 +278,9 @@ verification_plan:
       Confirm the Environment before any dispatch. Gating evidence: VP 4's PR-time App plan (1 to import and no change on
       deployment_approval_probe, so its reviewers, prevent_self_review and branch policy match the resource) plus the
       operator's own read in Settings (HUMAN; the agent proxy blocks environment reads, github-org-transfer.yaml
-      transfer_window_checklist step 3). Then record the non-gating capability read.
+      transfer_window_checklist step 3), where the operator also records the Claude GitHub App's repository permissions
+      (Administration, Deployments, Actions), which resolves environment-write to YES or NO. Then record the non-gating
+      capability read.
     command: >-
       bin/venv-python -m scripts.session.deployment_approval_probe --repo otl-labs/ontheloop --capability --leg proxy
     expected: >-
@@ -300,7 +306,10 @@ verification_plan:
       job is waiting again.
     fix_if: >-
       No approval recorded or the job never ran (the probe cannot see an approval; stop). If the observe reads are
-      proxy-blocked, the operator confirms the same in the Actions UI and the result says the observation was manual.
+      proxy-blocked, the operator confirms the same in the Actions UI and the result says the observation was manual. If
+      the rerun's gated job starts without a new approval: record RERUN_INHERITS_APPROVAL, cancel, stop dispatching, and
+      report verdict FAILS to the operator (rerun_workflow_run is an MCP tool agents hold, so a rerun could replay an
+      approved tf-gated-apply run); the remedy is his.
     hermetic: false
   - step: 7
     phase: post-deploy
@@ -337,7 +346,9 @@ verification_plan:
       APPROVED on any leg: stop dispatching, cancel, record which leg, and bring the remedy to the operator.
       PROBE_INVALID because the proxy blocks the run read itself: stop the session legs and bring the read path to the
       operator (do not retry). Any other PROBE_INVALID or INCONCLUSIVE: fix the run selection and re-run that leg on a
-      fresh run once; a repeat is reported as not-HOLDS. A leg the session's safety check refuses to run is recorded
+      fresh run once; a repeat is reported as not-HOLDS. An INCONCLUSIVE caused by current_user_can_approve being
+      unknown is recorded as-is with GitHub's error message and VP 9's observation, never re-run (no run choice fixes
+      it). A leg the session's safety check refuses to run is recorded
       NOT_RUN with the refusal text, its run cancelled, and the sequence continues with the next leg.
     hermetic: false
   - step: 9
@@ -362,8 +373,8 @@ verification_plan:
       context plus the per-leg verdicts and run ids>" (plus --status closed --resolution "<verdict>" when the premise
       HOLDS); result JSON written to /mnt/project-files/deployment-approval-probe/RESULT.json
     expected: >-
-      rec-4695 carries the verdict. HOLDS_BY_GITHUB with environment-write NO: rec-4695 closed with the evidence
-      (re-run triggers live in terraform/github/CLAUDE.md, so no follow-on rec is needed). Any other verdict: rec-4695
+      rec-4695 carries the verdict. HOLDS_BY_IDENTITY with environment-write NO: rec-4695 closed with the evidence
+      (re-run triggers live in the probe workflow's header, so no follow-on rec is needed). Any other verdict: rec-4695
       stays open with the result, and the operator decides (whether proxy policy is enough, or the remedy); the report
       also points at Decision 233's reversal condition approval-authority-absent and T4.33 c3, which rest on the same
       premise.
@@ -372,9 +383,9 @@ verification_plan:
   - step: 11
     phase: pre-deploy
     action: Discharge the handoff obligation with a full-tier run to completion.
-    command: bin/venv-python -m scripts.validate
+    command: bin/venv-python -m scripts.validate && bin/venv-python -m scripts.checks.validation_result --verify-head
     expected: >-
-      exit 0 (includes the R3-workflow shell-body baseline, the ci_rca taxonomy coverage, the workflow dependency-install
+      exit 0 and a verified head attestation (includes the prose budget, the R3-workflow shell-body baseline, the ci_rca taxonomy coverage, the workflow dependency-install
       guard and the size budgets for the new workflow and environments.tf).
     fix_if: >-
       A failure in scope is fixed on the branch; never skip a test, relax an assertion or add a baseline entry to turn a
@@ -388,7 +399,7 @@ verification_plan:
     command: >-
       bin/venv-python -c "from src.common.ducklake_reader_client import make_reader, fetch_recs_by_ids;
       print(fetch_recs_by_ids(make_reader(profile='agent_platform'), ['rec-4695'])[0][0]['status'])"
-    expected: Status closed only for HOLDS_BY_GITHUB with environment-write NO; open with the result otherwise.
+    expected: Status closed only for HOLDS_BY_IDENTITY with environment-write NO; open with the result otherwise.
     fix_if: Status does not match the verdict; re-run VP 10's update.
     hermetic: false
 test_obligations:
@@ -444,7 +455,7 @@ constraints:
 context:
   - "Decision-scout verdict: FLAGS_FOUND (Decisions triaged: 190 of 190; Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1). CITE: Decision 92, 94, 143, 126, 233, 24."
   - "Scout flags handled: 233 NOTE (approve call pinned to the probe environment, no exported approve verb, tested); 202 SPIRIT NOTE (GitHub's approvals record and the operator's UI check are the authority, script JSON supporting); 24 (admin bypass default inherited by the mirror)."
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE (round 1, 12 findings fixed), REVISE (round 2, 4 required + 5 recommended fixed), REVISE (round 3, 1 required + 7 recommended fixed), confirming round pending"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE (round 1, 12 findings fixed), REVISE (round 2, 4 required + 5 recommended fixed), REVISE (round 3, 1 required + 7 recommended fixed), REVISE (round 4 confirming, 3 required + 4 recommended fixed; escalated to the operator per the critique round cap)"
   - "red_overlap: clear (no open reds, slo_hours 4)."
   - "Fable advice: /mnt/project-files/deployment-approval-probe/fable-independent-advice.md (forks F1-F6 adopted)."
   - "Known limits stated in the result: admin bypass via REST is untestable while the reviewer is also the admin; a clean result depends on the GitHub App's permission grant, which can change; github_ci_apply also trusts ref:refs/heads/main (terraform/bootstrap/github_ci_apply.tf), so any ungated main job can assume the apply role and the Environment gate is not the role boundary (Decision 94)."
@@ -464,6 +475,13 @@ execution_steps:
   - Write the script, both test files, the workflow, the Terraform resource, import block and comment fix, the
     taxonomy row, the r3_workflows baseline entries and the CLAUDE.md section; run VP 1-3, the fast tier and VP 11 (full
     tier, before the commit that hands off); open the PR.
+  - 'Closure, each fact reported separately and in order (implement skill Commit Flows; docs/contracts/git-ops.yaml):
+    (a) readiness: bin/venv-python -m scripts.session.github_readiness (an unknown result is never PASS); (b) set
+    implementation_declared true, commit, git fetch origin main and git rebase origin/main (STOP on conflict); (c) VP 11
+    on the committed, rebased, clean tree; (d) a scratchpad JSON holding exactly the
+    scripts.session.postflight_evidence.CATEGORIES keys, then bin/venv-python -m scripts.session.postflight --evidence
+    <that file>; (e) the code-review verdict; (f) push, the PR URL, the CI outcome and the merge SHA (no Resolves
+    trailer).'
   - VP 4 on the PR; merge under the standing rule once code review is PROCEED and CI is green (no DuckLake deploy).
   - Run VP 5 (the operator created the Environment in the UI before the PR and confirms it in Settings). Do not
     dispatch before VP 5 passes.
