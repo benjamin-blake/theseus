@@ -110,12 +110,12 @@ def test_t2_36_c2_c4_name_the_claim_check() -> None:
     item = next(i for i in roadmap["tier_items"] if i["id"] == "T2.36")
     criteria = {c["id"]: norm(c["text"]) for c in item["exit_criteria"]}
     prefix = "[Re-grounded 2026-10-12, PLAN-telemetry-blob-route:"
-    for name, original in (
-        ("c2", "no telemetry producer stages to S3"),
-        ("c4", "rg 'ops-outbox' finds no active write callers"),
-    ):
+    c4_tail = "rg 'ops-outbox' finds no active write callers"
+    for name, original in (("c2", "no telemetry producer stages to S3"), ("c4", c4_tail)):
         assert criteria[name].startswith(prefix) and "claim-check content route, not staging" in criteria[name], name
         assert original in criteria[name], name
     assert "rec-4292" in criteria["c4"] and "no object is ever ingested into the catalog" in criteria["c4"]
+    annotation = criteria["c4"].split(c4_tail, 1)[1]
+    assert annotation.startswith(" [Annotated ") and "blob-root write fence" in annotation, annotation
     assert "rg finds no staging-writer callers on any telemetry path" in criteria["c2"]
     assert criteria["c1"].startswith("Four telemetry tables") and criteria["c5"].startswith("[Re-grounded 2026-09-24")
