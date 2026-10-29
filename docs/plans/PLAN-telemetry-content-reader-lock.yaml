@@ -22,7 +22,11 @@ phase: >-
   PLAN-telemetry-content-reader (#1718) and PLAN-telemetry-top-level-agent-run's production column hold (#1717,
   validate_reconcile_pending_gate --telemetry-hold); all three are merged. closes_criteria is empty.
 closes_criteria: []
-amends: []
+amends:
+  - dec:239#4
+  - dec:239#6
+  - dec:202#3
+  - dec:101#b
 introduces:
   - telemetry-content-deploy
   - DenyTelemetryContentChange
@@ -80,7 +84,7 @@ scope:
       agent-platform-alerts topic by ARN template (Decision 239 cl.6, the platform_security_alarms.tf shape). The
       description names the Logs Insights query over (c) that answers who read what.
       (j) aws_cloudwatch_metric_alarm.telemetry_content_errors, platform-security-telemetry-content-errors (in the
-      family, so no CI alarm grant reaches it; PINNED-7): Errors plus Url5xxCount > 0 over 15 minutes (the telemetry
+      family, so no CI alarm write grant reaches it; PINNED-7): Errors plus Url5xxCount > 0 over 15 minutes (the telemetry
       reader's shape, Decision 55).
       Every ARN is built from var.account_id and var.aws_region. Nothing names an account id.
   - file: terraform/bootstrap/telemetry_content_placeholder.zip
@@ -282,7 +286,9 @@ scope:
       The cli flags list gains --content-reader-only. deploy_channels gains telemetry_content_reader: root
       terraform/bootstrap, channel_class operator_gated, governed_channel .github/workflows/deploy-telemetry-content.yml,
       with a note naming the reviewer-gated environment and Decision 239 cl.5. It has no break_glass_only command: an
-      admin update is the Decision 239 cl.6 residual. An amendment_log row names rec-4696.
+      admin update is the Decision 239 cl.6 residual. The note also says the function's pre-deploy code is a committed
+      placeholder zip named by filename in terraform/bootstrap, deliberately not an S3 object, so no CI-writable bytes
+      can supply its code (critique round 2 M1). An amendment_log row names rec-4696.
   - file: docs/contracts/deploy-paths.yaml
     action: Modify
     purpose: >-
@@ -351,7 +357,8 @@ scope:
       (tier: not_a_gate, ci_rca: excluded: a rejected or cancelled run concludes failure or cancelled by an operator
       action, not a regression, and the operator who approved a run sees its result). The file stays at 500
       effective lines by joining wrapped continuation lines of existing rationales, the #1709 precedent. There is no
-      budget raise.
+      budget raise. PLAN-ci-policy-plan-time-lambda-arns (#1725) also adds a row to this file; whichever build lands
+      second recovers its line the same way (VP 3's validate_structural_size_limits catches it).
   - file: config/composite_action_body_baseline.yaml
     action: Modify
     purpose: >-
@@ -566,10 +573,11 @@ scope:
     purpose: >-
       Three dated trailers, verbatim from PINNED-7 (operator-approved Decision text; critique round 2 H1). Decision 239
       gains one: cl.4's log group, with the content reader's metric filter and alarms, joins the platform-security-*
-      family (amends Decision 101 point (b) and Decision 202 cl.3, as 202 and 237 each extended 101(b) by numbered
-      decision), and cl.6 gains the layer-provenance residual (rec-4742). Decisions 202 and 101 each gain a back-pointer
-      naming Decision 239 (validate_supersession_annotations). No body, envelope, title or index row changes, so
-      docs/decisions-index.json is unchanged (validate_decisions_index_freshness). Accretion is metered WARN-only
+      family (amends Decision 101 point (b) and Decision 202 cl.3; 202 and 237 each extended 101(b) through a numbered
+      Decision), and cl.6 gains the layer-provenance residual (rec-4742). Decisions 202 and 101 each gain a back-pointer
+      naming Decision 239 (validate_supersession_annotations reads the trailer's "amends Decision 101" as an edge). 239's
+      title and envelope stay as ratified, so the new edges live in the trailers, not in docs/decisions-index.json, which
+      is unchanged (validate_decisions_index_freshness). Accretion is metered WARN-only
       (decision-entry.yaml size_governance, the plan-2 precedent): three amendment-delta WARNs, 239 at 6,540 B, 202 at
       7,982 B and 101 at 9,038 B. Post-merge, ops_decisions is backfilled (VP 20).
 bundled_recommendations:
@@ -609,7 +617,8 @@ acceptance_criteria:
     metric-filter change to the group, or an alarm-definition change to its alarms, pages the detector-tamper alarm.
   - The rendered boundary stays at or under 5,632 bytes.
   - >-
-    Decisions 239, 202 and 101 carry PINNED-7's trailers verbatim with no Decision check failing (VP 19), and
+    Decisions 239, 202 and 101 carry PINNED-7's trailers verbatim, each a whole line equal to PINNED-7's, with no
+    Decision check failing (VP 19), and
     ops_decisions holds them after the post-merge backfill (VP 20).
   - >-
     rec-4696 closes on its acceptance test (VP 17), with the function live and a masked golden read-back that matches as
@@ -634,7 +643,8 @@ verification_plan:
       tests/checks/ci_guards/test_validate_actions_evidence.py tests/checks/ci_guards/test_validate_actions_account_id_masking.py
       tests/checks/iam_tf/test_validate_iam_policy_size.py tests/checks/iam_tf/test_validate_secret_parameter_grants.py
       tests/checks/contracts/test_validate_github_org_transfer.py tests/checks/ci_guards/test_validate_ci_rca_adjudication.py
-      tests/checks/ci_guards/test_validate_ci_rca_taxonomy_accounting.py tests/ci_rca/taxonomy/test_load_and_classify.py -q
+      tests/checks/ci_guards/test_validate_ci_rca_taxonomy_accounting.py tests/ci_rca/taxonomy/test_load_and_classify.py
+      tests/checks/iam_tf/test_validate_terraform_no_build_artifact_reads.py -q
     expected: exit 0. Before the change the new test files do not exist and the modified pins fail.
     fix_if: >-
       Fix the HCL, workflow, script or code; never relax a pin. The selection names every reader of the edited files the
@@ -670,13 +680,14 @@ verification_plan:
       from scripts.checks.contracts.validate_github_org_transfer import validate_github_org_transfer as j;
       from scripts.checks.structural.size_limits import validate_structural_size_limits as k;
       from scripts.checks.ci_guards.validate_ci_rca_adjudication import validate_ci_rca_adjudication as l;
-      f=[]; [x(f) for x in (a, b, c, d, e, g, h, i, j, k, l)]; print('LOCK_FAILS', len(f)); assert not f, f"
+      from scripts.checks.iam_tf.validate_terraform_no_build_artifact_reads import validate_terraform_no_build_artifact_reads as m;
+      f=[]; [x(f) for x in (a, b, c, d, e, g, h, i, j, k, l, m)]; print('LOCK_FAILS', len(f)); assert not f, f"
     expected: LOCK_FAILS 0.
     fix_if: Read the named predicate; fix the tree, never the predicate.
     hermetic: true
     expected_literals: ["LOCK_FAILS 0"]
     graduation: waive
-    graduation_waiver_reason: All eleven are registered checks that run in every tier (each pre=True), so a registry entry would duplicate them.
+    graduation_waiver_reason: All twelve are registered checks that run in every tier (each pre=True), so a registry entry would duplicate them.
   - step: 19
     phase: pre-deploy
     action: PINNED-7's three trailers are in docs/DECISIONS.md and every Decision check is green.
@@ -685,15 +696,22 @@ verification_plan:
       from scripts.checks.decisions.validate_decision_entry_conformance import validate_decision_entry_conformance as c;
       from scripts.checks.decisions.validate_supersession_annotations import validate_supersession_annotations as a;
       from scripts.checks.decisions.validate_decisions_index_freshness import validate_decisions_index_freshness as x;
-      f=[]; s(f); c(f); a(f); x(f); t=pathlib.Path('docs/DECISIONS.md').read_text(encoding='utf-8');
-      n=len(re.findall(r'^\[Amendment 2026-10-29(, Decision 239)?: .*metric filter and alarms', t, re.M)); print('TRAILERS', n);
-      print('DECISION_FAILS', len(f)); assert n == 3 and not f, f"
-    expected: TRAILERS 3 and DECISION_FAILS 0. validate_decisions_size prints three amendment-delta WARN lines (WARN tier, declared in the DECISIONS.md scope row).
+      f=[]; s(f); c(f); a(f); x(f); lines=set(pathlib.Path('docs/DECISIONS.md').read_text(encoding='utf-8').splitlines());
+      p=pathlib.Path('docs/plans/PLAN-telemetry-content-reader-lock.yaml').read_text(encoding='utf-8');
+      want=[ln.strip()[1:] for ln in p.splitlines() if ln.strip().startswith('+[Amendment 2026-10-29')];
+      n=sum(w in lines for w in want); print('TRAILERS', n, 'OF', len(want)); print('DECISION_FAILS', len(f)); assert len(want) == 3 and n == 3 and not f, f"
+    expected: >-
+      TRAILERS 3 OF 3 (each of PINNED-7's added lines is a whole line of docs/DECISIONS.md, byte for byte) and
+      DECISION_FAILS 0. validate_decisions_size prints four WARN lines (WARN tier, never fails): the three
+      amendment-delta lines declared in the DECISIONS.md scope row, and the standing-pressure aggregate (entries over
+      7,373 B), which prints whenever DECISIONS.md changes and whose count these trailers do not move.
+      validate_supersession_annotations also prints three stale-waiver WARNs (128->102, 144->92, 144->98) that main
+      prints today; they are not this plan's.
     fix_if: >-
       A Decision check fails -- fix the trailer placement, never its approved words; a wording change goes back to the
       operator. Run every test that reads docs/DECISIONS.md (grep -rl DECISIONS.md tests/) before pushing.
     hermetic: true
-    expected_literals: ["TRAILERS 3", "DECISION_FAILS 0"]
+    expected_literals: ["TRAILERS 3 OF 3", "DECISION_FAILS 0"]
     graduation: waive
     graduation_waiver_reason: The four checks are registered and run in every tier; the trailer count is a one-time insertion check.
   - step: 14
@@ -831,7 +849,8 @@ verification_plan:
     phase: pre-deploy
     action: >-
       PRE-MERGE GATE (ADMIN): PlatformAdmin can make every create the apply needs, plus the tag verb the provider's
-      default_tags adds to each, each verb simulated on its own resource.
+      default_tags adds to each and the reads the provider makes after each create, each verb simulated on its own
+      resource ("*" for the actions with no resource type).
     command: >-
       bin/venv-python -c
       "import json,subprocess,sys; run=lambda *a: json.loads(subprocess.run(['aws',*a,'--profile','agent_platform_admin','--output','json'],capture_output=True,text=True,check=True).stdout);
@@ -845,7 +864,11 @@ verification_plan:
       ('lambda:CreateFunction',fn),('lambda:TagResource',fn),('lambda:PutFunctionConcurrency',fn),('lambda:CreateFunctionUrlConfig',fn),
       ('ssm:PutParameter',ps),('ssm:AddTagsToResource',ps),
       ('cloudwatch:PutMetricAlarm',al('unexpected-invoker')),('cloudwatch:TagResource',al('unexpected-invoker')),
-      ('cloudwatch:PutMetricAlarm',al('errors')),('cloudwatch:TagResource',al('errors'))];
+      ('cloudwatch:PutMetricAlarm',al('errors')),('cloudwatch:TagResource',al('errors')),
+      ('iam:GetRole',role(c)),('iam:GetRolePolicy',role(c)),('lambda:GetFunction',fn),('lambda:GetFunctionCodeSigningConfig',fn),
+      ('lambda:ListVersionsByFunction',fn),('lambda:GetFunctionUrlConfig',fn),('lambda:GetFunctionConcurrency',fn),
+      ('logs:DescribeLogGroups','*'),('logs:DescribeMetricFilters','*'),('logs:ListTagsForResource',lg),('cloudwatch:DescribeAlarms','*'),
+      ('cloudwatch:ListTagsForResource',al('errors')),('ssm:GetParameter',ps),('ssm:ListTagsForResource',ps),('ssm:DescribeParameters','*')];
       d={a+' '+r.rsplit(':',1)[-1].rsplit('/',1)[-1]:run('iam','simulate-principal-policy','--policy-source-arn',adm,'--action-names',a,'--resource-arns',r)['EvaluationResults'][0]['EvalDecision'] for a,r in pairs};
       bad=sorted(k for k,v in d.items() if v!='allowed'); print('ADMIN_DENIED', bad); print('ADMIN CREATES OK' if not bad else 'ADMIN CREATES STOP'); sys.exit(1 if bad else 0)"
     expected: >-
@@ -1173,10 +1196,19 @@ test_obligations:
     test_selector: tests/checks/contracts/test_validate_github_org_transfer.py
     red_green_expectation: red before (no evaluator for the row), green after.
   - source: .gitignore
-    behavior: The hook's per-session plan marker is never committed, and the committed placeholder zip is tracked.
+    behavior: The hook's per-session plan marker is never committed.
     verification_step: 1
     test_selector: tests/hooks/test_protected_path_guard.py
     red_green_expectation: red before (git check-ignore misses the marker), green after.
+  - source: .gitignore
+    behavior: >-
+      The committed placeholder zip is tracked: validate_terraform_no_build_artifact_reads rule (b) refuses a Terraform
+      filename that names a gitignored path.
+    verification_step: 1
+    test_selector: tests/checks/iam_tf/test_validate_terraform_no_build_artifact_reads.py
+    red_green_expectation: >-
+      test_real_tree_has_no_build_artifact_reads is red once the HCL names the zip without the negation (the planning dry
+      run showed the check red with the line removed), green with it.
   - source: src/lambdas/ducklake_telemetry_content_reader/handler.py
     behavior: Docstring only; no behaviour changes.
     verification_step: 1
@@ -1205,11 +1237,11 @@ context:
   - "Approval premise: rec-4695's probe (#1709) found no session credential can approve a pending deployment (the Claude GitHub App has administration read, no Deployments write). If that grant widens, Decision 239's approval-bypass condition fires; the build's environment check catches drift in the environment's own settings."
   - "V3 resolution: the posted pre-merge gate evidence for the current head (VP 4-9: counts line, simulate line, sha) substitutes for the pre-merge post-deploy evidence the implement V3 Merge Gate and code-review V3 check require; behavioural acceptance (Decision 48) is the post-merge operator-directed walk (VP 10-13), evidenced by a counts-only comment on the merged PR naming the applied sha."
   - "Decided with notice (detail in each scope row): gated job owns code, layers, handler and env, bootstrap owns identity, URL, logging and concurrency; layer digest pins; placeholder code until the first approval, a committed zip named by filename (no S3 object; critique round 2 H3, M1); the invoker filter excludes PlatformDev alone; reader concurrency 5 -> 3; environment created in Settings then imported (rec-4355); cancel-in-progress kept; the content deploy honours TELEMETRY_PRODUCTION_HOLD (#1717); golden content leg in its own module, off in CI until rec-4735; the hook uses its own gitignored marker; apply-role simulate rows in the shared fixture with aws:PrincipalArn context; active status sets a V3 floor on the bundled code (validate_tier_floor)."
-  - "Decision authority (critique round 2 H1): the access log group, filter and both alarms sit in the platform-security-* family (no CI write or log-event read grant, tamper paging, no PlatformDev read; critique R1-R2), which Decision 101(b) and 202 cl.3 reserve for detector resources. PINNED-7's trailers extend the family by numbered Decision (the 202 and 237 precedent), operator-approved with the other pinned text; the 239 trailer also adds the layer-provenance residual to cl.6 (rec-4742)."
+  - "Decision authority (critique round 2 H1): the access log group, filter and both alarms sit in the platform-security-* family (no CI write or log-event read grant, tamper paging, no PlatformDev read; critique R1-R2), which Decision 101(b) and 202 cl.3 reserve for detector resources. PINNED-7's trailers extend the family through numbered Decision 239 (202 and 237 extended 101(b) the same way, by numbered Decision), operator-approved with the other pinned text; the 239 trailer also adds the layer-provenance residual to cl.6 (rec-4742)."
   - "Decision 93 note: the reviewer gate on this one function is deliberate until rec-2827 (Decision 239 cl.5). A pending approval never blocks another merge or deploy; bundled shared modules mean a pending run after many telemetry merges."
   - "Residuals owned elsewhere: other telemetry functions' raw reads and unreviewed deploys, incl. CI apply passing their roles to a new function (Decision 239 cl.6, rec-2827); admin bypass (security project); blob-tier read-back (rec-4699); CI golden content grant (rec-4735 after rec-4480); CI-writable URL parameter (rec-4739); layer pin coupling (rec-4738); layer provenance (rec-4742); maintenance-bundle sizing comments (rec-4740); stale rec-4696 contract pointers (rec-4743)."
   - "Decision-scout: FLAGS_FOUND, 190 of 190 triaged, 9 roadmap items, CONFLICT 0, RELATED 9. Resolved: 172 (github_repos subjects), 126 (amended by 239, #1719), 202 (platform-security-* family, extended by PINNED-7), 177 (probe phrase folded pre-merge), 93 (note above). CITE: 236, 230, 213, 143, 144, 223, 225, 238, 237, 154, 125, 79, 226, 162, 166, 202, 101."
-  - "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE round 1 (18 findings applied), REVISE round 2 (3 High, 2 Medium, 5 Low applied; dry run of the revised text against every test file and registered check that reads an edited file, plus terraform validate), round 3 pending; red_overlap=blocked by rec-4718 (shared ci_guards tests), operator override 2026-10-29 21:26Z (cmsg_012XgaFy8VaDQbxP5D8nC958FVGyH7skspbGyQDu9Ahtdz)."
+  - "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE round 1 (18 findings applied), REVISE round 2 (3 High, 2 Medium, 5 Low applied; dry run of the revised text against every test file and registered check that reads an edited file, plus terraform validate), PROCEED round 3 (9 Low applied), confirming round pending; red_overlap=blocked by rec-4718 (shared ci_guards tests), operator override 2026-10-29 21:26Z (cmsg_012XgaFy8VaDQbxP5D8nC958FVGyH7skspbGyQDu9Ahtdz)."
 pre_implementation_checklist:
   - Branch confirmed not on main
   - The operator has created the telemetry-content-deploy environment in Settings (required reviewer, admin bypass off, deployment branches selected with a main policy) and reported its main policy id
@@ -2067,7 +2099,8 @@ execution_steps:
 rollback: >-
   Before the bootstrap apply: revert the squash commit. Nothing is deployed, and the environment is inert without the
   role. After: the operator, in a bootstrap apply, removes the deploy role and the function, then the boundary
-  statement and the grants. The access log group stays: destroying a platform-security-* resource is break-glass
-  (Decision 202), and PlatformAdmin holds no DeleteLogGroup there. The workflow is reverted in the same
+  statement and the grants. The access log group stays, and so does its resource block (prevent_destroy guards only
+  while the block exists): destroying a platform-security-* resource is break-glass (Decision 202), and PlatformAdmin
+  holds no DeleteLogGroup there, so a rollback that deleted the block would fail partway. The workflow is reverted in the same
   change, and the reader concurrency goes back to 5. Until then, refusing pending runs keeps the function on its last
   approved code.
