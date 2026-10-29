@@ -23,7 +23,12 @@ BOUNDARY = [
     "scripts/checks/misc/sensitive_value_",
     "tests/sensitive_values/",
     "tests/checks/misc/test_sensitive_value_",
+    "src/lambdas/ducklake_telemetry_content_reader/",
+    "src/common/ducklake_content_read_verbs.py",
+    "docs/contracts/ducklake_telemetry_content_reader.yaml",
+    "tests/lambdas/ducklake_telemetry_content_reader/",
 ]
+CONTENT_READER_PATHS = BOUNDARY[-4:]
 
 
 def _registered() -> dict[str, int]:
@@ -101,6 +106,15 @@ def test_protected_path_without_owner_or_boundary_fails() -> None:
     head = (ROOT / det.CODEOWNERS_REL).read_text(encoding="utf-8")
     caps = yaml.safe_load((ROOT / det.CAPABILITIES_REL).read_text(encoding="utf-8"))["boundary_patterns"]
     assert det.ownership_violations(det.PROTECTED, head, caps) == []
+
+
+def test_content_reader_paths_are_protected() -> None:
+    assert all(path in det.PROTECTED for path in CONTENT_READER_PATHS)
+    head = (ROOT / det.CODEOWNERS_REL).read_text(encoding="utf-8")
+    caps = yaml.safe_load((ROOT / det.CAPABILITIES_REL).read_text(encoding="utf-8"))["boundary_patterns"]
+    assert det.ownership_violations(det.PROTECTED, head, caps) == []
+    owned = "\n".join(line for line in head.splitlines() if "ducklake_telemetry_content_reader" not in line)
+    assert any("ducklake_telemetry_content_reader" in v for v in det.ownership_violations(det.PROTECTED, owned, caps))
 
 
 def test_narrowing_against_base() -> None:
