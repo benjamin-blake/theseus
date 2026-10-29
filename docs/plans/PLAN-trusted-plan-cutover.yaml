@@ -196,8 +196,12 @@ scope:
       "$RUNNER_TEMP/tf-show.log" --stdout "$RUNNER_TEMP/plan.json" (stdout only reaches plan.json); (10) backstop: python3 -I scripts/ci/terraform_hcl_screen.py backstop; (11) guard: python3
       -I scripts/terraform_apply_guard.py on plan.json with output to a file, exit code mapped to PASS / BLOCKED /
       ERROR; (12) persist plan.bin to the data-lake bucket's tfplan/personal/<pr>/<head sha>.bin; (13) post the
-      terraform-plan-digest commit status (python3 -I scripts/ci/plan_digest.py emit) on HEAD_SHA, context and
-      description shape unchanged (Decision 77, fetch-saved-plan unchanged); (14a) refusal comment, if: always() and
+      terraform-plan-digest commit status (python3 -I scripts/ci/plan_digest.py emit, then gh api with --field
+      context=terraform-plan-digest in the run body, as today) on HEAD_SHA, context and description shape unchanged
+      (Decision 77, fetch-saved-plan unchanged); (13b) if PLAN-pr-plan-opaque-iam-policy-check has merged: its
+      plan-time policy check, python3 -I scripts/ci/plan_time_policy_check.py "$RUNNER_TEMP/plan.json", with the
+      digest step's exact if: and no continue-on-error (validate_plan_time_policy_check_wiring requires this in every
+      job that posts the digest; its output is a fixed line plus key-stripped addresses, so names-only holds); (14a) refusal comment, if: always() and
       the overlay step ran and the assume step did not succeed (a job that fails before the overlay posts no comment):
       python3 -I scripts/ci/terraform_personal_plan_report.py --refusal with the category (OVERLAY_REFUSED,
       SCREEN_REFUSED or ASSUME_FAILED), no credential and no tfvars, body self-validated
@@ -323,7 +327,8 @@ scope:
       /scripts/ci/terraform_hcl_screen.py (and the lexer module if split), /scripts/ci/trusted_plan_overlay.py,
       /scripts/ci/trusted_plan_env.sh, /scripts/ci/quiet_run.sh, /scripts/ci/neon_api_key.sh, /scripts/ci/plan_names_core.py,
       /scripts/ci/terraform_personal_plan_report.py, /scripts/ci/terraform_plan_digest.py, /scripts/ci/plan_digest.py,
-      /scripts/ci/redaction_check.py, /.github/actions/terraform-init-retry/, /.github/actions/materialise-tfvars/
+      /scripts/ci/redaction_check.py, /scripts/ci/plan_time_policy_check.py (if not already owned by its own plan),
+      /.github/actions/terraform-init-retry/, /.github/actions/materialise-tfvars/
       (the predicate-h recursion finds whatever else is missing). One comment line: procedural until rec-2827.
   - file: docs/contracts/terraform-cc-web-operations.yaml
     action: Modify
@@ -331,7 +336,8 @@ scope:
       PR 1: the declared_in of owner_email and neon_api_key becomes terraform/personal/providers.tf (wording APPROVED,
       context: Approvals). PR 3: speculative_plan_and_apply_the_saved_plan.speculative_plan_job is replaced by the
       approved row (APPROVED 2026-10-29, context: Approvals; name "plan in terraform-plan-trusted.yml (Decision 238)",
-      seven steps), plus an eighth step and the capability_split, tfplan_s3_prefix and role_creation_guard_blocked
+      seven steps; if PLAN-pr-plan-opaque-iam-policy-check has merged, its approved step sentence about
+      plan_time_policy_check.py is kept verbatim in the new row), plus an eighth step and the capability_split, tfplan_s3_prefix and role_creation_guard_blocked
       sentences in the addendum wording (APPROVED); PR 4 then deletes the two "until rec-4637's last PR removes it"
       clauses (APPROVED). A dated amendment_log row per PR. validate_terraform_cc_web_operations stays green.
   - file: docs/contracts/github-actions-evidence.yaml
@@ -949,6 +955,7 @@ context:
   - "Fable consult: /mnt/project-files/trusted-plan-executor/s3-executor-cutover/ADVICE.md; reconciliation in step6b-presentation.md."
   - "Decision 235 cl.1 named loosenings/rewrites: validate_planner_secret_value_reads (4); its _TF_CMD_RE widened for the trusted_plan_env.sh prefix and the quiet_run.sh inner wrapper; neon_api_key.sh check's pull_request_target skip removed, with test_ci_neon_api_key.py's skip assertion for that event; TEMP_NO_ENV_JOBS emptied; test_validate_trusted_plan_environment.py's claims-probe-based cases re-pointed at job plan; composite_action_body_baseline.yaml loses the retired bodies and gains entries for the new ones; the speculative_plan_job contract row retired."
   - "Plan-shape residual (APPROVED 2026-10-29, 'Keep them', cmsg_01Cqz6E4mzSv6kkGCSCub3WMV1YaxYVsittbFYvxtXjDgV; Decision 238 cl.4 and rec-4637's context ask for it): with count, for_each, dynamic, conditional, comparison and logical forms refused outside condition and validation blocks, regex and can confined to validation blocks, try fixed to the config file read, no instance-count column and a one-word fit line, what a PR can still learn from a run is whether it succeeded, how long it took, and which allowlisted attributes differ from state. Recorded as the accepted residual; the Decision text is not amended."
+  - "Coordination (2026-10-29 22:57Z, from the 'Block hidden IAM policies before merge' thread): PLAN-pr-plan-opaque-iam-policy-check (approved by Benjamin 22:52Z, not merged at S3 plan time) adds scripts/ci/plan_time_policy_check.py to the speculative-plan job after the digest step, a --pre check validate_plan_time_policy_check_wiring anchored on 'context=terraform-plan-digest' in a run body, and one speculative_plan_job step sentence. If it lands first, PR 3 wires the check into the trusted job (step 13b), keeps that sentence, and keeps the digest post's --field context=terraform-plan-digest in the run body so the wiring check's anchor holds. Follow-on rec-4741 edits terraform_plan_digest.py after PR 3."
   - "Kept, not retired: scripts/ci/oidc_claims_probe.py and its registry shard trusted-plan-oidc-claims-probe.yaml have no caller after PR 3, but the shard is S2's graduated record; S4 (rec-4640) removes them with the other PR-only plumbing."
   - "Slice map: S1 rec-4632, S1b rec-4635, S2 rec-4636 (landed), S3 rec-4637 (this), S5 rec-4638 (reuses the screen, overlay and plan_names_core), S4 rec-4640 (must re-home the ducklake-artifacts grant when it deletes the planner PR-sub; refinement appended to rec-4640's context 2026-10-29), S6 rec-4639. rec-4686 (real-plan canary) depends on this job shape."
   - "Gotcha: python3 -I drops the script directory from sys.path, so every new script inserts the repo root itself and never uses -m (predicate h)."
