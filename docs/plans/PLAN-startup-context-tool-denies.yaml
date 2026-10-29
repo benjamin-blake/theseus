@@ -40,7 +40,8 @@ acceptance_criteria:
     context.
   - >-
     No file under .claude/skills, .claude/commands, .claude/agents, .claude/hooks, docs/contracts,
-    .github/prompts, .github/agents or config/agent, and not AGENTS.md, references a denied tool (by
+    .github/prompts, .github/agents or config/agent, and no tracked AGENTS.md or CLAUDE.md (root or
+    per-directory), references a denied tool (by
     qualified or bare tool name, or Artifact in a tool-reference form); no permissions.allow entry
     equals or falls under a deny entry.
   - >-
@@ -52,9 +53,10 @@ acceptance_criteria:
     line is at most 17,800 (the Artifact family stripped); the transcript first-call total is
     recorded as a secondary figure.
   - >-
-    The measured figures and the workaround are sent as a reply in the user's existing upstream
-    vendor feedback thread on cloud environment setup, only after the user replies 'send' to the
-    text shown in chat; the report records the reply's sent timestamp.
+    The reply carrying the measured figures and the workaround is composed for the user's existing
+    upstream vendor feedback thread on cloud environment setup and shown in chat; it is sent only
+    after the user replies 'send'. Either outcome satisfies this criterion when the report records
+    it: sent (with its timestamp), or not sent / declined.
 verification_plan:
   - step: 1
     phase: pre-deploy
@@ -119,7 +121,8 @@ verification_plan:
       bin/venv-python -c "import json,glob,os; f=max(glob.glob(os.path.expanduser('~/.claude/projects/*/*.jsonl')),key=os.path.getmtime); rows=[json.loads(l) for l in open(f)]; u=next(d['message']['usage'] for d in rows if d.get('type')=='assistant'); dn=[n for d in rows if d.get('type')=='attachment' and d['attachment'].get('type')=='deferred_tools_delta' for n in d['attachment'].get('addedNames',[])]; print('first_call_input_total', u['input_tokens']+u['cache_creation_input_tokens']+u['cache_read_input_tokens'], 'claude_code', os.environ.get('CLAUDE_CODE_VERSION'), 'deferred_claude_docs', sum(n.startswith('mcp__Claude_Docs__') for n in dn))"
       && git diff --stat af368683 origin/main -- AGENTS.md CLAUDE.md .mcp.json .claude/skills .claude/commands .claude/agents
     expected: >-
-      Panel (user-read): MCP tools + System tools at most 46,200 and System tools at most 17,800.
+      Panel (user-read): MCP tools + System tools at most 46,200 and System tools at most 17,800;
+      the expanded MCP tools line lists none of the ten denied MCP tools (read on a pass too).
       Command: deferred_claude_docs 0; claude_code 2.1.42; the diff --stat prints nothing;
       first_call_input_total recorded for the reply (expected well under the 94,959 baseline, but
       not asserted -- the ~10.3k Messages remainder of the baseline is not controlled).
@@ -127,7 +130,8 @@ verification_plan:
       MCP + System tools above 46,200 -- expand the panel's MCP tools line, name the denied tools
       still loaded, and record that the deny does not strip them on this surface (a finding for the
       reply and a rec). System tools above 17,800 -- the built-in Artifact tool is not stripped by a
-      deny; record it the same way. A control tripped (version or ambient files changed) -- say so in
+      deny; record it the same way and KEEP the Artifact entries (the user disabled the tool as
+      unused, so blocking its calls is still wanted). A control tripped (version or ambient files changed) -- say so in
       the report beside the figures. Never move a threshold to make the step pass (rec-3976,
       Decision 181).
     hermetic: false
@@ -167,7 +171,9 @@ context:
   - >-
     Decision-scout verdict NO_FLAGS. CITE list (verbatim): Decision 132, Decision 189, Decision 163,
     Decision 101. Decisions triaged: 190 of 190. Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1.
-  - "gates: decision-scout=NO_FLAGS; project-alignment=write-the-plan r1; plan-critique=<pending>"
+  - >-
+    gates: decision-scout=NO_FLAGS; project-alignment=write-the-plan r1; plan-critique=PROCEED after 2
+    round(s); round 2 autonomous; its optional tightenings applied (mechanical: postflight JSON_FILE).
   - "red_overlap: verdict clear, reds [] (Decision 226)."
   - >-
     Baseline: 2026-10-29 session on main af368683, Claude Code 2.1.42, opened with a ~60-token
@@ -191,7 +197,12 @@ context:
   - >-
     Known gaps: project threads never load .claude/settings.json; the plugin ships the same file
     (marketplace source ./.claude) but plugin permission rules are unverified. Claude Docs' server
-    instructions (~0.7k) persist unless the connector is switched off account-wide.
+    instructions (~0.7k) persist unless the connector is switched off account-wide. A harness rename
+    of claude-code-remote would silently no-op the entries (repo prose already spells it
+    Claude_Code_Remote); step 4 is a one-time reading.
+  - >-
+    For the rec-2982 planner: get_environment is denied once this merges, so verifying the
+    setup-script PAT removal needs a human read or the in-repo bin/setup-cloud-env.sh, not that tool.
   - >-
     Forks decided by the user (AskUserQuestion, this session): rec-2982 separate plan next; deny set =
     environment-setup tools + Artifact family + Claude Docs (extras excluded); email = agent shows
@@ -210,8 +221,8 @@ execution_steps:
     tests/hooks/test_settings_tool_denies.py -- class TestContextTrimDenies with exactly four
     non-parametrized tests: (a) the required set is a subset of permissions.deny and every required
     entry has no "(" specifier; (b) a reference scan over .claude/skills, .claude/commands,
-    .claude/agents, .claude/hooks, docs/contracts, .github/prompts, .github/agents, config/agent and
-    AGENTS.md finds no reference to a denied tool: each qualified entry and, for the
+    .claude/agents, .claude/hooks, docs/contracts, .github/prompts, .github/agents, config/agent,
+    AGENTS.md and every tracked CLAUDE.md (git ls-files) finds no reference to a denied tool: each qualified entry and, for the
     mcp__claude-code-remote__ entries, its bare tool-name suffix as a case-sensitive whole word;
     mcp__Claude_Docs as a prefix; ArtifactComments and ArtifactData as whole words; and Artifact only
     in a tool-reference form (backticked, "Artifact tool", or "Artifact(") so prose never matches;
@@ -229,8 +240,10 @@ execution_steps:
     check (bin/venv-python -m scripts.session.github_readiness), graduation walk writes the
     settings-context-trim-denies shard and sets implementation_declared true, commit, fetch and
     rebase onto origin/main, VP step 3 on the committed clean tree, postflight evidence
-    (bin/venv-python -m scripts.session.postflight --evidence), push as its own tool call, the PR
-    (no Resolves trailer), subscribe_pr_activity; on green CI squash-merge and unsubscribe.
+    (bin/venv-python -m scripts.session.postflight --evidence /tmp/implementation-retrospective.json),
+    push as its own tool call, the PR (no Resolves trailer), subscribe_pr_activity; on green CI
+    squash-merge and unsubscribe. Report readiness, validator evidence, postflight evidence and
+    push/PR as separate facts; a readiness state of unknown is never a PASS.
   - >-
     Hand back to the user with a pasteable prompt for a FRESH cloud session on main: "Run the
     post-merge steps of docs/plans/PLAN-startup-context-tool-denies.yaml: VP step 4, then the
