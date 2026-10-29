@@ -23,10 +23,12 @@ scope:
     action: Modify
     purpose: >-
       Add resource github_repository_environment.deployment_approval_probe, environment "deployment-approval-probe",
-      mirroring tf_gated_apply exactly so the result transfers to the control in use: reviewers.users =
+      mirroring tf_gated_apply (one stated difference below) so the result transfers to the control in use: reviewers.users =
       var.gated_apply_reviewer_user_ids (no new variable, no literal id), prevent_self_review = false (required: the
       agent dispatches as the operator's identity, and self-review blocking would make every leg a structural refusal),
-      can_admins_bypass left at the provider default as on tf_gated_apply, deployment_branch_policy protected_branches =
+      can_admins_bypass = false (the operator's UI setting, 2026-10-29; stricter than tf_gated_apply's provider default,
+      and it changes no answer while the reviewer is also the admin; the result records the difference),
+      deployment_branch_policy protected_branches =
       true / custom_branch_policies = false. No prevent_destroy (it is not a control). The operator creates the
       Environment in the GitHub UI first (infrastructure_dependencies); this resource codifies it and is adopted through
       the import block below on the next operator apply of this root, with no change. A header comment says: inert probe
@@ -62,7 +64,7 @@ scope:
       rec-4695; never a required check (Decision 83); never add id-token or secrets; separate from
       tf-gated-apply-prototype.yml on purpose (approving that one assumes the apply role through OIDC); dispatch from
       main only; re-run the probe (plan VP 5-9) after any change to the Claude GitHub App's permissions, repo ownership
-      or admins, or the reviewer set.
+      or admins, the reviewer set, or a new GitHub credential surface for agents (for example rec-4700's broker).
   - file: scripts/session/deployment_approval_probe.py
     action: Create
     purpose: >-
@@ -81,7 +83,8 @@ scope:
       GIT_TERMINAL_PROMPT=0, password used as Bearer), ci-bot (GITHUB_TOKEN inside Actions; classified apart from the
       session legs). A leg whose credential is absent -> UNAVAILABLE with the reason; no request is sent.
       Precheck with the leg's credential, falling back to the proxy leg for reads only: GET the run (its path must be
-      .github/workflows/deployment-approval-probe.yml and its status waiting or in_progress, since in a bot_leg run the
+      .github/workflows/deployment-approval-probe.yml, its head_branch main, its event workflow_dispatch, and its status
+      waiting or in_progress, since in a bot_leg run the
       bot-attempt job is itself running), then poll GET pending_deployments up to --wait-pending seconds until exactly
       one pending entry exists and it is the environment named deployment-approval-probe (record its id,
       current_user_can_approve and the reviewer logins). When that read is proxy-blocked (the proxy blocks environment
@@ -100,9 +103,11 @@ scope:
       classifies; its value is recorded on every response as evidence only); 403 or 422 with a request id
       while the precheck recorded current_user_can_approve false -> NOT_REVIEWER; any other 4xx (a 404, or a 403/422
       while current_user_can_approve was true), or a pending entry that is gone when re-read right after the POST ->
-      INCONCLUSIVE (also a 403/422 with a request id while current_user_can_approve is unknown); 5xx or transport error
-      -> UNAVAILABLE. Exit 0 for NOT_REVIEWER, TOKEN_LACKS_PERMISSION,
-      PROXY_BLOCKED, UNAVAILABLE; 1 for APPROVED; 2 for PROBE_INVALID and INCONCLUSIVE.
+      INCONCLUSIVE (also a 403/422 with a request id while current_user_can_approve is unknown); a 5xx or transport
+      error after the request was sent -> INCONCLUSIVE (UNAVAILABLE is only an absent credential or a 401, so a leg that
+      sent a request never drops out of the verdict). Exit 0 for NOT_REVIEWER, TOKEN_LACKS_PERMISSION,
+      PROXY_BLOCKED, UNAVAILABLE; 1 for APPROVED; 2 for PROBE_INVALID and INCONCLUSIVE. Rate-limit 403s (message
+      containing "rate limit", or x-ratelimit-remaining 0) -> INCONCLUSIVE, never TOKEN_LACKS_PERMISSION.
       (2) `--capability --leg L`: read-only, no run needed: GET /repos/{repo} (permissions.admin, permissions.maintain),
       GET /user/installations (each installation's app_slug and permission map, for user-to-server tokens), GET
       /repos/{repo}/environments/deployment-approval-probe (reviewers, prevent_self_review, can_admins_bypass, branch
@@ -128,7 +133,9 @@ scope:
       TOKEN_LACKS_PERMISSION; 403 with X-Accepted-GitHub-Permissions -> TOKEN_LACKS_PERMISSION; a 422 or 404 carrying
       X-Accepted-GitHub-Permissions still classifies by status and can_approve (422 with can_approve true ->
       INCONCLUSIVE, 422 with can_approve false -> NOT_REVIEWER, 404 -> INCONCLUSIVE); response without
-      X-GitHub-Request-Id -> PROXY_BLOCKED; 401 -> UNAVAILABLE; 503 -> UNAVAILABLE) with its exit code; a repo GET whose
+      X-GitHub-Request-Id -> PROXY_BLOCKED; 401 -> UNAVAILABLE; 503 -> INCONCLUSIVE; a transport error after sending ->
+      INCONCLUSIVE; a rate-limit 403 carrying X-Accepted-GitHub-Permissions -> INCONCLUSIVE) with its exit code; a run
+      whose head_branch is not main or whose event is not workflow_dispatch -> PROBE_INVALID with no POST; a repo GET whose
       full_name differs from --repo, or that answers a redirect -> PROBE_INVALID; a run whose path is another workflow, a
       completed run, an in_progress run with no pending entry after the wait, a pending deployment for another environment
       (tf-gated-apply) and two pending environments each -> PROBE_INVALID with no POST sent; an in_progress run with one
@@ -180,8 +187,9 @@ infrastructure_dependencies:
   - >-
     The operator creates the Environment in the GitHub UI before the implementation PR opens (Settings, Environments, New
     environment "deployment-approval-probe"; required reviewer: the operator only; Prevent self-review off; Allow
-    administrators to bypass left at its default, as tf-gated-apply; deployment branches: protected branches only; no
-    wait timer, no secrets or variables). No CloudShell apply is needed for the probe: the PR codifies it with an import
+    administrators to bypass off; deployment branches: protected branches only, which GitHub's page itself reports as
+    "all branches are still allowed to deploy" under the ruleset-only main (rec-4651); no wait timer, no secrets or
+    variables). Done by the operator 2026-10-29 (message cmsg_012XgaFy8VaDQbxP5D8nC958CdsU4Y5uSADcWFW9g2FJC2). No CloudShell apply is needed for the probe: the PR codifies it with an import
     block (PR-time terraform-github-plan must show 1 to import, 0 to add, 0 to destroy, and no change beyond the known
     visibility-gated ruleset bypass_actors diff) and the next
     operator apply of terraform/github adopts it. A dispatch before the Environment exists would let GitHub auto-create a
@@ -323,11 +331,13 @@ verification_plan:
       mcp__github__get_job_logs for the bot-attempt job; then bin/venv-python -m scripts.session.deployment_approval_probe
       --repo otl-labs/ontheloop --observe --run-id <bot run id>
     expected: >-
-      bot-attempt concluded success with a NOT_REVIEWER or TOKEN_LACKS_PERMISSION verdict and an environment_id; the
-      approvals record is empty; the gated job is still waiting (then cancelled).
+      bot-attempt concluded success with a NOT_REVIEWER verdict (the identity answer: github-actions[bot] can never be a
+      required reviewer) and an environment_id; the approvals record is empty; the gated job is still waiting (then
+      cancelled).
     fix_if: >-
       bot-attempt failed: APPROVED -> stop and report; PROBE_INVALID or INCONCLUSIVE -> fix the cause and re-run on a
-      fresh run.
+      fresh run. A TOKEN_LACKS_PERMISSION verdict is vacuous for this leg (an agent-pushed workflow can request any
+      GITHUB_TOKEN permission): widen the job's permission block to what X-Accepted-GitHub-Permissions names and re-run.
     hermetic: false
   - step: 8
     phase: post-deploy
@@ -373,7 +383,10 @@ verification_plan:
       context plus the per-leg verdicts and run ids>" (plus --status closed --resolution "<verdict>" when the premise
       HOLDS); result JSON written to /mnt/project-files/deployment-approval-probe/RESULT.json
     expected: >-
-      rec-4695 carries the verdict. HOLDS_BY_IDENTITY with environment-write NO: rec-4695 closed with the evidence
+      rec-4695 carries the verdict. Expected range, stated up front: the session acts as the operator, who is the
+      required reviewer, so NOT_REVIEWER is likely reachable only by the ci-bot leg and the realistic session verdicts are
+      FAILS, HOLDS_BY_GRANT, HOLDS_BY_PROXY_POLICY or INCONCLUSIVE, each leaving rec-4695 open for the operator.
+      HOLDS_BY_IDENTITY with environment-write NO: rec-4695 closed with the evidence
       (re-run triggers live in the probe workflow's header, so no follow-on rec is needed). Any other verdict: rec-4695
       stays open with the result, and the operator decides (whether proxy policy is enough, or the remedy); the report
       also points at Decision 233's reversal condition approval-authority-absent and T4.33 c3, which rest on the same
@@ -442,6 +455,9 @@ constraints:
   - Session credential legs and probe dispatches run under the operator's go-ahead (message cmsg_012XgaFy8VaDQbxP5D8nC958FPB3hao7EcZcmdHLojyBFb, answering the setup posted in
     cmsg_012XgaFy8VaDQbxP5D8nC958H1VRVd9VnJnPVBS91S6K5W); relay both ids to the implementation thread.
   - Never print, log, commit or store a token value or Authorization header (Decision 101, public repo).
+  - AWS work (portal writes, recs reads, validation) runs as PlatformDev (--profile agent_platform or
+    AWS_PROFILE=agent_platform), never the ADMIN environment's inherited PlatformAdmin profile (operator's standing rule,
+    2026-10-29). This plan needs no admin step.
   - No Environment is created, edited or deleted by an agent. Environment-write capability is read from permission maps
     only; when unreadable it is reported UNKNOWN (an open residual), never tested by a mutation.
   - The gh-cli leg's `gh api` subprocess is a deliberate, leg-confined exception to the AGENTS.md mcp-over-gh rule (gh is
@@ -455,7 +471,7 @@ constraints:
 context:
   - "Decision-scout verdict: FLAGS_FOUND (Decisions triaged: 190 of 190; Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1). CITE: Decision 92, 94, 143, 126, 233, 24."
   - "Scout flags handled: 233 NOTE (approve call pinned to the probe environment, no exported approve verb, tested); 202 SPIRIT NOTE (GitHub's approvals record and the operator's UI check are the authority, script JSON supporting); 24 (admin bypass default inherited by the mirror)."
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE (round 1, 12 findings fixed), REVISE (round 2, 4 required + 5 recommended fixed), REVISE (round 3, 1 required + 7 recommended fixed), REVISE (round 4 confirming, 3 required + 4 recommended fixed; escalated to the operator per the critique round cap)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE (round 1, 12 findings fixed), REVISE (round 2, 4 required + 5 recommended fixed), REVISE (round 3, 1 required + 7 recommended fixed), REVISE (round 4 confirming, 3 required + 4 recommended fixed; escalated); REVISE (extra round 5 on the operator's word, 1 required + 5 recommended fixed; escalated again)"
   - "red_overlap: clear (no open reds, slo_hours 4)."
   - "Fable advice: /mnt/project-files/deployment-approval-probe/fable-independent-advice.md (forks F1-F6 adopted)."
   - "Known limits stated in the result: admin bypass via REST is untestable while the reviewer is also the admin; a clean result depends on the GitHub App's permission grant, which can change; github_ci_apply also trusts ref:refs/heads/main (terraform/bootstrap/github_ci_apply.tf), so any ungated main job can assume the apply role and the Environment gate is not the role boundary (Decision 94)."
@@ -491,7 +507,8 @@ execution_steps:
   - Run VP 10; report the result to the operator and the content-reader planning thread.
   - 'Report: what was implemented, verification results'
 rollback: >-
-  The operator deletes the Environment in the GitHub UI first, then the revert PR lands (a refresh drops the deleted
-  object from state, so the PR-time plan shows no destroy); or the revert adds a removed block with lifecycle destroy =
-  false. The Environment and workflow are inert, so
+  If the operator has not applied terraform/github since the import landed: revert the PR first, then the operator
+  deletes the Environment in the GitHub UI (deleting first would leave main's import block without a target). If he
+  has applied it: delete in the UI first, then revert (a refresh drops the deleted object from state, so the PR-time
+  plan shows no destroy), or the revert adds a removed block with lifecycle destroy = false. The Environment and workflow are inert, so
   leaving them in place has no effect on any real gate.
