@@ -31,7 +31,8 @@ scope:
       scripts.roadmap.plan_document or calls _common.load_plan, so the declared pre_globs stay closure-complete without
       relying on a pruned edge). For each verification_plan step with phase pre-deploy, hermetic truthy as pydantic's lax bool reads it (true, "true",
       1 and the like, matching how validate_vp_replay sees the step; an uncoercible value is a reported finding) and a
-      pytest invocation (shlex-split; `-m pytest` or a `pytest` argv token), each positional selector argument under
+      pytest invocation (shlex-split; `-m pytest`, or an argv token whose basename is `pytest`, such as
+      `.venv/bin/pytest`), each positional selector argument under
       tests/ is examined by its file part (taken before any "::" node suffix): a Path.is_file() target is examined
       itself; a Path.is_dir() target has every test_*.py beneath it examined, each with its own conftest chain, so a
       guarded member that would make the directory's replay a hollow green is flagged naming that member (critique
@@ -42,9 +43,11 @@ scope:
       split on shell control operators with a local regex equivalent to
       scripts/checks/verification/_vp_replay_classify._SHELL_SEGMENT_SPLIT_RE (copied, not imported, so the declared
       pre_globs stay closure-complete and no cross-domain import is added), so tokens of a chained non-pytest segment
-      are never attributed to the pytest step: the test file and every conftest.py from its directory up to tests/ are AST-parsed for a
+      are never attributed to the pytest step: the test file and every conftest.py from its directory up to and
+      including tests/conftest.py are AST-parsed for a
       module-level `pytest.importorskip("<name>")` (assigned or bare) or a module-level `import <name>` / `from <name>
-      import` outside try. A hit on a name in the CI-absent set fails with: plan path, step id, selector, the guarding
+      import` outside try, each name matched on its top-level dotted segment (importorskip("botocore.exceptions") is
+      botocore). A hit on a name in the CI-absent set fails with: plan path, step id, selector, the guarding
       file and name, and the fix ("set hermetic: false, or move the guarded selector into its own hermetic: false step
       (for a directory selector, list its unguarded member files instead of the directory) -- vp-red-before.yaml
       hermetic_authoring carve-out (iii)"); no `--ignore` advice, since `--ignore` values are never subtracted from a
@@ -72,7 +75,9 @@ scope:
       file stays well under 500 SLOC: two warehouse acceptances (rec-2809 after step 5, rec-4763) pin this single path,
       so it must never need decomposing into a package, TestAbsentSetDerivation (set equals
       requirements.in - fast - dev import names on a fixture triple; the live repo set contains duckdb and not boto3),
-      TestAccounting (examined/skipped declared exactly once).
+      TestAccounting (examined/skipped declared exactly once), TestSegmentSplitEquivalence (the local control-operator
+      regex splits a fixture command table exactly as _vp_replay_classify._SHELL_SEGMENT_SPLIT_RE does; the test may
+      import it, the check may not).
   - file: scripts/checks/deps/_manifest.py
     action: Modify
     purpose: >-
@@ -166,7 +171,7 @@ verification_plan:
     phase: pre-deploy
     action: Registration probe -- the new check has a pre Entry in the deps manifest.
     command: >-
-      bin/venv-python -c "from scripts.checks.deps._manifest import ENTRIES; import sys; sys.exit(0 if any(e.name == 'validate_hermetic_fast_tier_collectability' and e.pre for e in ENTRIES) else 1)"
+      bin/venv-python -c "from scripts.checks.deps._manifest import ENTRIES; import sys; sys.exit(0 if any(e.name == 'validate_hermetic_fast_tier_collectability' and e.pre and e.full_segment == 'full_after_lint' for e in ENTRIES) else 1)"
     expected: exit 0.
     fix_if: Entry missing or not pre -- fix the manifest, never the probe.
     hermetic: true
@@ -229,7 +234,7 @@ test_obligations:
   - source: scripts/checks/deps/_manifest.py
     behavior: The new check is registered in --pre and the full tier.
     verification_step: 3
-    command: bin/venv-python -c "from scripts.checks.deps._manifest import ENTRIES; import sys; sys.exit(0 if any(e.name == 'validate_hermetic_fast_tier_collectability' and e.pre for e in ENTRIES) else 1)"
+    command: bin/venv-python -c "from scripts.checks.deps._manifest import ENTRIES; import sys; sys.exit(0 if any(e.name == 'validate_hermetic_fast_tier_collectability' and e.pre and e.full_segment == 'full_after_lint' for e in ENTRIES) else 1)"
     red_green_expectation: red before (no such Entry, exit 1), green after.
   - source: docs/contracts/vp-red-before.yaml
     behavior: Carve-out (iii) names its enforcer and keeps the pinned markers.
@@ -282,7 +287,7 @@ context:
   - Reuse - _pytest_diff._parse_requirement_dist_names / _dist_to_import_name. _pytest_diff._excluded_heavy_import_names is a different set (requirements.in minus fast, dev not subtracted); this check needs the dev-subtracted set (critique I1, informational).
   - Gotcha - config/ci_rca_taxonomy.yaml is a shared append with plan C; rebase keeps both rows.
   - Residuals (Decision 181 point 2) - transitive first-party imports (measured zero guarded src/ or scripts/ modules 2026-10-30), existing steps of merged unbuilt plans and later edits to them are owned by rec-4763; targets the implementation creates by rec-4757.
-  - Live instance outside the population (critique series 2 round 2 F1) - PLAN-telemetry-claude-p-capture-adapter.yaml (merged, unbuilt) step 7 node-selects tests/common/test_ducklake_event_verification_verbs.py (importorskip duckdb at line 16; replay exits 4), and steps 5 and 6 include test_derived_layer_reconciliation.py and test_append.py (hollow green). Owned by rec-4765, to amend before that plan is built; the other two merged plans with guarded steps are already built.
+  - Live instance outside the population (critique series 2 round 2 F1) - PLAN-telemetry-claude-p-capture-adapter.yaml (merged, unbuilt) step 7 node-selects tests/common/test_ducklake_event_verification_verbs.py (importorskip duckdb at line 16; replay exits 4), and steps 5 and 6 include test_derived_layer_reconciliation.py and test_append.py (hollow green). Owned by rec-4765, to amend before that plan is built; four other merged plans with guarded targets are already built (syspath-hygiene-advisory-read-tolerance step 8, telemetry-late-hook-records step 4, telemetry-grain-and-generations step 6, telemetry-top-level-agent-run step 5; critique series 2 round 5 I1).
   - The absent set does not subtract the transitive closure of fast-tier packages; today it equals duckdb, psycopg2, pytz, radon (critique series 2 round 1 I3, informational).
   - Gotcha - plan C owns scripts/checks/verification/_manifest.py this wave, hence the deps domain.
   - Why static AST, not a runtime collect-only probe - the full tier on main has duckdb installed, so a collect-only probe there could not see the absence; the AST walk gives the same verdict in --pre and the full tier (critique series 2 round 4 I1). Function-scope importorskip is outside carve-out (iii)'s module-level subject.
@@ -291,7 +296,7 @@ context:
   - "fork: split the parity bundle on a round-5 REVISE | chosen: split | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: this plan (Benjamin 2026-10-30)"
   - Decision-scout verdict FLAGS_FOUND on the bundle (WARN 131 resolved by the mirror test name); CITE subset relevant here 73, 55, 189, 163, 181, 169, 170, 128, 159, 182, 201.
   - "red_overlap (Decision 226): verdict clear, no reds, 2026-10-30"
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 5 round(s) of series 2 (series 1 = bundle rounds 1-5, split by Benjamin; round 4 confirming REVISE escalated to Benjamin, round 5 PROCEED); nits folded: full_segment probe, parsing edges, regex equivalence test"
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
