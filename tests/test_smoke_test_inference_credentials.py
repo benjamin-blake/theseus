@@ -123,7 +123,9 @@ class TestRunDeepseekSuccess:
             result = run("deepseek", envelope_id="my-custom-secret")
 
         assert result == 0
-        sm_client.get_parameter.assert_called_once_with(Name="my-custom-secret", WithDecryption=True)  # pragma: allowlist secret
+        sm_client.get_parameter.assert_called_once_with(
+            Name="my-custom-secret", WithDecryption=True
+        )  # pragma: allowlist secret
 
 
 class TestRunAnthropicSuccess:

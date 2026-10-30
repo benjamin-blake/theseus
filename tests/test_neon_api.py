@@ -301,6 +301,20 @@ def test_create_branch_no_endpoint_host_deletes_branch_and_loud_fails():
     assert "DELETE" in captured_methods
 
 
+def test_create_branch_no_endpoint_host_still_raises_when_cleanup_delete_fails():
+    """A failed cleanup DELETE is swallowed so the original no-endpoint error surfaces."""
+    create_body = {"branch": {"id": _FAKE_BRANCH_ID}, "endpoints": []}
+
+    def _urlopen(req):
+        if req.get_method() == "POST":
+            return _mock_urlopen(create_body)
+        raise neon_api.NeonApiError("delete failed")
+
+    with patch("urllib.request.urlopen", side_effect=_urlopen):
+        with pytest.raises(neon_api.NeonApiError, match="no endpoint host"):
+            neon_api.create_branch(_FAKE_API_KEY, _FAKE_PROJECT_ID)
+
+
 def test_create_branch_non_2xx_loud_fails():
     """NeonApiError raised on HTTP error from create_branch."""
     http_err = urllib.error.HTTPError(
