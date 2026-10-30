@@ -23,6 +23,12 @@ scope:
       three classes with match rules, targets, approval lifetime and binding control, the state reads it does not
       gate, the approval grammar, sources and build-start ask, fail-closed and tamper rules, known limits, and the
       refusal procedure. Exact text in execution step 1.
+  - file: .claude/hooks/protected_action_gate.sh
+    action: Create
+    purpose: >-
+      The registered fail-closed shim (the handoff_evidence_gate.sh pattern): runs the Python entry point under a
+      timeout and maps a timeout or any exit other than 0 and 2 to a deny when the payload names a coarse keyword,
+      else to an allow. Spec in execution step 2.
   - file: .claude/hooks/protected_action_gate.py
     action: Create
     purpose: >-
@@ -32,14 +38,14 @@ scope:
   - file: .claude/hooks/protected_action_match.py
     action: Create
     purpose: >-
-      The pure helpers the entry point imports: shell segmenting (including $(...) and backtick bodies),
+      The pure helpers the entry point imports: shell walking on scripts/session/handoff_push_parse.py's lexer,
       classification against the contract, approval-source extraction from transcript records, and grammar matching.
       No I/O beyond what its callers pass in. Spec in execution step 2.
   - file: .claude/settings.json
     action: Modify
     purpose: >-
       Append one PreToolUse group after the existing groups: matcher "^(Bash|Monitor|Edit|Write|MultiEdit|NotebookEdit)$",
-      command "\"$CLAUDE_PROJECT_DIR/bin/venv-python\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/protected_action_gate.py\"".
+      command "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/protected_action_gate.sh\"".
       No other key changes.
   - file: .claude/hooks/hooks.json
     action: Modify
@@ -47,7 +53,7 @@ scope:
   - file: tests/hooks/test_protected_action_gate.py
     action: Create
     purpose: >-
-      The twenty-five test functions (twenty-eight cases) named in execution step 3, including rec-4518's acceptance
+      The twenty-nine test functions (thirty-two cases) named in execution step 3, including rec-4518's acceptance
       selector test_protected_action_denied_without_authorisation. Hook runs are subprocesses on the real file with
       a pinned environment.
   - file: docs/contracts/deploy-paths.yaml
@@ -70,27 +76,29 @@ scope:
   - file: .github/CODEOWNERS
     action: Modify
     purpose: >-
-      Three lines owned by the operator: /.claude/hooks/protected_action_gate.py,
-      /.claude/hooks/protected_action_match.py and /docs/contracts/protected-actions.yaml.
+      Five lines owned by the operator: the contract's gate.modules (/.claude/hooks/protected_action_gate.sh,
+      /.claude/hooks/protected_action_gate.py, /.claude/hooks/protected_action_match.py,
+      /scripts/session/handoff_push_parse.py) and /docs/contracts/protected-actions.yaml.
   - file: scripts/checks/misc/sensitive_value_detectors.py
     action: Modify
     purpose: >-
-      PROTECTED gains .claude/hooks/protected_action_gate.py, .claude/hooks/protected_action_match.py and
-      docs/contracts/protected-actions.yaml (the content-reader lock's precedent), so protected_path_guard refuses an
+      PROTECTED gains the same five paths (the content-reader lock's precedent), so protected_path_guard refuses an
       undeclared edit and the base-ref leg refuses a narrowing.
   - file: tests/checks/misc/test_sensitive_value_detectors.py
     action: Modify
-    purpose: test_protected_action_gate_paths_are_protected, the content-reader test's shape for the three paths.
+    purpose: >-
+      test_protected_action_gate_paths_are_protected, the content-reader test's shape for the five paths; the BOUNDARY
+      fixture gains them and CONTENT_READER_PATHS becomes an explicit list.
   - file: config/agent/executor/capabilities.yaml
     action: Modify
     purpose: >-
-      boundary_patterns gain the three paths under a "# Protected-action gate (Decision 239 cl.5)" comment, which the
+      boundary_patterns gain the five paths under a "# Protected-action gate (Decision 239 cl.5)" comment, which the
       PROTECTED ownership leg requires (Decision 117/185 SSOT).
   - file: docs/plans/PLAN-protected-action-gate.yaml
     action: Modify
     purpose: Graduation walk sets implementation_declared and records VP shards.
 bundled_recommendations: [rec-4518]
-followon_recs: []
+followon_recs: [rec-4767]
 infrastructure_dependencies: []
 acceptance_criteria:
   - >-
@@ -103,21 +111,24 @@ acceptance_criteria:
     decision card's question text does not count.
   - >-
     A tf-state-change approval allows exactly one matching call, only at its commit with no tracked edit under the
-    root; target unknown is never approvable; refresh, test, workspace new or delete and init -migrate-state count.
+    root, tracked or untracked; never from a subagent; target unknown is never approvable; refresh, test, workspace
+    new or delete and init -migrate-state count, also behind wrappers, a -- tail, bash -c or $(...).
   - >-
     Unprotected commands (terraform fmt and validate on a live root; plan, show and state list on terraform/github;
     plan on terraform/bootstrap with aws_profile set to agent_platform; git; aws sts under agent_platform) exit 0
     without reading the transcript, also under an ambient admin AWS_PROFILE where the segment selects agent_platform.
   - >-
     An ambient-only admin-credential deny names the AWS_PROFILE=agent_platform re-run; a terraform call that contacts
-    AWS on bootstrap or personal without a non-admin aws_profile is admin-credential.
+    AWS on bootstrap or personal without a non-admin aws_profile is admin-credential, and under an ambient admin
+    profile only a non-admin AWS_PROFILE clears it.
   - >-
     The contract is read from origin/main, not the working tree; an unreadable one denies only coarse or
     ambient-admin aws and terraform calls; an unreadable transcript denies a protected command; writes to the
     transcript directory are denied; malformed hook input exits 0; neither module contains "permissionDecision".
   - >-
-    .claude/settings.json registers the hook on the six tools with $CLAUDE_PROJECT_DIR-anchored paths,
-    .claude/hooks/hooks.json is its render, and the hook modules and the contract are code-owned and PROTECTED.
+    .claude/settings.json registers the shim on the six tools with a $CLAUDE_PROJECT_DIR-anchored path, the shim
+    denies a coarse payload when the interpreter fails, .claude/hooks/hooks.json is the render, and gate.modules and
+    the contract are code-owned and PROTECTED.
   - >-
     validate_admin_root_premerge_gate fails on an incoherent contract and flags a net-new admin-root plan with no
     "Approvals at build start:" line or with a one-shot class in it.
@@ -134,12 +145,12 @@ verification_plan:
     action: >-
       Run the gate's test module. It does not exist today, so the red-before replay classifies target_absent.
     command: bin/venv-python -m pytest tests/hooks/test_protected_action_gate.py -q
-    expected: exit 0 and twenty-eight tests passed; before the change pytest finds no such file.
+    expected: exit 0 and thirty-two tests passed; before the change pytest finds no such file.
     fix_if: >-
       Fix the hook or the contract. Never drop a class, a forgery case, a tamper case or a fail-closed case to pass
       (Decision 181).
     hermetic: true
-    expected_literals: ["28 passed"]
+    expected_literals: ["32 passed"]
     graduation: graduate
     graduation_check_id: protected-action-gate-hook
   - step: 2
@@ -266,7 +277,7 @@ verification_plan:
     fix_if: >-
       Still open -- read the trailer-closure job log; on a transport or merge-leg refusal use the sanctioned
       --update-rec fallback; on an acceptance-verdict refusal use only the printed close_proposed command
-      (git-ops.yaml resolves_trailer).
+      (git-ops.yaml resolves_trailer). Then resolve the probe thread, so its session-long approval ends with it.
     hermetic: false
     graduation: not-applicable
 test_obligations:
@@ -277,8 +288,13 @@ test_obligations:
     verification_step: 1
     test_selector: tests/hooks/test_protected_action_gate.py
     red_green_expectation: red before (module absent), green after.
+  - source: .claude/hooks/protected_action_gate.sh
+    behavior: Maps an interpreter failure or timeout to a deny for a coarse payload and an allow otherwise.
+    verification_step: 1
+    test_selector: tests/hooks/test_protected_action_gate.py::test_shim_maps_hook_failure_by_payload
+    red_green_expectation: red before (shim absent), green after.
   - source: .claude/hooks/protected_action_match.py
-    behavior: Segments, classification, approval sources and whole-line grammar matching.
+    behavior: Shell walking, classification, approval sources and whole-line grammar matching.
     verification_step: 1
     test_selector: tests/hooks/test_protected_action_gate.py
     red_green_expectation: red before (module absent), green after.
@@ -288,7 +304,7 @@ test_obligations:
     test_selector: tests/hooks/test_protected_action_gate.py::test_contract_shape_and_coarse_keywords
     red_green_expectation: red before (contract and test absent), green after.
   - source: .claude/settings.json
-    behavior: The gate is registered on the six tools with anchored paths and rendered into the plugin.
+    behavior: The shim is registered on the six tools with an anchored path and rendered into the plugin.
     verification_step: 1
     test_selector: tests/hooks/test_protected_action_gate.py::test_registered_rendered_and_code_owned
     red_green_expectation: red before (no registration), green after.
@@ -298,17 +314,17 @@ test_obligations:
     test_selector: tests/hooks/test_protected_action_gate.py::test_registered_rendered_and_code_owned
     red_green_expectation: red before (no rendered group), green after.
   - source: .github/CODEOWNERS
-    behavior: The operator owns the hook modules and the contract.
+    behavior: The operator owns gate.modules and the contract.
     verification_step: 1
     test_selector: tests/hooks/test_protected_action_gate.py::test_registered_rendered_and_code_owned
     red_green_expectation: red before (no lines), green after.
   - source: scripts/checks/misc/sensitive_value_detectors.py
-    behavior: PROTECTED lists the three gate paths, so the ratchet and protected_path_guard cover them.
+    behavior: PROTECTED lists the five gate paths, so the ratchet and protected_path_guard cover them.
     verification_step: 3
     test_selector: tests/checks/misc/test_sensitive_value_detectors.py::test_protected_action_gate_paths_are_protected
     red_green_expectation: red before (test absent), green after.
   - source: config/agent/executor/capabilities.yaml
-    behavior: boundary_patterns carry the three gate paths, which the PROTECTED ownership leg requires.
+    behavior: boundary_patterns carry the five gate paths, which the PROTECTED ownership leg requires.
     verification_step: 3
     test_selector: tests/checks/misc/test_sensitive_value_detectors.py::test_protected_action_gate_paths_are_protected
     red_green_expectation: red before (test absent), green after.
@@ -342,19 +358,21 @@ constraints:
   - >-
     PUBLIC repository (Decision 101): logical names only; no account ids, ARNs or hosts in the contract, the tests
     or the PR.
-  - Every module stays under 500 SLOC (Decision 128); each hook module targets 300.
+  - >-
+    Every module stays under 500 SLOC (Decision 128); each hook module targets 300, and the test module splits by
+    concern into a tests/hooks/protected_action_gate/ package if it would pass 500.
 context:
   - "Decision-scout verdict + CITE list: FLAGS_FOUND (WARN 126 cl.1: tf-state-change approval is one shot at the presented commit, never at build start; WARN 92 pt 5: live_roots map to axis_a rows, github no longer misdescribed; NOTE 237/157: full value-verb set; SPIRIT 203: contract read from origin/main, transcript writes denied, CODEOWNERS; SPIRIT 233: authority none). Decisions triaged: 191 of 191. Roadmap items intersected: 2; CONFLICT: 0; RELATED: 2. CITE: 239, 126, 203, 238, 168, 101, 127, 143, 223."
-  - "gates: decision-scout=FLAGS_FOUND; step-6b=write-the-plan 2026-10-30 15:32Z; critique-round-1 wording=PENDING; plan-critique=PENDING"
+  - "gates: decision-scout=FLAGS_FOUND; step-6b=write-the-plan 2026-10-30 15:32Z; critique wording=PENDING; plan-critique=PENDING"
   - 'red_overlap (2026-10-30): {"verdict": "clear", "slo_hours": 4, "reds": []}'
   - >-
     Approvals: Benjamin chose option A on the card (2026-10-30 14:43Z) and wrote "write the plan, 1 A, 2 A" (15:32Z,
     cmsg_017w1Kar4nqzb395d2mcyCJJQuwdNQScn1jUxmxoFZ7ACT) on
-    /mnt/project-files/joint-review/plan-G/step6b-presentation.md; critique round 1 changed signed-off wording,
-    re-presented in /mnt/project-files/joint-review/plan-G/critique-r1-wording.md (PENDING). Build merge needs
-    his word on the final diff (code-owned paths).
+    /mnt/project-files/joint-review/plan-G/step6b-presentation.md; critique rounds 1 and 2 changed signed-off
+    wording, re-presented in critique-r1-wording.md and critique-r2-wording.md beside it (PENDING). Build merge
+    needs his word on the final diff (code-owned paths).
   - "fork: tf-state-change approval lifetime | chosen: one shot at the presented commit (1 A) | class: asked | precedent: Decision 126 cl.1 | precedent_kind: decision | reversible: yes | persisted: protected-actions.yaml approval.lifetimes"
-  - "fork: gate self-protection | chosen: origin/main contract, transcript-write deny, CODEOWNERS (2 A) plus PROTECTED | class: asked | precedent: Decision 203 cl.4; PLAN-telemetry-content-reader-lock | precedent_kind: decision | reversible: yes | persisted: protected-actions.yaml tamper"
+  - "fork: gate self-protection | chosen: origin/main contract, transcript-write deny, CODEOWNERS (2 A) plus PROTECTED and the fail-closed shim | class: asked | precedent: Decision 203 cl.4; PLAN-telemetry-content-reader-lock | precedent_kind: decision | reversible: yes | persisted: protected-actions.yaml tamper, fail_closed"
   - "fork: root gating text | chosen: map each root to its axis_a row | class: consistency-only | precedent: Decision 92 pt 5 | precedent_kind: decision | reversible: yes | persisted: protected-actions.yaml gate.live_roots"
   - "fork: build-start rule home | chosen: protected-actions.yaml, not deploy-paths (468 of 500 lines) | class: consistency-only | precedent: Decision 166 | precedent_kind: decision | reversible: yes | persisted: protected-actions.yaml approval.build_start"
   - "fork: file-router route | chosen: none (router 497 of 500; a route is optional) | class: consistency-only | precedent: Decision 168 | precedent_kind: decision | reversible: yes | persisted: this plan's scope"
@@ -362,10 +380,10 @@ context:
     Evidence: /mnt/project-files/joint-review/plan-G/FINDINGS-protected-action-gate.md (refusal mechanisms M1-M3,
     which levers reach project threads, the hook-allow path in Claude Code 2.1.312 and 2.1.314).
   - >-
-    Reuse: the source predicate is src/turn_capture/streams.py's prompt rule (lines 203-209, conformance-tested in
-    tests/turn_capture/test_real_transcript_conformance.py) plus isCompactSummary, which a real compaction summary
-    record fails without (it carries a promptId). The anchored command form follows the capture hooks
-    (test_capture_hook_registration.py). The PROTECTED registration mirrors the content-reader lock.
+    Reuse: shell walking is handoff_push_parse.py's lexer walked as is_push_shaped walks it; the shim follows
+    handoff_evidence_gate.sh but allows a failed non-coarse payload, since a blanket deny on every Bash and Edit
+    call would wedge a session whose interpreter broke; sources follow turn_capture/streams.py's prompt rule plus
+    isCompactSummary (a real compaction summary carries a promptId); the anchored command follows the capture hooks.
   - >-
     Gotchas: settings.json is never_exempt for the handoff gate (Decision 203); plugin_hooks.gated() refuses a
     command with a shell control operator; test_capture_hook_registration pins SessionStart and PreToolUse as the
@@ -374,8 +392,10 @@ context:
     environment sets AWS_PROFILE=agent_platform_admin (bin/setup-cloud-env.sh), so every test run pins AWS_PROFILE.
     terraform/bootstrap and terraform/personal default aws_profile to the admin profile (variables.tf, providers.tf).
   - >-
-    After merge every admin build asks at build start; the planning skill's Admin-only roots bullet still names
-    three clauses (plan A owns that skill; the contract and the check are authoritative).
+    After merge every admin build asks at build start. rec-4767 (follow-on) puts the ask in the implement skill and
+    covers admin-root plans approved before this merge, which lack the line (e.g. PLAN-secrets-to-ssm-retire);
+    until it lands, the hand-back tells the coordinator to ask at build start. The planning skill's Admin-only
+    roots bullet still names three clauses (plan A owns that skill; the contract and the check are authoritative).
   - "Not bundled: rec-4519 (inventory investigation, partly answered by the findings report), rec-4080 (merge gate)."
 pre_implementation_checklist:
   - Branch confirmed not on main
@@ -386,7 +406,7 @@ pre_implementation_checklist:
   - Acceptance criteria understood and verifiable
 execution_steps:
   - |-
-    docs/contracts/protected-actions.yaml -- create with exactly this text, less its two-space margin (approved by Benjamin at step 6b and after critique round 1):
+    docs/contracts/protected-actions.yaml -- create with exactly this text, less its two-space margin (signed off by Benjamin at step 6b; the critique-round wording changes await his word, see the Approvals context line):
 
       # Protected-action gate (rec-4518). Class D mechanism contract: the actions an agent session runs only after the
       # operator acknowledges them in that session, the acknowledgement grammar, and the recovery procedure for refusals.
@@ -427,19 +447,30 @@ execution_steps:
         each class's binding_control is what binds.
 
       gate:
-        hook: .claude/hooks/protected_action_gate.py
-        modules: [.claude/hooks/protected_action_gate.py, .claude/hooks/protected_action_match.py]
+        hook: .claude/hooks/protected_action_gate.sh
+        modules:
+          - .claude/hooks/protected_action_gate.sh
+          - .claude/hooks/protected_action_gate.py
+          - .claude/hooks/protected_action_match.py
+          - scripts/session/handoff_push_parse.py
         tools: [Bash, Monitor, Edit, Write, MultiEdit, NotebookEdit]
         contract_source: >-
           git show origin/main:docs/contracts/protected-actions.yaml in CLAUDE_PROJECT_DIR (else the hook input cwd),
           never the working tree (Decision 203 cl.4 precedent).
+        shell_parsing: >-
+          The handoff gate's lexer (scripts/session/handoff_push_parse.py) splits a command into simple commands and
+          recovers $(...) and backtick bodies, bash -c and eval strings, and heredocs fed to a shell; other heredoc bodies
+          are data. A command word matches by basename after leading NAME=value assignments and the wrappers env, command,
+          exec, nohup, nice, time, timeout <duration> and sudo, and the words after a standalone -- are classified as a
+          command of their own.
         live_roots:
           terraform/bootstrap: bootstrap
           terraform/github: github
           terraform/personal: sandbox
         live_roots_note: >-
           Each live root maps to its environment-taxonomy.yaml axis_a row, the sole source for its apply gating
-          (Decision 92 pt 5). Every admin-only row's root must be listed here.
+          (Decision 92 pt 5). Every admin-only row's root must be listed here. A root directory is matched by its literal
+          last two path parts, so -chdir="$W/terraform/bootstrap" is bootstrap.
         admin_profiles: [agent_platform_admin]
         self_serve_profile: agent_platform
         on_deny: >-
@@ -453,8 +484,7 @@ execution_steps:
             A terraform invocation, run against a live root, whose subcommand is in subcommands; or state followed by one of
             state_subcommands; or workspace followed by one of workspace_subcommands; or init with one of init_flags. The
             root directory is the -chdir= value, else the directory of a preceding cd in the same command, else the hook
-            input cwd; a directory whose last two parts are terraform/<root> counts, so a throwaway worktree does. A
-            directory the gate cannot resolve (a shell variable) has target unknown.
+            input cwd. A directory whose last two parts are not literal has target unknown.
           subcommands: [apply, destroy, import, refresh, test, force-unlock, taint, untaint]
           state_subcommands: [rm, mv, push, replace-provider]
           workspace_subcommands: [new, delete]
@@ -469,7 +499,10 @@ execution_steps:
             aws secretsmanager get-secret-value or batch-get-secret-value; aws ssm get-parameter, get-parameters,
             get-parameters-by-path or get-parameter-history with --with-decryption; inline Python naming get_secret_value,
             batch_get_secret_value or WithDecryption=True; or a command that runs one of entry_points.
-          entry_points: [".github/actions/materialise-tfvars/materialise_tfvars.sh", "bin/sync-terraform-assets.sh --tfvars"]
+          entry_points:
+            - .github/actions/materialise-tfvars/materialise_tfvars.sh
+            - bin/sync-terraform-assets.sh --tfvars
+            - scripts/ci/neon_api_key.sh
           target: the --secret-id, --name, --names or --path value, else any
           approval: session
           binding_control: >-
@@ -477,12 +510,14 @@ execution_steps:
             secret-material-handling.yaml).
         - id: admin-credential
           matches: >-
-            A command that selects an admin profile (--profile <p>, --profile=<p>, AWS_PROFILE=<p>, TF_VAR_aws_profile=<p>,
-            -var aws_profile=<p>, -backend-config=profile=<p>, profile_name='<p>' or profile='<p>', either quote). Or a
-            terraform call that contacts AWS (any subcommand not in offline_subcommands, and not init -backend=false) on a
-            root in admin_default_roots, whose aws_profile defaults to an admin profile, unless the call sets aws_profile to
-            a non-admin profile. Or an aws call, or a terraform call that contacts AWS, while the hook's own AWS_PROFILE is
-            an admin profile and the segment selects no non-admin profile.
+            (1) A command that selects an admin profile: --profile <p>, --profile=<p>, AWS_PROFILE=<p>,
+            TF_VAR_aws_profile=<p>, -var aws_profile=<p>, -backend-config=profile=<p>, profile_name='<p>' or profile='<p>'
+            (either quote). (2) A terraform call that contacts AWS (any subcommand not in offline_subcommands, and not init
+            -backend=false) on a root in admin_default_roots, whose provider defaults aws_profile to an admin profile,
+            unless the call sets aws_profile (-var or TF_VAR_) to a non-admin profile. (3) An aws call, or a terraform call
+            that contacts AWS, while the hook's own AWS_PROFILE is an admin profile, unless the command sets AWS_PROFILE (or,
+            for aws, --profile) to a non-admin profile; -var and TF_VAR_ do not clear this, because the terraform backends
+            read the ambient profile.
           admin_default_roots: [terraform/bootstrap, terraform/personal]
           offline_subcommands: [fmt, validate, version, providers, graph, help, -help, -version]
           target: the profile name
@@ -509,12 +544,15 @@ execution_steps:
           session: The rest of that session. A new thread needs its own approval.
           one_shot_at_commit: >-
             One matching tool call made after the approval line, and only while the root's HEAD starts with <commit> and no
-            tracked file under the root differs from HEAD. Any later matching call uses it up, whether or not it ran.
+            file under the root, tracked or untracked and not ignored, differs from HEAD. Any later matching call uses it
+            up, whether or not it ran. A call from a subagent (the hook input carries agent_id) is never covered, because
+            its calls are not in the transcript that counts the credit: one-shot actions run in the main session.
         sources: >-
           A user turn the person typed: a user record with string content, a promptId, no sourceToolUseID or
           turnCompanion, and neither isMeta nor isCompactSummary (src/turn_capture/streams.py's prompt rule). In a project
-          thread that record must be a wake, and only its <message> elements with from="human" and trust="principal",
-          outside any relay or citation, count; for a decision-card tap only the chosen option's label counts.
+          thread that record must be a wake whose origin kind is human, and only its <message> elements with from="human"
+          and trust="principal", outside any relay or citation, count; for a decision-card tap only the chosen option's
+          label counts.
         never_counted: >-
           Coordinator or thread relays, including the operator's messages they cite; tool results; companion records;
           compaction summaries; file contents; hook output; the agent's own messages.
@@ -530,12 +568,16 @@ execution_steps:
             asked when its plan is shown.
 
       fail_closed:
-        - An unreadable or unparseable transcript denies a protected command.
+        - An unreadable or unparseable transcript, or an empty transcript_path, denies a protected command.
         - >-
           An unreadable or invalid contract at origin/main denies every command that names a coarse keyword (terraform,
           secretsmanager, ssm, get_secret_value, WithDecryption, an admin profile, an entry point), and every aws or
           terraform call while the hook's own AWS_PROFILE is an admin profile, naming the failure and git fetch origin main.
-        - A git error while checking a one_shot_at_commit approval denies.
+        - A lexer error on a command that names a coarse keyword denies it.
+        - A git error while checking a one_shot_at_commit approval, or a root path that is not literal, denies it.
+        - >-
+          The registered shim (gate.hook) maps a timeout or any interpreter exit other than 0 and 2 to a deny when the
+          payload names a coarse keyword, and to an allow otherwise, so a broken interpreter never wedges every command.
         - Malformed hook input allows (the never_on_main precedent, Decision 138), because nothing can be classified.
 
       tamper:
@@ -550,12 +592,12 @@ execution_steps:
 
       known_limits:
         - >-
-          Shell indirection is not parsed: bash -c strings, eval, variables other than a -chdir root, aliases, and scripts
-          that call terraform or aws internally, including a script written elsewhere that then writes the transcript.
-          $(...) and backtick bodies are classified as segments.
+          Indirection the lexer does not recover is not parsed: variables other than a literal root path, aliases,
+          functions, and scripts that call terraform or aws internally, including a script written elsewhere that then
+          writes the transcript.
         - >-
-          A hook that cannot start, times out or crashes before its own error handling is a non-blocking error to the
-          harness, so the command runs.
+          A hook failure on a payload that names no coarse keyword is allowed, so a crash skips the tamper rules; an empty
+          transcript_path skips them too.
         - >-
           The hook runs from the working tree, so a Bash edit to gate.modules disables it for that session, and an edit to
           .claude/.claude-plugin/plugin.json turns off every plugin hook; CODEOWNERS review catches either at merge.
@@ -569,11 +611,12 @@ execution_steps:
         steps:
           - >-
             GATE DENY (the message names a protected-actions class): post the exact command and the deny's approve line to
-            the operator in this thread, and run the command only after the operator writes that line here. For
-            tf-state-change, first present the plan output at the named commit (deploy-paths.yaml
-            admin_out_of_band.procedure); a target of unknown is rewritten with -chdir=terraform/<root>, never approved. An
-            admin-credential hit from the hook's own AWS_PROFILE alone is re-run with the self-serve profile when the step
-            does not need admin rights; ask only when it does.
+            the operator in this thread, as a message rather than a decision card (card labels hold at most 40 bytes), and
+            run the command only after the operator writes that line here. For tf-state-change, first present the plan
+            output at the named commit (deploy-paths.yaml admin_out_of_band.procedure), from the main session with a literal
+            -chdir=terraform/<root>; a target of unknown is rewritten, never approved. An admin-credential hit from the
+            hook's own AWS_PROFILE alone is re-run with the self-serve profile when the step does not need admin rights; ask
+            only when it does.
           - >-
             CLASSIFIER VERDICT ("Denied by auto mode classifier"): only the operator's own message in this thread naming the
             exact command clears it, so every ask lists the exact commands beside the approve lines.
@@ -584,72 +627,88 @@ execution_steps:
             RELAYED APPROVAL: neither the classifier nor this gate counts an approval relayed by the coordinator or another
             thread; ask the operator to answer in this thread.
   - >-
-    .claude/hooks/protected_action_gate.py (entry) and .claude/hooks/protected_action_match.py (pure helpers the
-    entry imports from its own directory) -- stdlib plus PyYAML, imported lazily; module docstrings in the
-    never_on_main style (behaviour, exit codes, the contract as the source of every list); the strings
-    permissionDecision and hookSpecificOutput appear in neither file, and nothing writes to stdout. main() reads
-    stdin JSON; a decode error or a non-mapping input exits 0. (1) Tamper rules, before any contract read: for Edit,
-    Write, MultiEdit or NotebookEdit, deny when tool_input file_path (or notebook_path) resolves inside the
-    directory of transcript_path, else exit 0; for Bash or Monitor, deny when the command names that directory or
-    the transcript file name together with a write form (>, tee, sed -i, cp, mv, rm, truncate, dd, ln, python -c,
-    python3 -c, perl -e, or a heredoc). (2) Fast path: exit 0 before any git call, YAML import or transcript read
-    when the command contains none of the module constant COARSE (terraform, secretsmanager, ssm, get_secret_value,
-    WithDecryption, materialise_tfvars, sync-terraform-assets, agent_platform_admin) and either the hook's own
-    AWS_PROFILE is not an admin profile or the command has no aws or terraform token. (3) Contract: repo is
-    CLAUDE_PROJECT_DIR, else the input cwd; run git -C <repo> show origin/main:docs/contracts/protected-actions.yaml
-    (5 s timeout) and yaml.safe_load it; a git error, a parse error or a missing gate, classes or approval key
-    denies (the fast path already let everything else through), naming the failure and "git fetch origin main".
-    (4) Segments (match module): split on newlines, &&, ||, ; and |; also lift each $(...) and backtick body,
-    including those inside NAME=value assignments and quoted words, into a segment of its own; strip each
-    segment's leading NAME=value assignments into a segment env (its AWS_PROFILE and TF_VAR_aws_profile win over
-    the hook's AWS_PROFILE); carry a cd <dir> segment's directory to later segments; shlex-split the rest
-    (whitespace split on a shlex error). (5) Classify per the contract: tf-state-change (the terraform token, an
-    optional -chdir=, then a subcommand in subcommands, state plus one of state_subcommands, workspace plus one of
-    workspace_subcommands, or init with one of init_flags; the root directory is -chdir resolved against the
-    segment's directory, else that directory, else the input cwd; the target is the live root whose last two path
-    parts equal the directory's; a directory containing $ is unknown; a resolved directory outside every live root
-    is not protected), secret-read (the verbs in matches, the entry_points, and the inline Python names; target the
-    --secret-id, --name, --names or --path value, else any) and admin-credential (the selection forms in matches;
-    a terraform call that contacts AWS on an admin_default_roots root with no non-admin aws_profile set through
-    -var aws_profile=, -var=aws_profile= or TF_VAR_aws_profile=; or the hook's AWS_PROFILE is an admin profile, the
-    segment selects no non-admin profile, and it runs aws or a terraform call that contacts AWS; target the
-    profile; record whether the hit is ambient-only). (6) Approvals: read transcript_path as JSONL (missing,
-    unreadable or a bad line denies). Sources (match module) are user records whose message.content is a string,
-    with a non-empty promptId, no sourceToolUseID, no turnCompanion, and isMeta and isCompactSummary not true. Thread
-    mode when any source starts with "<wake ": only sources that start with "<wake " count, and from each only the
-    text of <message> elements whose attributes include from="human" and trust="principal" and that sit outside any
-    <relay>, <coordinator-relay> or <cited> element, html.unescaped; when that text starts with 'Chose "' keep only
-    the quoted label. Direct mode otherwise: sources that do not start with "<". Split the text into lines and each
-    line into comma-separated items; an item counts only when, trimmed and with whitespace collapsed, it equals an
-    approve form case-insensitively. A session-class hit is approved by an item naming its class and its target or
-    any. A one-shot hit with target unknown denies with the -chdir instruction; otherwise run git -C <root dir>
-    rev-parse HEAD and git -C <root dir> status --porcelain --untracked-files=no -- . (a git error denies), then walk
-    the transcript in order: each approve item for that class and target adds a credit carrying its commit, and
-    each assistant tool_use for Bash or Monitor whose id differs from the input's tool_use_id and whose command
-    classifies to the same class and target uses up the oldest credit. It is approved when an unused credit's
-    commit is a prefix of HEAD and the status output is empty. (7) All hits approved: exit 0 silently. Otherwise
-    exit 2 with the on_deny message on stderr for the first unapproved hit: class, target, binding_control, the exact
-    approve line (one-shot: with the first 12 characters of HEAD), that the operator writes it in this thread beside
-    the exact command, the AWS_PROFILE=agent_platform re-run when the hit is ambient-only, and the procedure's
-    CLASSIFIER VERDICT step. Wrap the body so an unexpected exception denies when the fast path would not have
-    passed the command and allows otherwise.
+    .claude/hooks/protected_action_gate.sh -- the registered command, modelled on handoff_evidence_gate.sh with no
+    set -e or set -u: read the payload, run timeout -k 5 20 "$CLAUDE_PROJECT_DIR/bin/venv-python"
+    "$CLAUDE_PROJECT_DIR/.claude/hooks/protected_action_gate.py" with it on stdin, pass exit 0 and exit 2 (and
+    stderr) through, and map any other exit or a timeout to exit 2 with a one-line stderr reason when the payload
+    contains a word in the shim's COARSE list (the Python COARSE plus aws and terraform when AWS_PROFILE is an admin
+    profile), else to exit 0. .claude/hooks/protected_action_gate.py (entry) and .claude/hooks/protected_action_match.py
+    (pure helpers the entry imports from its own directory; the match module puts the repo root on sys.path as
+    handoff_evidence_gate.py does and imports scripts.session.handoff_push_parse's lexer) -- stdlib plus PyYAML,
+    imported lazily; module docstrings in the never_on_main style (behaviour, exit codes, the contract as the source
+    of every list); the strings permissionDecision and hookSpecificOutput appear in no gate module, and nothing
+    writes to stdout. main() reads stdin JSON; a decode error or a non-mapping input exits 0. (1) Tamper rules,
+    before any contract read and skipped when transcript_path is empty: for Edit, Write, MultiEdit or NotebookEdit,
+    deny when tool_input file_path (or notebook_path) resolves inside the directory of transcript_path, else exit 0;
+    for Bash or Monitor, deny when the command names that directory or the transcript file name together with a
+    write form (>, tee, sed -i, cp, mv, rm, truncate, dd, ln, python -c, python3 -c, perl -e, or a heredoc). (2)
+    Fast path: exit 0 before any git call, YAML import or transcript read when the command contains none of the
+    module constant COARSE (terraform, secretsmanager, ssm, get_secret_value, WithDecryption, materialise_tfvars,
+    sync-terraform-assets, neon_api_key, agent_platform_admin) and either the hook's own AWS_PROFILE is not an admin
+    profile or the command has no aws or terraform word. (3) Contract: repo is CLAUDE_PROJECT_DIR, else the input
+    cwd; run git -C <repo> show origin/main:docs/contracts/protected-actions.yaml (5 s timeout) and yaml.safe_load
+    it; a git error, a parse error or a missing gate, classes or approval key denies (the fast path already let
+    everything else through), naming the failure and "git fetch origin main". (4) Shell walk (match module), the
+    is_push_shaped order: strip_heredocs and strip_line_continuations; recurse into each _find_balanced_spans body
+    and each _shell_c_and_eval_args string; elide the spans; _tokenize (a ValueError denies, the fast path having
+    already passed non-coarse text) and _split_simple_commands. Per simple command: strip leading NAME=value
+    assignments into a command env (its AWS_PROFILE and TF_VAR_aws_profile win over the hook's AWS_PROFILE); a
+    command of only assignments, or export NAME=value, carries them to later commands, as cd <dir> carries its
+    directory; skip the wrappers env (with its assignments), command, exec, nohup, nice, time, timeout <duration>
+    and sudo; take the command word by basename; and classify the words after a standalone -- as a further command.
+    (5) Classify per the contract: tf-state-change (terraform, an optional -chdir=, then a subcommand in
+    subcommands, state plus one of state_subcommands, workspace plus one of workspace_subcommands, or init with one
+    of init_flags; the root directory is -chdir resolved against the command's directory, else that directory, else
+    the input cwd; the target is the live root whose last two path parts equal the directory's literal last two
+    parts, so "$W/terraform/bootstrap" is bootstrap; non-literal last parts are unknown; a directory outside every
+    live root is not protected), secret-read (the verbs in matches, the entry_points by path suffix, and the inline
+    Python names; target the --secret-id, --name, --names or --path value, else any) and admin-credential (the three
+    rules in matches: the selection forms; the admin_default_roots rule, cleared only by a non-admin -var
+    aws_profile=, -var=aws_profile= or TF_VAR_aws_profile=; and the ambient rule, cleared only by a non-admin
+    AWS_PROFILE in the command env or, for aws, --profile; target the profile; record whether the hit is
+    ambient-only). (6) Approvals: an empty transcript_path, or a missing, unreadable or bad-line JSONL file, denies.
+    Sources (match module) are user records whose message.content is a string, with a non-empty promptId, no
+    sourceToolUseID, no turnCompanion, and isMeta and isCompactSummary not true. Thread mode when any source starts
+    with "<wake ": only sources that start with "<wake " and whose origin.kind is "human" count, and from each only
+    the text of <message> elements whose attributes include from="human" and trust="principal" and that sit outside
+    any <relay>, <coordinator-relay> or <cited> element, html.unescaped; when that text starts with 'Chose "' keep
+    only the quoted label. Direct mode otherwise: sources that do not start with "<". Split the text into lines and
+    each line into comma-separated items; an item counts only when, trimmed and with whitespace collapsed, it equals
+    an approve form case-insensitively. A session-class hit is approved by an item naming its class and its target or
+    any. A one-shot hit denies when the hook input carries a non-empty agent_id (run it in the main session), when
+    its target is unknown or its root path is not literal (use -chdir=terraform/<root>); otherwise run git -C <root
+    dir> rev-parse HEAD and git -C <root dir> status --porcelain --untracked-files=normal -- . (a git error denies),
+    then walk the transcript in order: each approve item for that class and target adds a credit carrying its commit,
+    and each assistant tool_use for Bash or Monitor whose id differs from the input's tool_use_id and whose command
+    classifies to the same class and target uses up the oldest credit. It is approved when an unused credit's commit
+    is a prefix of HEAD and the status output is empty. (7) All hits approved: exit 0 silently. Otherwise exit 2 with
+    the on_deny message on stderr for the first unapproved hit: class, target, binding_control, the exact approve
+    line (one-shot: with the first 12 characters of HEAD), that the operator writes it in this thread beside the
+    exact command, the AWS_PROFILE=agent_platform re-run when the hit is ambient-only, and the procedure's CLASSIFIER
+    VERDICT step. Wrap the body so an unexpected exception denies when the fast path would not have passed the
+    command and allows otherwise.
   - >-
     tests/hooks/test_protected_action_gate.py -- every hook run is a subprocess of sys.executable on the real
-    .claude/hooks/protected_action_gate.py with JSON on stdin and a pinned env (PATH, HOME, CLAUDE_PROJECT_DIR set
+    .claude/hooks/protected_action_gate.py (the shim only in test_shim_maps_hook_failure_by_payload) with JSON on
+    stdin and a pinned env (PATH, HOME, CLAUDE_PROJECT_DIR set
     to the fixture repo, AWS_PROFILE=agent_platform unless the test sets it); the shared run helper asserts stdout
     is empty on every run. A fixture builds a tmp git repo (git -c commit.gpgsign=false) holding
     docs/contracts/protected-actions.yaml copied from the working tree and terraform/bootstrap, terraform/github and
     terraform/personal directories with one tracked file each, and points refs/remotes/origin/main at its commit. A
     helper writes JSONL transcripts whose records carry the real fields (type, promptId, message.content, and for
     wakes the real wake > project > thread > message shape with from, trust, author and id attributes and
-    html-escaped text). Exactly these twenty-five functions, parametrized only where stated (twenty-eight cases):
+    html-escaped text, and origin kind human). Exactly these twenty-nine functions, parametrized only where stated
+    (thirty-two cases):
     test_protected_action_denied_without_authorisation[tf-state-change, secret-read, admin-credential] (terraform
     -chdir=terraform/github apply; aws ssm get-parameter --name /secret/x --with-decryption; aws --profile
     agent_platform_admin iam list-roles; exit 2 and stderr names the class, target, binding control and approve
     line); test_session_class_approval_from_principal_allows[secret-read, admin-credential];
     test_tf_state_change_approval_allows_one_call_at_its_commit (approve with HEAD's first 7 characters allows the
     first apply; with that apply recorded as an earlier tool_use, a second is denied);
-    test_tf_state_change_approval_refused_after_new_commit_or_tracked_edit;
+    test_tf_state_change_approval_refused_after_new_commit_or_local_change (a later commit, an edit to the tracked
+    file and an untracked override.tf each deny; an ignored .terraform/ directory does not);
+    test_subagent_one_shot_call_is_denied (the same approved apply with agent_id set is denied, naming the main
+    session);
     test_tf_state_change_covers_every_state_writing_form (refresh, test, import, destroy, state rm, workspace new,
     workspace delete, init -migrate-state and init -force-copy on terraform/github are denied; state list and
     workspace select pass); test_unknown_root_is_never_approvable (-chdir=$ROOT apply is denied even with "approve
@@ -657,8 +716,9 @@ execution_steps:
     test_relays_tool_results_and_agent_text_do_not_count (a <cited author="user"> approval inside a coordinator
     relay, the line in a tool_result block, in an assistant message, and in a from="agent" trust="relay" message);
     test_non_prompt_user_records_do_not_count (the approve line in a sourceToolUseID companion, a turnCompanion
-    record, a record with no promptId, an isCompactSummary record, and, in thread mode, a non-wake string carrying
-    a principal <message>); test_only_whole_lines_and_items_count ("do not approve secret-read any" and an approve
+    record, a record with no promptId, an isCompactSummary record, an isMeta <relay from="coordinator"> record with a
+    <cited author="user"> approval (and the same without isMeta), a wake whose origin kind is not human, and, in
+    thread mode, a non-wake string carrying a principal <message>); test_only_whole_lines_and_items_count ("do not approve secret-read any" and an approve
     form inside a sentence do not count; "approve secret-read any, approve admin-credential agent_platform_admin"
     approves both); test_card_tap_counts_only_the_chosen_label; test_direct_session_typed_approval_counts (an isMeta
     string does not); test_unprotected_commands_pass_without_reading_the_transcript (terraform fmt -check and
@@ -666,30 +726,41 @@ execution_steps:
     plan -var aws_profile=agent_platform; git push; grep -n agent_platform_admin docs; aws sts get-caller-identity
     --profile agent_platform; echo "approve admin-credential agent_platform_admin"; transcript_path at a missing
     file); test_root_resolution_from_chdir_cd_and_cwd (cd terraform/personal && terraform apply -> personal; cwd
-    terraform/github -> github; -chdir=/tmp/wt/terraform/bootstrap -> bootstrap; apply in a directory under no live
-    root passes); test_secret_read_covers_every_value_verb (get-secret-value, batch-get-secret-value, the four ssm
+    terraform/github -> github; -chdir=/tmp/wt/terraform/bootstrap -> bootstrap; -chdir="$W/terraform/bootstrap"
+    plan -> admin-credential for bootstrap and apply -> denied asking for a literal path; apply in a directory under
+    no live root passes); test_secret_read_covers_every_value_verb (get-secret-value, batch-get-secret-value, the four ssm
     verbs with --with-decryption, inline get_secret_value, both entry points; get-parameter without
     --with-decryption passes); test_command_substitution_is_classified (TF_VAR_neon_api_key="$(aws ssm get-parameter
     --name /secret/neon-api-key --with-decryption --profile agent_platform_admin --query Parameter.Value --output
     text)" terraform -chdir=terraform/personal apply is denied, and with only the tf-state-change one-shot approved it
-    is still denied for secret-read; the backtick form likewise); test_admin_profile_selection_forms (--profile x,
+    is still denied for secret-read; the backtick form likewise); test_wrappers_tails_and_shell_strings_are_classified
+    ($HOME/.local/bin/terraform, timeout 600 terraform, env X=1 terraform and nohup terraform applies on
+    terraform/github; bash scripts/ci/neon_api_key.sh run -- terraform -chdir=terraform/github apply is denied for
+    secret-read and tf-state-change; bash -c "terraform -chdir=terraform/github apply" and eval likewise);
+    test_heredoc_bodies_are_data (a git commit -F - heredoc naming --profile agent_platform_admin passes; bash <<EOF
+    feeding terraform -chdir=terraform/github apply is denied); test_admin_profile_selection_forms (--profile x,
     --profile=x, AWS_PROFILE=x, TF_VAR_aws_profile=x, -var aws_profile=x, -backend-config=profile=x,
     profile_name='x' and profile="x" with x the admin profile, and terraform -chdir=terraform/bootstrap plan with no
     override, are denied as admin-credential); test_ambient_admin_profile_rules (with the hook's AWS_PROFILE the admin
-    profile: aws s3 ls is denied and the message names AWS_PROFILE=agent_platform; AWS_PROFILE=agent_platform aws s3
-    ls, aws --profile agent_platform sts get-caller-identity, terraform fmt and git status pass);
+    profile: aws s3 ls is denied and the message names AWS_PROFILE=agent_platform; terraform
+    -chdir=terraform/personal plan -var aws_profile=agent_platform is still denied; AWS_PROFILE=agent_platform aws s3
+    ls, export AWS_PROFILE=agent_platform && aws s3 ls, AWS_PROFILE=agent_platform terraform -chdir=terraform/personal
+    plan -var aws_profile=agent_platform, aws --profile agent_platform sts get-caller-identity, terraform fmt and git
+    status pass);
     test_transcript_writes_are_denied_and_reads_pass (Write and Edit into the transcript directory, echo >> and sed
     -i on the transcript, each deny; tail of it and a Write elsewhere pass); test_contract_is_read_from_origin_main
     (deleting the working-tree contract changes nothing; deleting the origin/main ref denies a coarse match naming
     git fetch origin main, and git status passes both normally and with the admin profile ambient);
-    test_unreadable_transcript_denies_protected; test_malformed_input_allows; test_registered_rendered_and_code_owned
-    (settings.json carries the group with the exact matcher and anchored command after every existing PreToolUse
-    group; hooks.json equals plugin_hooks.render of settings.json; CODEOWNERS owns the three paths);
+    test_unreadable_transcript_denies_protected (also with an empty transcript_path, where a Write elsewhere passes);
+    test_malformed_input_allows; test_shim_maps_hook_failure_by_payload (with CLAUDE_PROJECT_DIR at a fixture whose
+    bin/venv-python exits 1: a coarse payload is denied with the shim's reason, git status passes, and an exit-2
+    child's stderr reaches the caller); test_registered_rendered_and_code_owned (settings.json carries the group with
+    the exact matcher and anchored shim command after every existing PreToolUse group; hooks.json equals
+    plugin_hooks.render of settings.json; CODEOWNERS owns gate.modules and the contract);
     test_contract_shape_and_coarse_keywords (the working-tree contract loads; every class has id, matches, target,
     approval and binding_control; every admin profile, entry-point basename and class verb family is covered by the
-    hook's COARSE; the prefix is "Approvals at build start:"); test_source_never_emits_a_permission_decision
-    (neither module's text contains permissionDecision or hookSpecificOutput, and neither calls print without
-    file=sys.stderr, by ast). Quote ".claude/settings.json" as a path token (Decision 135).
+    hook's COARSE, and the shim's list equals COARSE; the prefix is "Approvals at build start:"); test_source_never_emits_a_permission_decision (no gate.modules file under .claude/hooks contains
+    permissionDecision or hookSpecificOutput, and neither Python module calls print without file=sys.stderr, by ast). Quote ".claude/settings.json" as a path token (Decision 135).
   - |-
     docs/contracts/deploy-paths.yaml -- in admin_out_of_band.pre_merge_live_plan.rule[0], replace
       "like every admin-tier action it runs on the operator's direction, and a standing operator authorisation for read-only admin calls counts."
@@ -698,7 +769,7 @@ execution_steps:
     In pre_merge_live_plan.enforcement, replace
       "context line. It cannot judge"
     with
-      "context line, and protected-actions.yaml approval.build_start's \"Approvals at build start:\" line. It cannot judge"
+      "context line; it also checks protected-actions.yaml approval.build_start's \"Approvals at build start:\" line. It cannot judge"
     and add at the top of amendment_log:
       - date: "2026-10-30"
         semantic_break: false
@@ -726,7 +797,8 @@ execution_steps:
     context and a non-admin github row to _TAXONOMY; rename test_all_three_clauses_missing_yields_three_findings to
     test_all_four_clauses_missing_yields_four_findings, and change every other len(failed) == 3 assertion (today in
     test_non_markdown_non_tf_file_under_admin_root_is_in_scope and test_lock_file_under_admin_root_is_in_scope) to
-    4. Add exactly seven tests: TestRedCasesByClause::test_no_approvals_line_flags_approvals_clause,
+    4, and keep the approvals line in test_no_v3_resolution_context_line_flags_v3_clause's context override (it
+    asserts exactly one finding). Add exactly seven tests: TestRedCasesByClause::test_no_approvals_line_flags_approvals_clause,
     TestRedCasesByClause::test_one_shot_class_in_approvals_line_is_flagged,
     TestFailClosed::test_unreadable_protected_actions_contract_fails,
     TestFailClosed::test_live_root_missing_axis_a_row_fails,
@@ -738,10 +810,13 @@ execution_steps:
   - >-
     Registrations -- .claude/settings.json: append the PreToolUse group from scope, run bin/venv-python
     .claude/hooks/plugin_hooks.py render and commit the regenerated .claude/hooks/hooks.json. .github/CODEOWNERS: the
-    three lines after the content-reader lines, in the file's column style. scripts/checks/misc/sensitive_value_detectors.py:
-    the three paths at the end of PROTECTED. config/agent/executor/capabilities.yaml: the three paths under the new
-    comment, after the content-reader block. tests/checks/misc/test_sensitive_value_detectors.py: add
-    test_protected_action_gate_paths_are_protected (all three in PROTECTED; the real CODEOWNERS and boundary_patterns
+    five lines after the content-reader lines, in the file's column style. Before editing a PROTECTED path, declare
+    this plan in .claude/protected_edit_plan (protected_path_guard, landed by the content-reader-lock build), as that
+    plan's own build does. scripts/checks/misc/sensitive_value_detectors.py: the five paths at the end of PROTECTED.
+    config/agent/executor/capabilities.yaml: the five paths under the new comment, after the content-reader block.
+    tests/checks/misc/test_sensitive_value_detectors.py: append the five paths to the BOUNDARY fixture, make
+    CONTENT_READER_PATHS an explicit list (it is a BOUNDARY slice today), and add
+    test_protected_action_gate_paths_are_protected (all five in PROTECTED; the real CODEOWNERS and boundary_patterns
     give no ownership violation; dropping the CODEOWNERS line for the contract gives one).
   - >-
     Prove the red: capture VP steps 1 and 3 failing before the change. Prove the gate bites: temporarily make the
@@ -759,7 +834,8 @@ execution_steps:
     Hand back: tell Benjamin the claude.ai plugin must refresh before project threads run the gate, and give a
     pasteable prompt for a FRESH project thread: "Run the post-merge steps of
     docs/plans/PLAN-protected-action-gate.yaml: VP steps 8 and 9." In that thread run VP 8 (the negative probe
-    first, then asking Benjamin for the approve line in that thread) and VP 9.
+    first, then asking Benjamin for the approve line in that thread) and VP 9, then resolve it. Tell the coordinator
+    that admin-root builds now open with an approvals ask (rec-4767 until the implement skill says so).
   - 'Report: what was implemented, VP results, the live probe outcome and the rec closure.'
 work_areas: []
 rollback: >-
