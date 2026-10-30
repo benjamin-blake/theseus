@@ -315,6 +315,15 @@ def screen_root(root: Path) -> list[Finding]:
     return sorted(set(findings + screen_tree(files)), key=lambda f: (f[1], f[2], f[0]))
 
 
+def _resource_refusal(res: dict[str, Any]) -> str | None:
+    if res.get("provisioners") or res.get("count_expression") or res.get("for_each_expression"):
+        return "provisioner_or_meta_argument"
+    is_data = res.get("mode") == "data"
+    if res.get("type") not in (ALLOWED_DATA_TYPES if is_data else ALLOWED_RESOURCE_TYPES):
+        return "data_type" if is_data else "resource_type"
+    return None
+
+
 def backstop(plan: Any) -> str | None:
     """Rule id of the first refusal found in Terraform's own parsed plan JSON, or None."""
     if not isinstance(plan, dict) or not isinstance(plan.get("configuration"), dict):
@@ -327,17 +336,13 @@ def backstop(plan: Any) -> str | None:
     if root.get("module_calls"):
         return "module_calls"
     for res in root.get("resources") or []:
-        if res.get("provisioners") or res.get("count_expression") or res.get("for_each_expression"):
-            return "provisioner_or_meta_argument"
-        allowed = ALLOWED_DATA_TYPES if res.get("mode") == "data" else ALLOWED_RESOURCE_TYPES
-        if res.get("type") not in allowed:
-            return "data_type" if res.get("mode") == "data" else "resource_type"
-    for rc in plan.get("resource_changes") or []:
-        if (rc.get("change") or {}).get("importing"):
-            return "importing"
-    for chk in plan.get("checks") or []:
-        if ((chk or {}).get("address") or {}).get("kind") == "check":
-            return "check_block"
+        refusal = _resource_refusal(res)
+        if refusal:
+            return refusal
+    if any((rc.get("change") or {}).get("importing") for rc in plan.get("resource_changes") or []):
+        return "importing"
+    if any(((chk or {}).get("address") or {}).get("kind") == "check" for chk in plan.get("checks") or []):
+        return "check_block"
     return None
 
 
