@@ -178,7 +178,9 @@ verification_plan:
       c = n["contract"]
       if (c["id"], c["subject"], c["class"], c["status"], c["evaluator"].get("check")) != (
               "terraform-personal-cd", "terraform-personal-cd", "D", "ratified", "validate_terraform_personal_cd"): bad.append("new contract block")
-      if k["contract"]["subject"] != "terraform-cc-web-operations": bad.append("kept subject changed")
+      kc, bc = k["contract"], base["contract"]
+      if [kc[x] for x in ("id", "subject", "class", "status", "contract_version", "evaluator")] != [
+              bc[x] for x in ("id", "subject", "class", "status", "contract_version", "evaluator")]: bad.append("kept contract block changed beyond T2")
       for name, t in ((K, kt), (N, nt)):
           if effective_lines(t) > 500 or max(len(x) for x in t.splitlines()) > 2000: bad.append(f"size: {name}")
       print(bad or "SPLIT_OK"); raise SystemExit(1 if bad else 0)
@@ -243,13 +245,20 @@ verification_plan:
       main = lambda p: norm(subprocess.run(["git", "show", "origin/main:" + p], capture_output=True, text=True, check=True).stdout)
       head = lambda p: norm(open(p).read())
       bad = []
+      counts = {"docs/plans/PLAN-pr-plan-opaque-iam-policy-check.yaml": 4, "docs/plans/PLAN-secrets-to-ssm-retire.yaml": 3}
+      for p, n in counts.items():
+          if main(p).count(OLD) != n: bad.append(f"RE-GROUND step 8: {p} names the old path {main(p).count(OLD)} times on main, planned for {n}")
       for p in ("docs/plans/PLAN-admin-terraform-assets-session-hook.yaml", "docs/plans/PLAN-secrets-to-ssm-cutover.yaml"):
           if main(p) != head(p): bad.append("touched: " + p)
       p = "docs/plans/PLAN-secrets-to-ssm-retire.yaml"
+      if main(p).count("validate_terraform_cc_web_operations its structure") != 1: bad.append("RE-GROUND step 8b waiver anchor")
       b = main(p).replace(OLD, NEW).replace("validate_terraform_cc_web_operations its structure", "validate_terraform_personal_cd its structure")
       if b != head(p): bad.append(p)
       p = "docs/plans/PLAN-pr-plan-opaque-iam-policy-check.yaml"
       b = main(p).replace(OLD, NEW)
+      for a in ("This adds 5 effective lines", "(folding amendment history to stay at most 500)", "for check in (a, b, c, d, e):",
+                "import validate_terraform_cc_web_operations as d", "Prose only; validate_terraform_cc_web_operations checks"):
+          if b.count(a) != 1: bad.append("RE-GROUND step 8a anchor: " + a)
       start = b.index("This adds 5 effective lines"); end = b.index("Never raise; never touch the approved sentence.", start)
       b = b[:start] + "This adds 5 effective lines (step 1, amendment entry 4 with the summary as one double-quoted line) to a file of about 206 after PLAN-terraform-personal-cd-split, so no history fold is needed. " + b[end:]
       b = b.replace("(folding amendment history to stay at most 500)", "(at most 500 effective lines)")
@@ -261,11 +270,12 @@ verification_plan:
       p = "docs/plans/PLAN-trusted-plan-cutover.yaml"
       b = main(p)
       row = "A dated amendment_log row per PR. validate_terraform_cc_web_operations stays green."
+      ob = "waiver_reason: Contract prose; validate_terraform_cc_web_operations in --pre checks its structure and referenced paths."
+      if b.count(row) != 1 or b.count(ob) != 1: bad.append("RE-GROUND step 8c anchors")
       b = b.replace(row, row + " After PLAN-terraform-personal-cd-split, the sections PR 3 and PR 4 edit live in"
           " docs/contracts/terraform-personal-cd.yaml (next row). - file: docs/contracts/terraform-personal-cd.yaml action: Modify"
           " purpose: >- PR 4: deletes the two \"until rec-4637's last PR removes it\" clauses (APPROVED, as in the row above)"
           " and adds a dated amendment_log row. validate_terraform_personal_cd stays green.")
-      ob = "waiver_reason: Contract prose; validate_terraform_cc_web_operations in --pre checks its structure and referenced paths."
       b = b.replace(ob, ob + " - source: docs/contracts/terraform-personal-cd.yaml behavior: PR 4's two clause deletions"
           " verification_step: 9 command: bin/venv-python -m scripts.validate --pre waiver_reason: Contract prose;"
           " validate_terraform_personal_cd in --pre checks its structure and referenced paths.")
@@ -275,7 +285,8 @@ verification_plan:
     expected: exit 0, prints REPOINT_OK.
     fix_if: >-
       Re-apply execution step 8 from origin/main's text; change nothing else in those plans (Decision 181: a re-point
-      never weakens a step).
+      never weakens a step). A RE-GROUND line means a plan amendment landed on main first: stop and return to the
+      planner, never re-point the new text by guesswork.
     hermetic: false
     expected_literals: []
     graduation: waive
@@ -391,17 +402,24 @@ constraints:
 context:
   - "Decision-scout verdict FLAGS_FOUND (SPIRIT NOTE 114: state the boundary rule, justify apply_posture; resolved by Fork 1A and the boundary paragraphs in T1/T5). Decisions triaged: 191 of 191. Roadmap items intersected: 2; CONFLICT: 0; RELATED: 2. CITE: 166, 168, 86, 238, 177, 167, 181."
   - "gates: decision-scout=FLAGS_FOUND; step-6b=write-the-plan 2026-10-30 14:20Z; plan-critique=PENDING"
-  - "Approvals: Benjamin 'write the plan', 2026-10-30 14:20Z (cmsg_01Cqz6E4mzSv6kkGCSCub3WMHt8hECMax6VE73AnbYk7cz), on the 6b at /mnt/project-files/credential-proxy/contract-split/step6b-presentation.md: Forks 1A, 2A, 3A, 4A and texts T1-T10 as shown, including the path-only re-points of the three in-flight plans. Allowed variance: the T4/T7/T10 dates become the build commit date; line wrapping. The build merges under the standing rule (code review PROCEED + green CI + the coordinator's merge window): no IAM, deploy or unapproved wording."
+  - "Approvals: Benjamin 'write the plan', 2026-10-30 14:20Z (cmsg_01Cqz6E4mzSv6kkGCSCub3WMHt8hECMax6VE73AnbYk7cz), on the 6b at /mnt/project-files/credential-proxy/contract-split/step6b-presentation.md: Forks 1A, 2A, 3A, 4A and texts T1-T10 as shown, including the path-only re-points of the three in-flight plans. Allowed variance: the T1/T4/T7/T10 dates become the build commit date; line wrapping. The build merges under the standing rule (code review PROCEED + green CI + the coordinator's merge window): no IAM, deploy or unapproved wording."
+  - "Post-6b step-8 edits beyond path-only (guard f in the opaque-IAM VP 3; two waiver_reason checker names; 8c's PR 4 scope and obligation rows instead of moving the PR 3 row; T1 date variance): asked Benjamin 2026-10-30 (card cmsg_01Cqz6E4mzSv6kkGCSCub3WM81211aV1n738inV5zxR4xS). This plan PR merges only after his answer is recorded here; 'Build merge waits for me' makes the build's merge wait for his word on its final diff."
   - "fork: line placement | chosen: 2-way, apply_posture stays (A) | class: asked | precedent: none (answered 2026-10-30 14:20Z)"
   - "fork: new file name | chosen: terraform-personal-cd.yaml (A) | class: asked | precedent: none (answered 2026-10-30 14:20Z)"
   - "fork: evaluator | chosen: new thin check validate_terraform_personal_cd (A) | class: asked | precedent: none (answered 2026-10-30 14:20Z)"
   - "fork: in-flight plans | chosen: split PR re-points all three (A) | class: asked | precedent: none (answered 2026-10-30 14:20Z)"
   - "Two subjects, not one (relief_valve 'splitting a single subject is forbidden'): hand-run CC-web/ADMIN work vs GitHub Actions wiring no CC-web session runs; the original header already named 'the CD workflows' internal wiring' separately. Evidence: /mnt/project-files/credential-proxy/contract-split/ (SCOUT.md, fable-brief/ADVICE.md, step6b-presentation.md, previews)."
+  - "Why not compaction alone (the contracts row's first relief valve): folding the kept file's history buys about 100 lines, one cycle against the in-flight plans' ~+46, while two subjects keep accreting in one file; the split also gives each in-flight plan a one-file target."
   - "Decision 238 cl.6 names the old file's speculative_plan_job row: left as written (Decision 177 append-only); T7's migration_story points there. No numbered Decision (Decision 167 routing: field_semantics owns contract layout)."
   - "Order: merge this before the builds of PLAN-pr-plan-opaque-iam-policy-check, PLAN-secrets-to-ssm-retire and PLAN-trusted-plan-cutover PR 4 open their PRs (their scope gate reads the base ref). The admin setup and SSM cutover builds rebase and land unchanged."
   - "rec-4753 (filed 2026-10-30): registry entry tfvars-recovery-table-covers-module is red on origin/main (UNCOVERED neon_api_key since #1654); VP 5 skips it by name only."
   - "Stale paths redaction_check.py and both platform_roles.tf (cited by no section) stay in the kept file; out of scope."
   - "Heads-up for the SSM retire builder (not this plan's to fix): its T4 targets 'holds no Secrets Manager value read on the Neon key or DSN', which trusted-plan PR 3 already rewrote out of speculative_plan_job on main."
+  - >-
+    plan-critique r2 REVISE dispositions: R1 the post-6b step-8 edits are put to Benjamin (card above) and recorded
+    before merge. Optional fixes taken: VP 4 asserts the anchors and old-path counts on main (a plan amendment that
+    lands first fails loudly as RE-GROUND), VP 2 checks the whole kept contract block, T1's date joins the variance, and
+    a context line records why compaction alone was not chosen. VP 6-7 stay not-applicable (repo practice is split).
   - >-
     plan-critique r1 REVISE dispositions: R1 8c keeps the kept file's obligation row and adds one for the new file, VP 4
     now compares the trusted-plan plan exactly; R2 tier V1 to V2 (Python check; precedents
@@ -426,8 +444,8 @@ execution_steps:
   - "VP 6 (fast tier)."
   - "Run validate_weakening_candidates against origin/main; expected none (no existing test or check changes). Dispose any it lists."
   - |
-    Approved texts (Benjamin, 'write the plan' 2026-10-30 14:20Z; allowed variance: the T4, T7 and T10 dates become the
-    build's commit date; line wrapping of comments and folded scalars). Mirror of
+    Approved texts (Benjamin, 'write the plan' 2026-10-30 14:20Z; allowed variance: the T1 ("split 2026-10-30"), T4, T7
+    and T10 dates become the build's commit date; line wrapping of comments and folded scalars). Mirror of
     /mnt/project-files/credential-proxy/contract-split/step6b-presentation.md.
 
     T1. Kept file header comment (replaces the comment block above `contract:`):
