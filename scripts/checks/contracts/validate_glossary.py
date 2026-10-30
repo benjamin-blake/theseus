@@ -77,7 +77,7 @@ def _ratified(via: str, root: Path) -> list[str]:
 
 def _terms(terms: dict[str, Any]) -> list[str]:
     out: list[str] = []
-    if tuple(terms) != _TERM_KEYS and set(terms) != set(_TERM_KEYS):
+    if set(terms) != set(_TERM_KEYS):
         out.append(f"terms keys differ from the fourteen reserved names: {sorted(set(terms) ^ set(_TERM_KEYS))}")
     seen: set[str] = set()
     for key, term in terms.items():
