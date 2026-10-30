@@ -514,3 +514,41 @@ def test_empty_planned_lists_with_unknown_flags_are_incomplete(statement: dict, 
     plan, links = _minimal(statement, flags)
     result = rebuild_policy(plan, plan["resource_changes"][0], links, [f"{DOC}d.json"])
     assert isinstance(result, Incomplete) and result.reason == "statement field unknown"
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        {"actions": {"x": True}},
+        {"resources": {"0": True}},
+        {"not_actions": "yes"},
+        {"principals": {"0": True}},
+        {"condition": {"0": True}},
+        {"actions": [True], "future_attribute": [True]},
+        {"future_attribute": True},
+    ],
+)
+def test_wrongly_shaped_unknown_flags_are_incomplete(flags: dict) -> None:
+    plan, links = _minimal({}, flags)
+    result = rebuild_policy(plan, plan["resource_changes"][0], links, [f"{DOC}d.json"])
+    assert isinstance(result, Incomplete)
+
+
+@pytest.mark.parametrize("statement_flags", [[True], {"0": True}, "yes"])
+def test_wrongly_shaped_statement_flags_are_incomplete(statement_flags: object) -> None:
+    plan, links = _minimal({}, {})
+    plan["resource_changes"][1]["change"]["after_unknown"]["statement"] = statement_flags
+    result = rebuild_policy(plan, plan["resource_changes"][0], links, [f"{DOC}d.json"])
+    assert isinstance(result, Incomplete)
+
+
+@pytest.mark.parametrize("source_flags", [{"0": True}, {"x": True}, "yes"])
+def test_wrongly_shaped_source_flags_are_incomplete(source_flags: object) -> None:
+    plan, links = _minimal({}, {})
+    change = plan["resource_changes"][1]["change"]
+    change["after"]["source_policy_documents"] = [
+        json.dumps({"Statement": [{"Effect": "Allow", "Action": "iam:*", "Resource": "*"}]})
+    ]
+    change["after_unknown"]["source_policy_documents"] = source_flags
+    result = rebuild_policy(plan, plan["resource_changes"][0], links, [f"{DOC}d.json"])
+    assert isinstance(result, Incomplete)

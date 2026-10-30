@@ -213,6 +213,15 @@ def _any_unknown(flag: Any) -> bool:
     return flag is True
 
 
+def _shaped(flags: Any, want: type) -> Any:
+    """The unknown-flag container as the type the plan schema gives it; any other shape is not a plan we model."""
+    if flags is None or flags is False:
+        return want()
+    if isinstance(flags, want):
+        return flags
+    raise _Stop(MALFORMED)
+
+
 def _unseen_unknown(items: Any, flags: Any) -> bool:
     """True when an unknown flag sits past the end of the planned list (Terraform leaves such elements out of `after`)."""
     return isinstance(flags, list) and _any_unknown(flags[len(items) if isinstance(items, list) else 0 :])
@@ -255,11 +264,11 @@ class _Doc:
     def listing(self, name: str, index: int, field: str, values: Any, flags: Any) -> tuple[Optional[list], int]:
         if flags is True or _unseen_unknown(values, flags):
             raise _Stop("statement field unknown")
+        flag_list = _shaped(flags, list)
         if values is None or values == []:
             return None, 0
         if not isinstance(values, list):
             raise _Stop(MALFORMED)
-        flag_list = flags if isinstance(flags, list) else []
         out: list = []
         unknown = 0
         for pos, value in enumerate(values):
@@ -276,13 +285,17 @@ class _Doc:
     def principals(self, name: str, index: int, field: str, blocks: Any, flags: Any) -> tuple[Any, int]:
         if flags is True or _unseen_unknown(blocks, flags):
             raise _Stop("statement field unknown")
+        flags = _shaped(flags, list)
         if not blocks:
             return None, 0
         out: dict[str, list[str]] = {}
         unknown = 0
         for pos, block in enumerate(blocks):
-            flag = flags[pos] if isinstance(flags, list) and pos < len(flags) else {}
-            flag = flag if isinstance(flag, dict) else {"type": flag}
+            flag = (
+                {"type": True}
+                if pos < len(flags) and flags[pos] is True
+                else _shaped(flags[pos] if pos < len(flags) else None, dict)
+            )
             if flag.get("type") or not isinstance(block, dict) or not isinstance(block.get("type"), str):
                 raise _Stop("statement field unknown" if flag.get("type") else MALFORMED)
             ids, n = self.listing(name, index, f"{field}{pos}", block.get("identifiers"), flag.get("identifiers"))
@@ -293,13 +306,17 @@ class _Doc:
     def condition(self, name: str, index: int, blocks: Any, flags: Any) -> tuple[Any, int]:
         if flags is True or _unseen_unknown(blocks, flags):
             raise _Stop("statement field unknown")
+        flags = _shaped(flags, list)
         if not blocks:
             return None, 0
         out: dict[str, dict[str, list[str]]] = {}
         unknown = 0
         for pos, block in enumerate(blocks):
-            flag = flags[pos] if isinstance(flags, list) and pos < len(flags) else {}
-            flag = flag if isinstance(flag, dict) else {"test": flag}
+            flag = (
+                {"test": True}
+                if pos < len(flags) and flags[pos] is True
+                else _shaped(flags[pos] if pos < len(flags) else None, dict)
+            )
             if not isinstance(block, dict) or flag.get("test") or flag.get("variable"):
                 raise _Stop("statement field unknown" if isinstance(block, dict) else MALFORMED)
             values, n = self.listing(name, index, f"condition{pos}", block.get("values"), flag.get("values"))
@@ -310,9 +327,12 @@ class _Doc:
     def statement(self, name: str, index: int, block: Any, flags: Any) -> dict:
         if not isinstance(block, dict):
             raise _Stop(MALFORMED)
-        if flags is True or (isinstance(flags, dict) and (flags.get("sid") or flags.get("effect"))):
+        if flags is True:
             raise _Stop("statement field unknown")
-        flags = flags if isinstance(flags, dict) else {}
+        flags = _shaped(flags, dict)
+        modelled = {"sid", "effect", "principals", "not_principals", "condition", *(f for f, _ in _LIST_FIELDS)}
+        if flags.get("sid") or flags.get("effect") or any(_any_unknown(v) for k, v in flags.items() if k not in modelled):
+            raise _Stop("statement field unknown")
         out: dict[str, Any] = {}
         if any(block.get(key) is not None and not isinstance(block[key], str) for key in ("sid", "effect")):
             raise _Stop(MALFORMED)
@@ -344,19 +364,20 @@ class _Doc:
             raise _Stop("unmodelled argument")
         if unknown.get("statement") is True:
             raise _Stop("statement list unknown")
+        known_keys = {"id", "json", "minified_json", "statement", "source_policy_documents", *_UNMODELLED}
+        if any(_any_unknown(v) for k, v in unknown.items() if k not in known_keys):
+            raise _Stop("unmodelled argument")
         blocks, flags = after.get("statement") or [], unknown.get("statement")
-        if not isinstance(blocks, list) or not isinstance(flags, (list, bool, type(None))):
+        if not isinstance(blocks, list):
             raise _Stop(MALFORMED)
+        flags = _shaped(flags, list)
         if _unseen_unknown(blocks, flags):
             raise _Stop("statement field unknown")
         merged: list[dict] = []
         for source in self.sources(name, after, unknown, depth, seen):
             _merge(merged, source)
         outer, self.unknown = self.unknown, 0
-        own = [
-            self.statement(name, i, b, flags[i] if isinstance(flags, list) and i < len(flags) else None)
-            for i, b in enumerate(blocks)
-        ]
+        own = [self.statement(name, i, b, flags[i] if i < len(flags) else None) for i, b in enumerate(blocks)]
         self.counts[name], self.unknown = self.unknown, outer
         _merge(merged, own)
         return merged
@@ -369,9 +390,10 @@ class _Doc:
             raise _Stop(MALFORMED)
         if _unseen_unknown(elements, flags):
             raise _Stop("sourced document not resolvable")
+        flags = _shaped(flags, list)
         out: list[list[dict]] = []
         for pos, element in enumerate(elements):
-            if isinstance(flags, list) and pos < len(flags) and flags[pos] is True:
+            if pos < len(flags) and _any_unknown(flags[pos]):
                 names = self.links.documents.get(name) or []
                 if len(names) != len(elements) or depth >= _MAX_DEPTH or names[pos] in seen + (name,):
                     raise _Stop("sourced document not resolvable")
