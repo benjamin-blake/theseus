@@ -19,12 +19,15 @@ scope:
     rule**' bullet (duplicate of the Branching section). No other AGENTS.md line changes.
 - file: .claude/hooks/never_on_main.py
   action: Modify
-  purpose: On main, block Edit/Write/MultiEdit/NotebookEdit only when the target (tool_input file_path, or notebook_path) resolves
-    via os.path.realpath inside the repo top-level (git rev-parse --show-toplevel, realpath'd, run in the hook's cwd). Keep blocking
-    when the target key is missing or the top-level cannot be determined. Bash git commit/push handling, the fail-open-on-malformed-JSON
-    branch and the block message are unchanged; the module docstring states the path scope. Only computes the path when the branch
-    is main. The deny message names 'the harness-assigned session branch' with no claude/ prefix (rec-4267's hook site; its other
-    two sites are outside this scope, so rec-4267 stays open).
+  purpose: 'On main, block Edit/Write/MultiEdit/NotebookEdit only when the target (tool_input file_path, or notebook_path) resolves
+    via os.path.realpath inside the repo top-level (git rev-parse --show-toplevel, realpath''d, run in the hook''s cwd). Keep blocking
+    when the target key is missing or the top-level cannot be determined. Bash git commit/push handling and the fail-open-on-malformed-JSON
+    branch are unchanged; the module docstring states the path scope. Only computes the path when the branch is main. Deny message:
+    the first line and the ''verify with: git branch --show-current'' and ''See docs/contracts/git-ops.yaml ...'' lines stay; the
+    line naming ''a harness-assigned claude/ session branch'' becomes ''the harness-assigned session branch'' (rec-4267''s hook
+    site); the two lines ''If the result is still main, create a new branch before retrying: git checkout -b claude/your-slug''
+    become one line telling the agent to stop and tell the operator, since agents never create their own branch (AGENTS.md Branching).
+    The file must keep the literal git-ops.yaml and must not contain the literal AGENTS.md (graduated registry check hooks-name-git-ops-contract).'
 - file: tests/hooks/test_never_on_main.py
   action: Create
   purpose: 'Subprocess tests of the hook with CLAUDE_HOOK_BRANCH_OVERRIDE: on main, Write/Edit/MultiEdit/NotebookEdit to a tmp_path
@@ -32,7 +35,9 @@ scope:
     into the repo exit 2; a symlink outside the repo pointing into it exits 2; a missing file_path exits 2; cwd outside any git
     repo (top-level unknown) exits 2 for an outside path; a linked git worktree (git worktree add in tmp_path, hook cwd = the worktree)
     blocks a path inside that worktree (Decision 25/138 edge); off main every case exits 0; Bash git commit/push on main still
-    exits 2 and git status exits 0; malformed JSON exits 0; the deny message contains no ''claude/''.'
+    exits 2 and git status exits 0; malformed JSON exits 0; the deny message contains no ''claude/''; a sibling-prefix path (<repo-root>-x/f,
+    outside the repo though its string starts with the root) exits 0. Tmp-repo commits set commit.gpgsign=false (precedent: tests/hooks/test_session_start_log_turn.py
+    GIT_ENV), since this container signs commits globally.'
 - file: tests/test_agents_md_rules.py
   action: Create
   purpose: 'Drift guards for the new AGENTS.md rules: (a) AGENTS.md''s hook canary names the literal [session_start_; each of .claude/settings.json
@@ -60,8 +65,8 @@ acceptance_criteria:
 - never_on_main passes an outside-repo write on main and still blocks every in-repo write, commit and push on main (VP 1).
 - The canary literal matches every registered SessionStart hook; the verdict command exists (VP 2).
 - Every existing test that reads AGENTS.md passes unchanged (VP 5).
-- rec-4705's stored acceptance passes; rec-3204 is retargeted to AGENTS.md through update_rec and its new acceptance passes (VP
-  6); rec-813's stored acceptance passes; all three close at merge through the Resolves trailer (VP 8).
+- The stored acceptance of rec-4705, rec-3204 (retargeted to AGENTS.md at planning, read back) and rec-813 passes on the finished
+  tree (VP 6, VP 9); all three close at merge through the Resolves trailer (VP 8).
 - Full tier exits 0 and --verify-head attests HEAD before push (VP 7).
 verification_plan:
 - step: 1
@@ -108,7 +113,7 @@ verification_plan:
   command: 'bin/venv-python -c "import re,pathlib; n=sum(len(pathlib.Path(f).read_bytes()) for f in (''AGENTS.md'',''CLAUDE.md''));
     b=int(re.search(r''root_ambient_load_set: (\d+)'', pathlib.Path(''config/prose_budgets.yaml'').read_text()).group(1)); assert
     n<18902 and b==n+300, (n,b); print(''S1_OK'', n, b)"'
-  expected: Prints S1_OK, the new total (about 16921) and the budget (total plus 300).
+  expected: Prints S1_OK, the new total (about 16948) and the budget (total plus 300).
   expected_literals:
   - S1_OK
   fix_if: Budget is not the measured total plus 300 -- set it so (still a decrease from 18935); never raise above 18935.
@@ -124,15 +129,15 @@ verification_plan:
   fix_if: A pin fails -- stop and report; the approved text is fixed, so the remedy is an operator ruling, not a reword.
   hermetic: false
   graduation: waive
-  graduation_waiver_reason: Existing suites; they run in the full tier and post-merge. Non-hermetic because it re-runs about 50
-    existing files (about 50 s), beyond the replay budget's purpose.
+  graduation_waiver_reason: Existing suites; they run in the full tier and post-merge. Non-hermetic because it re-runs 35 existing
+    files (about 50 s), beyond the replay budget's purpose.
 - step: 6
   phase: pre-deploy
   action: Rec acceptance oracles hold at the closing commit (Decision 201).
   command: '! grep -q ''deliberately not installed in either container'' AGENTS.md && grep -q ''cloud image'' AGENTS.md && grep
-    -q ''scripts.checks.validation_result --verify-head'' AGENTS.md && grep -q ''never a pipe'' AGENTS.md && ! grep -q ''Memory
-    policy .* CLAUDE.md is canonical persistence'' AGENTS.md && grep -qE ''AGENTS[.]md is (the )?canonical'' AGENTS.md && echo
-    ACCEPT_OK'
+    -q ''belongs only in CI runner steps'' AGENTS.md && grep -q ''scripts.checks.validation_result --verify-head'' AGENTS.md &&
+    grep -q ''never a pipe'' AGENTS.md && ! grep -q ''Memory policy .* CLAUDE.md is canonical persistence'' AGENTS.md && grep -qE
+    ''AGENTS[.]md is (the )?canonical'' AGENTS.md && echo ACCEPT_OK'
   expected: Prints ACCEPT_OK.
   expected_literals:
   - ACCEPT_OK
@@ -148,12 +153,23 @@ verification_plan:
   fix_if: A failure -- fix and rerun from the start; a timeout is blocked, never skipped.
   hermetic: false
   graduation: not-applicable
+- step: 9
+  phase: pre-deploy
+  action: 'Before merge: the three bundled recs'' STORED acceptance (read from the warehouse) passes on the finished tree.'
+  command: bin/venv-python -c "import subprocess; from src.common.ducklake_reader_client import fetch_recs_by_ids, make_reader;
+    rows,m=fetch_recs_by_ids(make_reader(),['rec-4705','rec-3204','rec-813']); assert not m and len(rows)==3, m; bad=[r['id'] for
+    r in rows if subprocess.run(['bash','-c',r['acceptance']]).returncode!=0]; assert not bad, bad; print('STORED_ACCEPT_OK')"
+  expected: Prints STORED_ACCEPT_OK.
+  fix_if: A rec's stored acceptance fails -- read it back; if it differs from the plan's context, stop and report, never rewrite
+    it to pass.
+  hermetic: false
+  graduation: not-applicable
 - step: 8
   phase: post-deploy
-  action: 'Closure: both recs closed by the Resolves trailer.'
+  action: 'Closure: all three recs closed by the Resolves trailer.'
   command: bin/venv-python -c "from src.common.ducklake_reader_client import fetch_recs_by_ids, make_reader; rows,_=fetch_recs_by_ids(make_reader(),['rec-4705','rec-3204','rec-813']);
-    s={r['id']:r['status'] for r in rows}; print(s); assert set(s.values())=={'closed'}"
-  expected: Both statuses closed.
+    s={r['id']:r['status'] for r in rows}; print(s); assert s=={'rec-4705':'closed','rec-3204':'closed','rec-813':'closed'}, s"
+  expected: All three statuses closed (a missing row fails the assertion).
   fix_if: Open -- read the closure job log; an acceptance failure means rec-3204's retarget did not land before merge.
   hermetic: false
 test_obligations:
@@ -191,23 +207,29 @@ context:
   carve-out named), 184 (labelled AWS adapter), 113 (canary off for subagents).'
 - 'Decision 181 coverage: claims-cite-evidence and hook canary are unenforced residuals owned by rec-4756; canary marker drift
   is guarded by tests/test_agents_md_rules.py; the daily completeness check stays the backstop.'
-- 'Forks decided with notice: canary in AGENTS.md (not CLAUDE.md, Decision 139); coverage note dropped (premise disproved: pytest
-  --cov ran 31 passed and failed only fail_under=37 on a subset); rec-3204 retargeted to AGENTS.md (implement skill has 8 B headroom
-  and belongs to plan C).'
 - 'Lambda bullet becomes a pointer: .claude/skills/planning/SKILL.md Lambda Deployment section already carries active/stub and
   config/agent/ (Decision 79).'
-- 'rec-3204: before the PR merges, update_rec its file to AGENTS.md and acceptance to: grep -q ''scripts.checks.validation_result
-  --verify-head'' AGENTS.md && grep -q ''never a pipe'' AGENTS.md (call get_rec_write_guidance first).'
+- 'rec-3204 retargeted at planning (2026-10-30, update_rec, read back): file AGENTS.md, acceptance greps ''scripts.checks.validation_result
+  --verify-head'' and ''never a pipe'' in AGENTS.md; its derived risk was not re-derived (closes at merge). VP 9 re-reads it before
+  merge.'
 - 'Parallel wave: plan A may add a required plan field in scripts/roadmap/plan_document.py; plan D adds one AGENTS.md sentence
   after this merges. Check open PRs touching AGENTS.md before merge.'
-- 'Measured on the planning draft at 87e0a790: AGENTS.md 18891 -> 16910 B; all AGENTS.md-reading tests pass; full tier measured
+- 'Canary premise observed: this project thread''s own context carried ''SessionStart:resume hook success: [session_start_sync_main]
+  local main synced to origin/main'' (2026-10-30), delivered by the plugin hooks.json. Residual owners: rec-4756 (claims and canary
+  enforcement), rec-4758 (convergence_health gh docstring).'
+- Block 3 names memory among outside-repo writes on purpose (IAM-F04 was a refused project-memory write); block 5's ban is the
+  ~/.claude auto-memory store only.
+- 'Measured on the planning draft at 87e0a790: AGENTS.md 18891 -> 16937 B; all AGENTS.md-reading tests pass; full tier measured
   28 min (13:52:04Z-14:19:59Z 2026-10-30, exit 0). rec-4479 still applies to the compacted /overseer sentence (same claims kept).'
 - 'Approval: Benjamin ''write the plan but leave the headroom for D. I approve of all other recommendations'' (cmsg_017w1Kar4nqzb395d2mcyCJJ1sep6A2ebVjroiz6ptooGY,
-  2026-10-30 14:40Z) covers the nine AGENTS.md blocks as posted (cmsg_017w1Kar4nqzb395d2mcyCJJRc23gvm8SxYwbyeoPpDrqL, cmsg_017w1Kar4nqzb395d2mcyCJJNoQGFzeivoApjrWEx5ooQd;
-  /mnt/project-files/joint-review/plan-E/AGENTS-proposed.diff) and the forks below.'
+  2026-10-30 14:40Z) covers the AGENTS.md blocks as posted (cmsg_017w1Kar4nqzb395d2mcyCJJRc23gvm8SxYwbyeoPpDrqL, cmsg_017w1Kar4nqzb395d2mcyCJJNoQGFzeivoApjrWEx5ooQd;
+  /mnt/project-files/joint-review/plan-E/AGENTS-proposed.diff) and the forks below; block 2 was corrected after critique round
+  1 (gh runs in CI) and re-approved: ''yes, approved ... gh is fine in CI'' (cmsg_017w1Kar4nqzb395d2mcyCJJ3SdjMnngD3zCATe2ieUzju,
+  15:08Z).'
 - 'fork: S1 budget | chosen: compacted total plus 300 B for plan D | class: asked | precedent: none (registry seeds at zero headroom)'
 - 'fork: canary home | chosen: AGENTS.md | class: decided-with-notice | precedent: Decision 139 pointer invariant'
-- 'fork: coverage note | chosen: dropped | class: decided-with-notice | precedent: measured (premise did not reproduce)'
+- 'fork: coverage note | chosen: dropped | class: decided-with-notice | precedent: measured -- pytest --cov ran 31 passed and failed
+  only fail_under=37 on a subset; contract loading never broke'
 - 'fork: rec-3204 home | chosen: AGENTS.md, rec retargeted | class: decided-with-notice | precedent: rec acceptance repair is mechanical'
 - 'Premise-dead recs closed at planning with operator approval: rec-2852, rec-3216, rec-3215, rec-816 (read back closed 2026-10-30).
   rec-4267: only the hook''s message is fixed here; its two other sites stay open.'
@@ -235,7 +257,7 @@ execution_steps:
     hooks not loaded" in your first status and write nothing until the operator resolves it.
 - |
   AGENTS.md verbatim block 2 -- Shell invocations: replace the GitHub-access bullet:
-  - GitHub access is via the `github` MCP server (`mcp__github__*`). `gh` may ship with the cloud image, but no repo surface depends on it: new scripts, checks, and verification-plan commands use mcp__github__*, not gh.
+  - GitHub access from a session is via the `github` MCP server (`mcp__github__*`). `gh` may ship with the cloud image, but new session-side scripts, checks, and verification-plan commands use mcp__github__*; `gh` belongs only in CI runner steps.
 - |
   AGENTS.md verbatim block 3 -- Branching: replace the whole section body (hard-rule paragraph and the three bullets):
   **Hard rule: on `main`, never `Edit`/`Write`/`MultiEdit`/`NotebookEdit` a file inside the repo, or run `git commit` / `git push`.** On CC-web you are already on the harness-assigned session branch (`git branch --show-current`); agents never create their own. The PreToolUse hook `.claude/hooks/never_on_main.py` enforces this; writes outside the repo (memory, scratchpad) and read-only commands pass.
@@ -281,8 +303,17 @@ execution_steps:
   unmodified hook and AGENTS.md first.'
 - 'config/prose_budgets.yaml: set root_ambient_load_set to the measured AGENTS.md + CLAUDE.md byte total plus 300, with the scope
   row''s inline comment.'
-- 'rec-3204: retarget file and acceptance through update_rec (context line) before opening the PR; squash commit body carries ''Resolves:
-  rec-4705, rec-3204, rec-813''.'
+- 'Squash commit body carries ''Resolves: rec-4705, rec-3204, rec-813''. After merge, add an update_rec context note to rec-4267
+  that the never_on_main.py site is fixed (its other two sites stay open).'
 - Execute Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55)
+- 'Closure evidence, recorded as four SEPARATE facts (implement skill Commit Flows): GitHub readiness state; parent validator evidence
+  (VP 7 full-tier exit 0 plus bin/venv-python -m scripts.checks.validation_result --verify-head for the pushed HEAD); structured
+  postflight evidence (write the scripts.session.postflight_evidence.CATEGORIES JSON in the scratchpad, then bin/venv-python -m
+  scripts.session.postflight --evidence <file>); the real outcome - push, build PR, CI green by event-driven wake (never polled),
+  merge SHA.'
+- 'Merge gate: independent code review PROCEED; every check finished green (get_check_runs); VP 9 passes; no open PR touches AGENTS.md,
+  CLAUDE.md, config/prose_budgets.yaml or the hook (list open PRs and their files; rebase and re-run VP 3-4 if main changed AGENTS.md);
+  Benjamin''s word on the final diff (AGENTS.md is always-ask), quoted by message id in the PR body; squash-merge with the PR body
+  (carrying the Resolves trailer) as the commit message.'
 - 'Report: what was implemented, verification results'
 rollback: Revert the squash commit; rec reopen through update_rec if needed.
