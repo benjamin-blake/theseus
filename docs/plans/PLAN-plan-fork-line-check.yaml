@@ -48,7 +48,8 @@ scope:
       since decision-entry.yaml currency.consumer_contract lets only superseded_compacted remove an entry from a
       consumer's active set. contract pointers are "docs/contracts/<name>.yaml" or a bare "<name>.yaml" not preceded by
       "/", where <name> is one path segment matching [A-Za-z0-9_][A-Za-z0-9_.-]*, resolved under docs/contracts/, with
-      an optional anchor #[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)* (so trailing ".", "," or ")" is never part of it) walked
+      an optional anchor #[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)* (keys may hold "-"; trailing ".", "," or ")" is never part
+      of it) walked
       through the parsed mapping (a small local walk; Decision 104 keeps
       check-domain helpers out of scripts/roadmap). answered-fork pointers are "PLAN-<slug> fork <n>" with <slug>
       matching [a-z0-9][a-z0-9-]*: the plan must not be the one being judged, docs/plans/PLAN-<slug>.yaml must exist and
@@ -87,6 +88,8 @@ scope:
       "docs/contracts/overseer-dispatch.yaml", "scripts/roadmap/plan_fork_lines.py",
       "scripts/checks/roadmap/validate_plan_fork_lines.py", "scripts/checks/_common.py", "scripts/checks/registry.py"),
       full_segment="full_after_lint" (the validate_plan_documents shape; Decision 187: the globs name the defining module).
+      docs/decisions-index.json and docs/contracts/** are deliberately not globs: only fork lines new in the diff are
+      judged, so a diff touching only those inputs has nothing to judge.
   - file: config/ci_rca_taxonomy.yaml
     action: Modify
     purpose: >-
@@ -273,7 +276,9 @@ verification_plan:
     fix_if: A pinned clause moved -> restore it; APPROVED_CONTRACT keeps every pinned phrase.
     hermetic: false
     graduation: waive
-    graduation_waiver_reason: Whole-file re-run of files this plan modifies; they already run in every --pre that touches them.
+    graduation_waiver_reason: >-
+      Whole-file re-run of the modified contract test and the existing project-alignment suite that sweeps the amended
+      contract; both run in every --pre whose affected set selects them.
   - step: 11
     phase: pre-deploy
     action: Real-data discrimination and dogfood.
@@ -296,13 +301,21 @@ verification_plan:
     phase: pre-deploy
     action: >-
       The branch's own diff passes the new check, the contract stays under its size cap, and the contract diff is exactly
-      APPROVED_CONTRACT's size (25 lines added, 28 removed, measured by applying it to main c7dca7bd).
+      APPROVED_CONTRACT's size (25 lines added, 28 removed, measured by applying it to main c7dca7bd) with every NEW block
+      and the appended line present verbatim (date excepted).
     command: >-
       bin/venv-python -m scripts.checks.roadmap.validate_plan_fork_lines && bin/venv-python -c "from
       scripts.checks.structural.size_limits import validate_structural_size_limits as v; f=[]; v(f); assert not f, f"
       && test "$(git diff --numstat "$(git merge-base origin/main HEAD)" -- docs/contracts/overseer-dispatch.yaml | cut
-      -f1,2)" = "$(printf '25\t28')"
-    expected: Exit 0 from all three, no FAIL line.
+      -f1,2)" = "$(printf '25\t28')" && bin/venv-python -c "import re,sys,yaml;
+      p=yaml.safe_load(open('docs/plans/PLAN-plan-fork-line-check.yaml'));
+      s=next(x for x in p['execution_steps'] if x.startswith('APPROVED_CONTRACT'));
+      c=open(sys.argv[1]).read();
+      b=[re.search(r'^'+k+r':\n(.*?)\n(?:'+n+')',s,re.S|re.M).group(1) for k,n in (('NEW_LOG',r'\(b\)'),('NEW_GRAMMAR',r'\(d\)'),('NEW_ROWS','No other line'))];
+      h,t=re.search(r'approved text\):\n(.*?)\n\(c\)',s,re.S).group(1).split('<landing date>');
+      assert all(x in c for x in b),'block';
+      assert re.search(re.escape(h)+r'\d{4}-\d{2}-\d{2}'+re.escape(t),c),'entry'" docs/contracts/overseer-dispatch.yaml
+    expected: Exit 0 from all four, no FAIL line and no AssertionError.
     expected_literals: []
     fix_if: >-
       Over 500 effective lines, or another numstat -> the contract differs from APPROVED_CONTRACT (an extra or missing
@@ -429,6 +442,7 @@ gate_rounds:
   - {gate: plan-critique, round: 1, verdict: REVISE, blocking: 8, nits: 2}
   - {gate: plan-critique, round: 2, verdict: REVISE, blocking: 3, nits: 6}
   - {gate: plan-critique, round: 3, verdict: REVISE, blocking: 4, nits: 6}
+  - {gate: plan-critique, round: 4, verdict: PROCEED, blocking: 0, nits: 4}
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
