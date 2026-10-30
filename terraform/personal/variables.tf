@@ -2,18 +2,6 @@
 # never be a committed literal (PLAN-public-migration Step 11b). It is supplied at apply time from
 # the gitignored terraform.personal.tfvars.
 
-variable "aws_region" {
-  description = "AWS region for personal-account platform resources"
-  type        = string
-  default     = "eu-west-2"
-}
-
-variable "aws_profile" {
-  description = "Provisioning SSO profile (PlatformAdmin role -- creates IAM + OIDC). Runtime code uses agent_platform (PlatformDev)."
-  type        = string
-  default     = "agent_platform_admin"
-}
-
 variable "account_id" {
   description = "Personal AWS account ID. Supplied via gitignored terraform.personal.tfvars -- never committed."
   type        = string
@@ -22,11 +10,6 @@ variable "account_id" {
     condition     = can(regex("^[0-9]{12}$", var.account_id))
     error_message = "account_id must be a 12-digit AWS account ID."
   }
-}
-
-variable "owner_email" {
-  description = "Owner email for resource tagging (GitHub no-reply identity)"
-  type        = string
 }
 
 variable "platform_dev_external_id" {
@@ -50,7 +33,7 @@ variable "agent_service_account_user_name" {
 # ---------------------------------------------------------------------------
 # DuckLake catalog -- Neon serverless Postgres backend (T2.16b / CD.34, pending).
 #
-# The Neon provider API key is the ephemeral variable neon_api_key below.
+# The Neon provider API key is the ephemeral variable neon_api_key (providers.tf).
 #
 # There is no neon_org_id: this is a personal Neon account (no organization).
 #
@@ -60,14 +43,6 @@ variable "agent_service_account_user_name" {
 # controls -- enforced TLS (sslmode=require) + a scoped non-owner neon_role + the DSN in Secrets
 # Manager -- and the Neon-aware apply guard fail-closes on any neon_* update/replace/delete.
 # ---------------------------------------------------------------------------
-
-variable "neon_api_key" {
-  description = "Neon control-plane API key for the neon provider. Supplied per run via TF_VAR_neon_api_key by trusted CI sessions and the admin break-glass loop; PR speculative plans pass a stub and run -refresh=false. Never in tfvars, state, or a saved plan."
-  type        = string
-  ephemeral   = true
-  sensitive   = true
-  nullable    = false
-}
 
 variable "neon_region_id" {
   description = "Neon region_id for the DuckLake catalog project. Default aws-eu-west-2 (Neon AWS Europe/London) co-locates with the data lake in the project region. Verified against Neon's supported-regions list at implementation time."

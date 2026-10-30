@@ -10,6 +10,7 @@ intent: >-
   verbs on the production telemetry reader return per-tree and per-session derived rows; a small CLI sums them across
   threads and walks ranges longer than seven days, failing closed.
 plan_type: IMPLEMENTATION
+implementation_declared: true
 verification_tier: V3
 plan_path: docs/plans/PLAN-telemetry-usage-reader-verbs.yaml
 phase: >-
@@ -99,6 +100,18 @@ scope:
     action: Create
     purpose: >-
       CLI behaviour over a fake reader (no duckdb, no network) and the registration node; nodes in execution_steps[4].
+  - file: docs/contracts/file-router.yaml
+    action: Modify
+    purpose: >-
+      Scope amendment (build discovery, coordinator-approved 2026-10-29): scripts/telemetry_usage.py is a depth-1
+      scripts/ entry point, so validate_placement's scripts-root allowlist (RS-01) needs it in
+      scripts_root_allowlist.allowed_files, plus the dated additive amendment_log entry (field_add, semantic_break false).
+      Same as the scripts/telemetry_content.py precedent.
+  - file: tests/test_event_usage_fields.py
+    action: Create
+    purpose: >-
+      Scope amendment (build discovery, coordinator-approved 2026-10-29): direct coverage for src/common/event_usage_fields.py
+      (the three column tuples are non-empty, duplicate-free and carry no stamp column).
 bundled_recommendations:
   - rec-4719
   - rec-4702
@@ -198,7 +211,7 @@ verification_plan:
       tests/common/test_ducklake_event_read_sql.py tests/common/ducklake_event_reads tests/common/test_ducklake_event_verification_verbs.py
       tests/lambdas/ducklake_telemetry_reader/test_handler.py tests/telemetry_capture/test_read_route.py
       tests/ducklake_neon_smoke_test/test_lambda_telemetry_reader_gates.py tests/checks/contracts/test_validate_read_engine_verbs.py
-      tests/telemetry_verify -q -rs
+      tests/telemetry_verify tests/test_event_usage_fields.py -q -rs
     expected: exit 0, nothing skipped.
     fix_if: Fix the in-scope code or contract; a test outside scope that pins the verb list is a scope gap to raise, not to edit.
     hermetic: false
@@ -322,6 +335,15 @@ test_obligations:
     verification_step: 7
     test_selector: tests/ducklake_neon_smoke_test/test_lambda_telemetry_reader_gates.py::test_reader_gate_reads_the_usage_verbs
     red_green_expectation: red before, green after
+  - source: docs/contracts/file-router.yaml
+    behavior: scripts/telemetry_usage.py is an allowed scripts-root file.
+    verification_step: 8
+    command: bin/venv-python -m scripts.validate
+    red_green_expectation: red before (the full tier's scripts-root allowlist check, RS-01, fails), green after.
+weakening_dispositions:
+  - candidate: "[assertion-changed] tests/ducklake_neon_smoke_test/test_lambda_telemetry_reader_gates.py::test_happy_path_prints_the_fixed_line"
+    disposition: planned-change
+    cite: "test_obligations[10]"
 constraints:
   - No caller SQL; every value is a bound parameter (Decision 84 I-3). The verbs compose the shared dedupe; no rule is restated.
   - Per-tree and per-session rows only; no cross-tree aggregation in SQL (Decision 199 cl.1 and its 2026-10-16 note; telemetry_sessions.yaml WINDOW VERBS). Cross-thread sums live in the CLI.
