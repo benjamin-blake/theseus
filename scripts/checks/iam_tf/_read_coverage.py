@@ -128,10 +128,12 @@ def _read_root_text(root_dir: Path) -> str:
 
 ROLE_APPLY = "apply"
 ROLE_PLANNER = "planner"
+ROLE_TRUSTED_PLAN = "trusted_plan"
 # T2.49 / DEP-12 (Decision 144): github_ci_plan + github_ci_drift merged into the single
 # dual-sub github_ci_planner role (c2) -- the plan-capable role set goes 3 (apply/plan/drift)
 # -> 2 (apply/planner). The coverage-parity contract is unchanged, only the role identity is.
 _PLANNER_ROLE_POLICY_NAME = "github_ci_planner"
+_TRUSTED_PLAN_ROLE_POLICY_NAME = "github_ci_trusted_plan"
 
 # ---------------------------------------------------------------------------
 # Bootstrap (jsonencode, capitalized-key) statement parsing.
@@ -595,9 +597,12 @@ def _resolve_role_statements(oidc_text: str) -> dict[str, list[dict]] | None:
     docs = _vir._parse_policy_documents(oidc_text)
     role_policy_map = _vir._parse_role_policy_map(oidc_text)
     result: dict[str, list[dict]] = {}
-    for role_key, doc_resource_name in ((ROLE_PLANNER, _PLANNER_ROLE_POLICY_NAME),):
-        doc_name = role_policy_map.get(doc_resource_name)
-        if not doc_name:
-            return None
-        result[role_key] = _vir._resolve_statements(doc_name, docs)
+    planner_doc = role_policy_map.get(_PLANNER_ROLE_POLICY_NAME)
+    if not planner_doc:
+        return None
+    result[ROLE_PLANNER] = _vir._resolve_statements(planner_doc, docs)
+    # Optional here (synthetic roots carry no trusted role); test__read_coverage_trusted pins it on the real tree.
+    trusted_doc = role_policy_map.get(_TRUSTED_PLAN_ROLE_POLICY_NAME)
+    if trusted_doc:
+        result[ROLE_TRUSTED_PLAN] = _vir._resolve_statements(trusted_doc, docs)
     return result

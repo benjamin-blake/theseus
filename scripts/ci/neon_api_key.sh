@@ -9,8 +9,9 @@
 # child process; it is never written to disk, GITHUB_ENV or GITHUB_OUTPUT, and never printed.
 #
 # check: pre-apply preflight run inside tf_init so a missing grant surfaces as an infra_error
-#        (Decision 154) instead of failing the apply step. Skipped on pull_request events, which
-#        plan with a stub key.
+#        (Decision 154) instead of failing the apply step. Skipped only on plain pull_request events,
+#        which run no personal-root plan since the Decision 238 cutover; every other event, the
+#        trusted plan job included, fetches.
 # run:   fetch, mask, export TF_VAR_neon_api_key for CMD only, exec CMD. Safe to call repeatedly.
 set -euo pipefail
 
@@ -33,8 +34,8 @@ cmd="${1:-}"
 case "$cmd" in
     check)
         case "${GITHUB_EVENT_NAME:-}" in
-            pull_request | pull_request_target)
-                echo "neon-api-key: skipped (PR plan uses a stub)"
+            pull_request)
+                echo "neon-api-key: skipped (no personal-root plan runs on pull_request)"
                 exit 0
                 ;;
         esac
