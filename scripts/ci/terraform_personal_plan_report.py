@@ -142,9 +142,9 @@ def render_plan(args: argparse.Namespace, plan: dict[str, Any] | None) -> tuple[
             fit_text = Path(args.fit_file).read_text(encoding="utf-8").strip()
             lines.append("Reviewer digest fit: " + fit_word(fit_text))
             if fit_word(fit_text) == "OPAQUE":
-                names = [f"`{safe(a)}`" for a in opaque_addresses(fit_text)]
-                if names:
-                    lines.append("Unknown at plan time: " + ", ".join(names))
+                quoted = [f"`{safe(a)}`" for a in opaque_addresses(fit_text)]
+                if quoted:
+                    lines.append("Unknown at plan time: " + ", ".join(quoted))
         except OSError:
             lines.append("Reviewer digest fit: UNKNOWN")
     if args.plan_sha256 and _HEX64.fullmatch(args.plan_sha256):
