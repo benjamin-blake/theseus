@@ -596,13 +596,13 @@ def _check_resource(
 def _resolve_role_statements(oidc_text: str) -> dict[str, list[dict]] | None:
     docs = _vir._parse_policy_documents(oidc_text)
     role_policy_map = _vir._parse_role_policy_map(oidc_text)
-    result: dict[str, list[dict]] = {}
-    planner_doc = role_policy_map.get(_PLANNER_ROLE_POLICY_NAME)
-    if not planner_doc:
-        return None
-    result[ROLE_PLANNER] = _vir._resolve_statements(planner_doc, docs)
-    # Optional here (synthetic roots carry no trusted role); test__read_coverage_trusted pins it on the real tree.
-    trusted_doc = role_policy_map.get(_TRUSTED_PLAN_ROLE_POLICY_NAME)
-    if trusted_doc:
-        result[ROLE_TRUSTED_PLAN] = _vir._resolve_statements(trusted_doc, docs)
-    return result
+    # The trusted role is optional here (synthetic roots carry none); test__read_coverage_trusted pins it on the real tree.
+    result = {
+        role_key: _vir._resolve_statements(doc_name, docs)
+        for role_key, policy_name in (
+            (ROLE_PLANNER, _PLANNER_ROLE_POLICY_NAME),
+            (ROLE_TRUSTED_PLAN, _TRUSTED_PLAN_ROLE_POLICY_NAME),
+        )
+        if (doc_name := role_policy_map.get(policy_name))
+    }
+    return result if ROLE_PLANNER in result else None

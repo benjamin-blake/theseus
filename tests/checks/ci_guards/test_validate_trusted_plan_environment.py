@@ -428,3 +428,10 @@ def test_unpinned_action_inside_a_composite_is_found(wfs) -> None:
     _job(wfs, "plan")["steps"].append({"uses": "./.github/actions/x"})
     files = {".github/actions/x/action.yml": "runs:\n  using: composite\n  steps:\n    - uses: o/r@v1\n"}
     assert any("o/r@v1" in x for x in v.check_pinned_actions(wfs, _reader(files)))
+
+
+def test_unparseable_inputs_degrade_to_empty_results() -> None:
+    assert v._safe_yaml(None) is None
+    assert v._safe_yaml("a: [unclosed") is None
+    assert v._imported_paths("def (:", lambda rel: None) == set()
+    assert v._inserts_repo_root_first("def (:") is False
