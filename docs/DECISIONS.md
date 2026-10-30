@@ -3876,6 +3876,10 @@ conditions:
 > cutover is exactly a rec either gate refused. Decision 201 hardens that instruction (and
 > `.claude/commands/implement.md`) to route through the printed close_proposed command instead.
 
+> **Update (2026-10-30):** PLAN-merge-step-checks (rec-4443): no job prints a close_proposed command.
+> A Decision 201 refusal takes the route in `docs/contracts/git-ops.yaml` `resolves_trailer`; a rec this
+> decision's gate refuses stays open for the operator (rec-4088). No rule of this decision changes.
+
 ---
 
 ## Decision 185: The executor loop is a repo-owned ASL-subset definition; Step Functions is its cloud host; the leash is staged (amends Decision 39 and Decision 117) (Decided)

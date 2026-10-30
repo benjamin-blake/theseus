@@ -274,16 +274,15 @@ subagent-dispatch division of labor; schema: `docs/contracts/overseer-dispatch.y
 - `prompt:` self-contained per the Example body above -- Intent: Step 3; approach: Steps 3-5;
   scope: Step 4; tier: Step 5; cited decisions: the human.
 
-**Verdict handling:**
-- **NO_FLAGS** -> Proceed to the alignment sign-off. Include the scout's CITE list in the presentation as "Decisions this plan must reference." Record in the plan template's `context:` list: "Decision-scout verdict + CITE list (verbatim decision ids)" and "gates: decision-scout=<verdict>; plan-critique=<verdict> after <N> round(s))".
+**Verdict handling** (add a `gate_rounds` row per scout round):
+- **NO_FLAGS** -> Proceed to the alignment sign-off. Include the scout's CITE list in the presentation as "Decisions this plan must reference." Record in the plan template's `context:` list: "Decision-scout verdict + CITE list (verbatim decision ids)".
 - **FLAGS_FOUND** -> Surface each WARN/NOTE flag to the human in the sign-off presentation under a "Decision Flags" section. Human chooses per-flag: pivot, defer with note, or accept-as-is. If the human pivots on any flag in a way that changes the proposed approach materially, re-dispatch this gate against the revised approach before re-presenting.
 - **BLOCK** -> STOP. Do NOT present the original approach for confirmation. Surface the BLOCK contradiction and propose pivots, then re-dispatch the gate against the revised approach. Confirming a known-blocking approach would invite the human to ratify a plan that contradicts an active decision.
 - **Gate-error:** if the gate subagent errors or returns output missing the required `Verdict:` line, the gate has NOT completed -- re-dispatch; never proceed past an incomplete gate. Likewise, if the report's "Decisions triaged: N of M" line is missing, or N != M, treat the gate as incomplete and re-dispatch -- a mismatch means the scout truncated its read of DECISIONS.md.
 
 **Why a subagent and not inline grep, and the Lambda migration contract:** see the `decision-scout` skill -- it owns the isolation rationale and the stable-interface contract for when DECISIONS.md is replaced by a Lambda-backed tool query.
 
-**Convergence rule:**
-Do not loop more than 3 times. If the gate keeps returning BLOCK after 3 revisions, escalate to the human: "After N revisions the decision-scout still flags BLOCK on [decision N]. Continued pivoting suggests either the underlying intent contradicts the decision (re-scope the request) or the decision needs to be revisited (file a recommendation to revise the decision). How would you like to proceed?"
+**Convergence rule -- findings, not rounds:** re-dispatch after each pivot; escalate at once when a pivot is re-BLOCKed on the same decision id, naming whether the intent contradicts it (re-scope) or it needs revisiting (file a rec; record accept-with-deferral). Carrier (AskUserQuestion, chat or GATE_REQUEST) and stop as in Step 9.
 
 ## Alignment Sign-off (Workflow Step 6, project alignment)
 Wait for explicit 'write the plan'; anything else is feedback -- incorporate it, re-run the Decision Scout if material to decision alignment, re-present, ask again.
@@ -350,7 +349,8 @@ constraints:
 context: # <= 40 rendered lines; link evidence (ids/paths), never restate it
   - Relevant decisions, phase dependencies, known gotchas
   - "Decision-scout verdict + CITE list (verbatim decision ids)" # REQUIRED ITEM (WF-04a)
-  - "gates: decision-scout=<verdict>; plan-critique=<verdict> after <N> round(s)" # REQUIRED ITEM (WF-08)
+gate_rounds: # REQUIRED on new plans; one row per gate round (+gate_run_id if dispatched)
+  - {gate: decision-scout, round: 1, verdict: NO_FLAGS} # critique rows add blocking, nits; escalated: true + escalation_choice when asked
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -410,20 +410,16 @@ Launch a zero-context Claude subagent via the `Agent` tool to run the `plan-crit
 
 Read the critique output returned by the subagent.
 If it suggests revisions, update the plan with these fixes and re-launch the same subagent invocation against the revised plan. Each Agent call is a fresh window, so the re-launch genuinely re-evaluates.
-Loop if REVISE. Proceed if PROCEED.
+Loop per the Convergence rule below.
 If the gate subagent errors or returns output missing the required `Recommendation:` line, the gate has NOT completed -- re-dispatch; never proceed past an incomplete gate.
 
 **Convergence rule -- findings, not rounds:**
 
-The critic tags every finding mechanical or judgement with a stable anchor (plan-critique's Finding-Origin Attribution). Fix tagged findings first: apply every mechanical finding, run `bin/venv-python -m scripts.validate --pre` before EVERY re-dispatch (a pre-check; Decision 73 makes `--pre` authoritative only via PR CI). Record one disposition per finding, fixed or disputed (neither counts as disputed for the escalation test; accept-with-deferral is human-authored only).
+Every round is a full fresh read and no count caps them. The critic tags each finding blocking or nit (plan-critique's Finding-Origin Attribution); REVISE means at least one blocking finding. Fix every finding, record one disposition each (fixed, or disputed with evidence -- re-measure a figure before applying it), and run `bin/venv-python -m scripts.validate --pre` before EVERY re-dispatch (a pre-check; Decision 73 makes `--pre` authoritative only via PR CI). REVISE -> re-dispatch. Clean PROCEED -> done. PROCEED listing nits -> apply them and dispatch ONE fresh confirming round, no card; it ends the loop unless it returns a blocking finding (its own nits are applied, not re-read). Write each round to `gate_rounds`.
 
-**Oscillation interrupts, not the count:** escalate at once on a finding recurring at a tag+anchor you recorded fixed, any round -- never wait for a cap. Revisit after 40 cap-hitting plans if it conflates independent re-findings with real oscillation.
+**Escalate** only on: a finding recurring at a tag+anchor you recorded fixed (oscillation interrupts, not the count); a disputed blocking finding; or a fix that would change approved scope, tier or a cited Decision. Present, per finding, the finding verbatim with tags and anchor; why it did not converge; your recommendation; and, when re-escalating, a clause that starts a new series naming the predecessor rounds -- plus the five choices: accept-with-deferral / re-scope / split / abandon / one more round. Carrier: AskUserQuestion if held, else chat; dispatched, GATE_REQUEST `open_questions`. An open escalation is a stop: no round, no plan edit, until the human answers; record the answer as the row's `escalation_choice` (accept-with-deferral is human-authored only). Revisit when 20 plans carry `gate_rounds`: did a confirming round ever find a blocking finding, and were findings after round 5 real?
 
-Otherwise, once findings are disposed with none recurring, run ONE fresh confirming round. PROCEED -> done; pin `plan-critique=<verdict> after <N> round(s); round <N> autonomous` (round 4 autonomous when addressed; no round-5 rule). REVISE -> escalate below, "one more round" among the choices.
-
-**Escalation shape** (disputed residue, an oscillation interrupt, or a REVISE on the confirming round): present, per finding, the finding verbatim with tag and anchor; why it did not converge; your recommendation; and, when re-escalating, a clause that starts a new series naming the predecessor rounds -- plus the five choices: accept-with-deferral / re-scope / split / abandon / one more round. Carrier: chat, or GATE_REQUEST `open_questions`.
-
-**Contested-residue consult:** On contested residue only -- never a mechanical finding -- consult `model:"fable"` per the overseer skill's Fable Advice-Consult Protocol -- a third fresh reading of THIS plan against the repo's own Decisions, not industry practice. It recommends a disposition and decides nothing. Revisit after 10 contested escalations; demote if it changed nothing in 8 or more.
+**Contested-residue consult:** On a disputed blocking finding only, consult `model: "fable"` per the overseer skill's Fable Advice-Consult Protocol (dispatched: an `open_questions` item of the same GATE_REQUEST) -- a third fresh reading of THIS plan against the repo's own Decisions, not industry practice. It recommends a disposition and decides nothing. Revisit after 10 contested escalations; demote if it changed nothing in 8 or more.
 
 This gate reviews the PLAN artefact, not the report deliverable. For REPORT-ONLY plans, the deliverable gets its own critique in Step 10.
 
@@ -455,13 +451,13 @@ This gate reviews the PLAN artefact, not the report deliverable. For REPORT-ONLY
 
 6. **Iterate based on human direction.** Apply the chosen revisions. Each material revision lands as its own commit on the branch (`git commit -m "plan({slug}): address [scope] critique findings"`) so the iteration is reviewable in git history.
 
-7. **Re-launch the same critiques after each revision** unless the human explicitly opts out of further rounds. Re-critique catches both whether the original findings were fully addressed and whether the revision introduced new issues.
+7. **Re-launch the same critiques after each revision** unless the human explicitly opts out of further rounds.
 
 8. **Convergence rule.** Stop when EITHER:
    - Both agents return PROCEED on a fresh round (clean convergence), OR
    - The human explicitly accepts the current state with a defined deferral (e.g. "fix the HIGH-severity items and defer the rest to phase plans"). Document the deferral list in the deliverable's Known Gaps or equivalent section so future sessions know what's outstanding.
 
-   Apply the Step 9 Convergence rule in kind: findings, not rounds -- fix mechanical findings first, escalate at once on a recurring tag+anchor, and run one autonomous confirming round once both agents converge before escalating disputed residue in the pinned shape.
+   Apply the Step 9 Convergence rule in kind: findings, not rounds -- nits get one confirming round, recurrence or dispute escalates in the pinned shape.
 
 **Anti-patterns to reject:**
 - Single critique agent (misses orthogonal issues by definition); same perspective twice

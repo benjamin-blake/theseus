@@ -229,4 +229,19 @@ ENTRIES: tuple[Entry, ...] = (
         ),
         full_segment="full_after_lint",
     ),
+    Entry(
+        name="validate_merge_step",
+        module="scripts.checks.verification.validate_merge_step",
+        attr="validate_merge_step",
+        pre=True,
+        pre_globs=(
+            "docs/plans/**",
+            "scripts/roadmap/approved_text.py",
+            "scripts/rec_trailer.py",
+            "scripts/checks/verification/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
+        full_segment="full_after_lint",
+    ),
 )
