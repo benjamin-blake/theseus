@@ -27,6 +27,10 @@ _REC_ID_RE = re.compile(r"rec-\d+")
 _DECISION_TOKEN_RE = re.compile(r"dec:[1-9][0-9]*(#[^\s#:]+)?")
 _EDGE_FIELDS = frozenset({"amends", "introduces", "principal"})
 _EDGE_FIELDS_MIN_VERSION = 5
+_GATE_VERDICTS: dict[str, frozenset[str]] = {
+    "decision-scout": frozenset({"NO_FLAGS", "FLAGS_FOUND", "BLOCK"}),
+    "plan-critique": frozenset({"PROCEED", "REVISE"}),
+}
 
 # _partition_command lives in scripts.roadmap.vp_literals (Decision 104 sole-home for the
 # shell-command tokenizer within this package) -- imported back here rather than duplicated.
@@ -216,6 +220,35 @@ class WeakeningDisposition(BaseModel):
     cite: str = Field(min_length=1)
 
 
+class GateRound(BaseModel):
+    """One gate round as the planner reports it (planning SKILL.md Step 9 convergence rule).
+
+    Counts only: never a status or approval input, and never a per-finding record (Decision 87 as amended by
+    Decision 205; T4.29 c2 keeps per-finding rows with rec-4434).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    gate: Literal["decision-scout", "plan-critique"]
+    round: int = Field(ge=1)
+    verdict: str
+    blocking: int = Field(default=0, ge=0)
+    nits: int = Field(default=0, ge=0)
+    escalated: bool = False
+    escalation_choice: Literal["accept-with-deferral", "re-scope", "split", "abandon", "one more round"] | None = None
+    gate_run_id: str | None = None
+
+    @model_validator(mode="after")
+    def _verdict_matches_gate(self) -> GateRound:
+        if self.verdict not in _GATE_VERDICTS[self.gate]:
+            raise ValueError(f"{self.gate} verdict must be one of {sorted(_GATE_VERDICTS[self.gate])}, got {self.verdict!r}")
+        if self.gate == "plan-critique" and (self.verdict == "REVISE") != (self.blocking > 0):
+            raise ValueError("a plan-critique REVISE carries at least one blocking finding and a PROCEED carries none")
+        if self.escalation_choice is not None and not self.escalated:
+            raise ValueError("escalation_choice records the human's answer to an escalation; set escalated: true")
+        return self
+
+
 class PlanDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -248,6 +281,7 @@ class PlanDocument(BaseModel):
     amends: list[str] = Field(default_factory=list)
     introduces: list[str] = Field(default_factory=list)
     principal: str | None = None
+    gate_rounds: list[GateRound] = Field(default_factory=list)
 
     @field_validator("schema_version")
     @classmethod
@@ -330,6 +364,14 @@ class PlanDocument(BaseModel):
                 f"{', '.join(present)} require schema_version {_EDGE_FIELDS_MIN_VERSION} or above "
                 f"(got schema_version {self.schema_version})"
             )
+
+    def _validate_gate_rounds(self) -> None:
+        if self.gate_rounds and self.schema_version < _EDGE_FIELDS_MIN_VERSION:
+            raise ValueError(f"gate_rounds requires schema_version {_EDGE_FIELDS_MIN_VERSION} or above")
+        for gate in _GATE_VERDICTS:
+            rounds = [row.round for row in self.gate_rounds if row.gate == gate]
+            if rounds != list(range(1, len(rounds) + 1)):
+                raise ValueError(f"gate_rounds for {gate} must number 1..N in order with no gap, got {rounds}")
 
     def _validate_handoff_policy(self) -> None:
         if self.schema_version in {3, 4, 5}:
@@ -436,6 +478,7 @@ class PlanDocument(BaseModel):
         self._validate_test_obligation_links()
         self._validate_expected_literals()
         self._validate_edge_fields_version()
+        self._validate_gate_rounds()
         return self
 
 

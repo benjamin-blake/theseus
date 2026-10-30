@@ -11,6 +11,12 @@ from scripts.checks.roadmap import validate_plan_documents as module
 from scripts.checks.roadmap.validate_plan_documents import validate_plan_documents
 
 _FIXTURE_NAME = "PLAN-obligation-fixture.yaml"
+_SCOUTED = {"gate": "decision-scout", "round": 1, "verdict": "NO_FLAGS"}
+_CRITIQUED = (
+    _SCOUTED,
+    {"gate": "plan-critique", "round": 1, "verdict": "REVISE", "blocking": 1},
+    {"gate": "plan-critique", "round": 2, "verdict": "PROCEED"},
+)
 
 
 def _plan() -> dict:
@@ -152,6 +158,7 @@ def test_newly_added_plan_at_current_schema_version_is_accepted(tmp_path: Path, 
             "red_green_expectation": "fails before the implementation and passes after it",
         }
     ]
+    data["gate_rounds"] = list(_CRITIQUED)
     failed, _ = _validate(tmp_path, data, capsys, added={_FIXTURE_NAME})
     assert failed == []
 
@@ -168,6 +175,7 @@ def _plan_with_linked_obligation() -> dict:
             "red_green_expectation": "fails before the implementation and passes after it",
         }
     ]
+    data["gate_rounds"] = list(_CRITIQUED)
     return data
 
 
@@ -320,3 +328,101 @@ class TestSchemaVersionFloorSplit:
         failed, output = _validate(tmp_path, data, capsys, added=set())
         assert failed == ["Plan document schema validation"]
         assert "lacks a linked test obligation" in output
+
+
+class TestGateRoundRecord:
+    """A newly-added plan carries its critique record (PLAN-critique-severity-convergence)."""
+
+    @pytest.mark.parametrize(
+        ("rows", "message"),
+        [
+            ([_SCOUTED], "must end with a plan-critique PROCEED that ends Step 9"),
+            ([_SCOUTED, {"gate": "plan-critique", "round": 1, "verdict": "REVISE", "blocking": 1}], "must end with"),
+            (
+                [
+                    _SCOUTED,
+                    {"gate": "plan-critique", "round": 1, "verdict": "REVISE", "blocking": 2},
+                    {"gate": "plan-critique", "round": 2, "verdict": "PROCEED", "nits": 3},
+                ],
+                "or the confirming round after a PROCEED listing nits",
+            ),
+            ([{"gate": "plan-critique", "round": 1, "verdict": "PROCEED"}], "has no decision-scout row"),
+            (
+                [
+                    _SCOUTED,
+                    {"gate": "plan-critique", "round": 1, "verdict": "REVISE", "blocking": 1, "escalated": True},
+                    {"gate": "plan-critique", "round": 2, "verdict": "PROCEED"},
+                ],
+                "escalated with no escalation_choice",
+            ),
+        ],
+    )
+    def test_gaps_fail_on_the_plan_pr(self, tmp_path: Path, capsys, monkeypatch, rows: list[dict], message: str) -> None:
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+        data = _plan_with_linked_obligation()
+        data["gate_rounds"] = rows
+        failed, output = _validate(tmp_path, data, capsys, added={_FIXTURE_NAME})
+        assert failed == ["Plan document schema validation"]
+        assert f"FAIL: {_FIXTURE_NAME}: gate_rounds" in output
+        assert message in output
+
+    @pytest.mark.parametrize("event", [None, "push", "workflow_dispatch"])
+    def test_gaps_only_warn_off_the_plan_pr(self, tmp_path: Path, capsys, monkeypatch, event: str | None) -> None:
+        monkeypatch.setenv("CI", "true")
+        if event is None:
+            monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+        else:
+            monkeypatch.setenv("GITHUB_EVENT_NAME", event)
+        data = _plan_with_linked_obligation()
+        data["gate_rounds"] = []
+        failed, output = _validate(tmp_path, data, capsys, added={_FIXTURE_NAME})
+        assert failed == []
+        assert (
+            "WARN: PLAN-obligation-fixture.yaml: gate_rounds must end with a plan-critique PROCEED that ends Step 9" in output
+        )
+
+    def test_answered_escalation_and_confirmed_proceed_pass_on_the_plan_pr(self, tmp_path: Path, capsys, monkeypatch) -> None:
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+        data = _plan_with_linked_obligation()
+        data["gate_rounds"] = [
+            _SCOUTED,
+            {
+                "gate": "plan-critique",
+                "round": 1,
+                "verdict": "REVISE",
+                "blocking": 1,
+                "escalated": True,
+                "escalation_choice": "one more round",
+            },
+            {"gate": "plan-critique", "round": 2, "verdict": "PROCEED", "nits": 2},
+            {"gate": "plan-critique", "round": 3, "verdict": "PROCEED", "nits": 1},
+        ]
+        failed, output = _validate(tmp_path, data, capsys, added={_FIXTURE_NAME})
+        assert failed == []
+        assert "gate_rounds" not in output
+
+    def test_an_accepted_deferral_ends_the_record_on_the_plan_pr(self, tmp_path: Path, capsys, monkeypatch) -> None:
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+        data = _plan_with_linked_obligation()
+        data["gate_rounds"] = [
+            _SCOUTED,
+            {"gate": "plan-critique", "round": 1, "verdict": "REVISE", "blocking": 1},
+            {
+                "gate": "plan-critique",
+                "round": 2,
+                "verdict": "REVISE",
+                "blocking": 1,
+                "escalated": True,
+                "escalation_choice": "accept-with-deferral",
+            },
+        ]
+        failed, output = _validate(tmp_path, data, capsys, added={_FIXTURE_NAME})
+        assert failed == []
+        assert "gate_rounds" not in output
+
+    def test_existing_plans_are_not_held_to_the_record(self, tmp_path: Path, capsys, monkeypatch) -> None:
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+        data = _plan_with_linked_obligation()
+        data["gate_rounds"] = []
+        failed, _ = _validate(tmp_path, data, capsys, added=set())
+        assert failed == []

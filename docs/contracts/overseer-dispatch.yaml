@@ -51,6 +51,7 @@ amendment_log:
       PLAN-red-main-recovery-policy (Decision 226): autonomy_tiers.proceed_with_notice.never_overrides now names the
       red_overlap verdict instead of any open critical ci_rca rec.
   - {date: "2026-10-24", semantic_break: true, change_class: accepted_values_narrow, summary: "PLAN-project-alignment: the fourth gate value step-6b-confirmation is retired and replaced by project-alignment (hard cut, no alias); the Step 6a/6b wording is repointed to the Decision Scout and the alignment sign-off defined in docs/contracts/project-alignment.yaml."}
+  - {date: "2026-10-30", semantic_break: false, change_class: field_add, summary: "PLAN-critique-severity-convergence: adds gate_request_trampoline.escalation (a convergence escalation is relayed to the human, never dispatched as a round); the decision-scout and plan-critique stages defer to the planning skill's convergence rules instead of restating a retired round cap."}
 
 schema_version: 1
 decision: Decision-90
@@ -102,8 +103,7 @@ gate_request_trampoline:
     overseer's existing malformed-hand-back re-dispatch rule still applies unchanged. The three
     extension fields:
     gate (decision-scout | plan-critique | code-review | project-alignment),
-    round (1-based count of how many times this gate has been requested for this slice, mirrors
-    each gate's own convergence-rule counter),
+    round (1-based count of how many times this gate has been dispatched for this slice),
     inputs (gate-specific prompt inputs the overseer must relay verbatim into the fresh gate
     subagent's dispatch prompt -- e.g. for decision-scout: intent, proposed approach, scope
     files, verification tier, explicitly cited decisions; for plan-critique: the plan file path;
@@ -117,6 +117,12 @@ gate_request_trampoline:
     gate values dispatch a gate skill in a fresh sibling subagent; the fourth,
     project-alignment, dispatches no gate skill at all -- it is relayed by the overseer
     directly to the human, per autonomy_tiers.plan_fork_classification above."
+  escalation: "a decision-scout or plan-critique GATE_REQUEST with non-empty `open_questions` is the planning skill's
+    convergence escalation, not a round request (its `round` repeats the last round run): the overseer dispatches any
+    Fable consult it requests (an `open_questions` item) first, relays both to the human verbatim, dispatches no gate
+    round, and resumes the author with the answer. Like project-alignment it is write-ahead-recorded with its
+    `open_questions` as `inputs` and mints no gate_run_id; on resume it is re-relayed, never re-dispatched as a round. A
+    round request leaves `open_questions` empty."
   gate_run_id:
     minted_by: overseer
     when: "at write-ahead time (see pending_gates below), before the gate subagent is
@@ -231,8 +237,8 @@ trampoline_sequence:
           gate_run_id, resumes the paused planning subagent via SendMessage with the verdict and
           CITE list."
         - "4. Planning subagent applies its own existing Verdict handling (alignment sign-off presentation
-          on NO_FLAGS/FLAGS_FOUND, or GATE_REQUEST round=2 after a BLOCK pivot, up to the
-          existing 3-round convergence cap)."
+          on NO_FLAGS/FLAGS_FOUND, or GATE_REQUEST round=N+1 after a BLOCK pivot, per the
+          planning skill's Decision Scout convergence rule)."
     - gate: project-alignment
       fires_at: "planning subagent's own /plan alignment sign-off, after the decision-scout verdict is
         applied -- never before the decision-scout verdict (on BLOCK there is no hop at all; on
@@ -256,10 +262,10 @@ trampoline_sequence:
           gate_run_id-echo instruction (see provenance above)."
         - "3. Overseer resumes the planning subagent via SendMessage with the critique output and
           Recommendation (PROCEED | REVISE)."
-        - "4. On PROCEED: the planning subagent commits, pushes, opens the plan-approval PR
-          itself, and hands back PROCEED with the PR URL -- this is the terminal author-side
-          step; the overseer takes it from there (subscribe -> CI-green -> squash-merge). On
-          REVISE: subagent revises and re-requests (round=2), up to the existing 3-round cap."
+        - "4. On a PROCEED that ends the planning skill's Step 9 loop (no nits, or the confirming round's): the planning
+          subagent commits, pushes, opens the plan-approval PR itself, and hands back PROCEED with the PR URL -- this is
+          the terminal author-side step; the overseer takes it from there (subscribe -> CI-green -> squash-merge). On
+          REVISE, or any other PROCEED listing nits: the subagent fixes and re-requests (round=N+1) per that Step 9 rule."
     - gate: code-review
       fires_at: "implementation subagent's own /implement Step 5, immediately after the Live
         Verification Protocol passes."
