@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -53,6 +54,40 @@ def _new_plan_version_failures(path: Path, doc: Any, added_names: set[str]) -> l
             f"v{_TEST_OBLIGATION_MIN_SCHEMA_VERSION} and above"
         )
     ]
+
+
+def _gate_round_gaps(path: Path, doc: Any, added_names: set[str]) -> list[str]:
+    """A newly-added plan must carry its gate record: a scout row, a critique that ended per Step 9, no open escalation.
+
+    The record is only complete once critique ends, and the planner runs --pre between rounds, so the
+    gaps fail only on the plan PR (opened after PROCEED) and are advisories elsewhere -- locally, and on
+    the push to main, where a plan PR that went green before this check existed must not turn main red.
+    """
+    if path.name not in added_names or doc.schema_version < _MIN_NEW_PLAN_SCHEMA_VERSION:
+        return []
+    critique = [row for row in doc.gate_rounds if row.gate == "plan-critique"]
+    gaps = []
+    if not any(row.gate == "decision-scout" for row in doc.gate_rounds):
+        gaps.append(f"{path.name}: gate_rounds has no decision-scout row (planning SKILL.md Decision Scout Gate)")
+    if not critique or not _critique_ended(critique):
+        gaps.append(
+            f"{path.name}: gate_rounds must end with a plan-critique PROCEED that ends Step 9 (no nits, or the confirming "
+            "round after a PROCEED listing nits) or an accept-with-deferral answer (planning SKILL.md Step 9)"
+        )
+    gaps += [
+        f"{path.name}: gate_rounds {row.gate} round {row.round} escalated with no escalation_choice (an open escalation)"
+        for row in doc.gate_rounds
+        if row.escalated and row.escalation_choice is None
+    ]
+    return gaps
+
+
+def _critique_ended(critique: list[Any]) -> bool:
+    last = critique[-1]
+    if last.escalation_choice == "accept-with-deferral":
+        return True
+    confirming = len(critique) > 1 and critique[-2].verdict == "PROCEED" and critique[-2].nits > 0
+    return last.verdict == "PROCEED" and (last.nits == 0 or confirming)
 
 
 def _is_documentation(file: str) -> bool:
@@ -140,6 +175,8 @@ def validate_plan_documents(
                 continue
             errors.extend(_new_plan_version_failures(path, doc, added_names))
             errors.extend(_test_obligation_failures(path, doc))
+            gaps = _gate_round_gaps(path, doc, added_names)
+            (errors if os.environ.get("GITHUB_EVENT_NAME") == "pull_request" else advisories).extend(gaps)
             if path.name in added_names:
                 span = context_block_lines(path)
                 if span > CONTEXT_BLOCK_LINE_ADVISORY:
