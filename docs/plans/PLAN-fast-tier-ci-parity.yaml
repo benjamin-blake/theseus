@@ -29,9 +29,12 @@ scope:
       ("requirements-fast.txt", "requirements-dev.txt"), installed as two sequential installs in that order, as ci.yml's
       pr-validate step does; uv (`uv venv --python sys.executable`, `uv pip install --python <env python> -r <file>`)
       when `uv` is on PATH, else `sys.executable -m venv` + `<env python> -m pip install -r <file>`. Build in a staging
-      dir beside the target and rename atomically (the ensure_fast_environment pattern); on success prune only sibling
+      dir beside the target and rename atomically; when the rename raises OSError with errno EEXIST or ENOTEMPTY (Linux
+      raises ENOTEMPTY, not FileExistsError, for a non-empty target -- critique round 2 F2) a concurrent builder won:
+      remove the staging dir and reuse the target when its .ready matches the fingerprint. On success prune only sibling
       fingerprint dirs whose .ready file is more than 24 hours old, so an env another worktree or session is running
-      from today is never deleted (F11; disk is a fixed per-session allowance). Raises FastTierEnvError naming the
+      from today is never deleted (F11; disk is a fixed per-session allowance), and staging dirs older than 24 hours by
+      mtime (left by killed builds). Raises FastTierEnvError naming the
       failed command and its output. (2) child_env(environ, env_python) returns the re-exec environment: PATH prefixed
       with the env's bin dir; OTL_VENV_PYTHON=<env python>; OTL_FAST_TIER_ENV=<fp>; PYTHONPATH, PYTHONHOME and
       VIRTUAL_ENV removed; every AWS_* variable removed except AWS_REGION and AWS_DEFAULT_REGION (CI's pr-validate
@@ -40,9 +43,11 @@ scope:
       reexec_pre_if_needed(argv, environ) returns without action when "--pre" is not in argv, "--full-env" is in argv,
       CI == "true", PYTEST_CURRENT_TEST is set, _VALIDATE_DEPTH >= 1, or OTL_FAST_TIER_ENV already equals the current
       fp; otherwise prints one banner line ("CI-parity: running --pre in the CI-shaped fast-tier environment <path>; it
-      predicts PR CI's fast tier only, not the full tier"), flushes sys.stdout and sys.stderr (execve discards
+      predicts PR CI's fast tier only, not the full tier"; <path> is the env python), flushes sys.stdout and sys.stderr (execve discards
       block-buffered output on a pipe; F8), chdirs to the repo root (PYTHONPATH is scrubbed, so `-m scripts.validate`
-      needs cwd at the root; F9) and os.execve's [env python, "-m", "scripts.validate", *argv[1:]] (argv[0] may be a
+      needs cwd at the root; F9) and os.execve's [env python, "-m", "scripts.validate", *argv[1:]] -- on os.name == "nt", where exec does not
+      replace the process, it instead runs that argv with subprocess.run(env=child_env, cwd=repo_root) and
+      sys.exit(returncode) so the caller sees the child's real status (round 2 F3) (argv[0] may be a
       path such as scripts/validate.py from scripts/execute_recommendation.py; F9). On FastTierEnvError prints the
       cause, the remedy and "--full-env runs in the current interpreter (not CI-predictive)" to stderr and exits 1
       (Decision 55; never a silent fallback). FULL_ENV_BANNER = "CI-parity: OFF (--full-env) -- this --pre result is not
@@ -60,7 +65,9 @@ scope:
       proves the flush, which monkeypatched execve cannot), TestChildEnv (PATH prefix, override var, marker, scrubbed
       vars, credential stripping with AWS_REGION and AWS_DEFAULT_REGION kept), TestEnvBuild (uv path, pip fallback path,
       two sequential installs in INSTALL_REQUIREMENTS order, staging rename, cache reuse on matching .ready, date-bucketed
-      fingerprint, prune only siblings older than 24 hours, failure leaves no target dir), TestInstallSequenceMatchesCi (parses
+      fingerprint, prune only siblings older than 24 hours and stale staging dirs, a concurrent winner (rename raises
+      ENOTEMPTY; the loser reuses the target), failure leaves no target dir), TestWindowsReexec (os.name patched to "nt":
+      subprocess.run is called with the child env and cwd, and the exit code propagates; execve is never called), TestInstallSequenceMatchesCi (parses
       .github/workflows/ci.yml with yaml.safe_load, takes the pr-validate job's step named "Install fast-tier
       dependencies only", extracts the ordered `-r <file>` arguments of its pip install lines, and asserts they equal
       INSTALL_REQUIREMENTS -- the drift pin for "built the same way CI builds it").
@@ -97,18 +104,24 @@ scope:
     action: Modify
     purpose: >-
       New class TestVenvPythonOverride: override wins over a present .venv; a non-executable override exits 1 with the
-      error text and does not run .venv; unset override keeps .venv resolution (regression). Every existing test helper
-      that copies os.environ into the wrapper subprocess drops OTL_VENV_PYTHON and OTL_FAST_TIER_ENV first, so the
-      existing fallback and fail-loud tests stay meaningful when they run inside the CI-parity child (critique F16).
+      error text and does not run .venv; unset override keeps .venv resolution (regression). A module-level autouse
+      fixture delenvs OTL_VENV_PYTHON and OTL_FAST_TIER_ENV for every test (covering tests that pass no env= and inherit
+      os.environ implicitly, and helpers that copy it), so the existing fallback and fail-loud tests stay meaningful when
+      they run inside the CI-parity child (round 1 F16, completed in round 2 F4); TestVenvPythonOverride sets the
+      variable explicitly per test.
   - file: scripts/checks/deps/validate_hermetic_fast_tier_collectability.py
     action: Create
     purpose: >-
       New registered fast-tier check (rec-2809 option (a), Decision 181 enforcer for vp-red-before.yaml
-      hermetic_authoring carve-out (iii)). Population: PLAN-*.yaml files added or modified in the diff whose
+      hermetic_authoring carve-out (iii)). Population: vp-red-before.yaml's eligibility_predicate population --
+      PLAN-*.yaml files ADDED in this diff (status A or ?? from _common.get_status_aware_diff matching
+      _common.PLAN_PATH_RE; merely-modified plans are deliberately outside it, as for rg_portability_lint, because 387
+      legacy plans read implementation_declared falsy and three merged ones would redden unrelated PRs) whose
       implementation_declared is falsy, read as plain YAML (a schema-invalid plan is skipped with a note; schema validity
       is validate_plan_documents' concern). For each verification_plan step with phase pre-deploy, hermetic true and a
       pytest invocation (shlex-split; `-m pytest` or a `pytest` argv token), each selector argument under tests/ whose
-      file exists is examined: the test file and every conftest.py from its directory up to tests/ are AST-parsed for a
+      file exists is examined (the command is first split on shell control operators, as rg_portability_lint does, so
+      tokens of a chained non-pytest segment are never attributed to the pytest step): the test file and every conftest.py from its directory up to tests/ are AST-parsed for a
       module-level `pytest.importorskip("<name>")` (assigned or bare) or a module-level `import <name>` / `from <name>
       import` outside try. A hit on a name in the CI-absent set fails with: plan path, step id, selector, the guarding
       file and name, and the fix ("set hermetic: false -- vp-red-before.yaml hermetic_authoring carve-out (iii)"). The
@@ -124,8 +137,9 @@ scope:
       Mirror test (Decision 131 name). Fixture repos under tmp_path: TestFlagsGuardedTarget (module-level importorskip,
       bare importorskip, module-level import, conftest-level guard -- each flagged with the message fields),
       TestPassesUnguardedTarget (function-scope importorskip, guard on a name present in CI such as boto3, hermetic false
-      step, post-deploy step, non-pytest command, selector file absent, implementation_declared true plan -- none
-      flagged), TestAbsentSetDerivation (set equals requirements.in - fast - dev import names on a fixture triple;
+      step, post-deploy step, non-pytest command, selector file absent, implementation_declared true plan, a MODIFIED
+      (not added) legacy plan whose step targets a guarded file, a chained command whose non-pytest segment names a guarded
+      file -- none flagged), TestAbsentSetDerivation (set equals requirements.in - fast - dev import names on a fixture triple;
       the live repo set contains duckdb and not boto3), TestAccounting (examined/skipped declared exactly once).
   - file: scripts/checks/deps/_manifest.py
     action: Modify
@@ -146,8 +160,9 @@ scope:
     purpose: >-
       Class D: hermetic_authoring carve-out (iii)'s ownership clause is reworded (Decision 181 point 2). It replaces
       "an interim workaround for an environment mismatch, owned by rec-2809 for its enforcement gap and root-cause fix"
-      with: enforced at plan-PR time by validate_hermetic_fast_tier_collectability for target files that exist (added
-      by rec-2809); a target the implementation creates is caught before push by the CI-parity agent-container --pre
+      with: enforced at plan-PR time by validate_hermetic_fast_tier_collectability for target files that exist, covering
+      direct module-level guards or imports in the target file and its conftest chain (transitive first-party imports are
+      not examined) (added by rec-2809); a target the implementation creates is caught before push by the CI-parity agent-container --pre
       (scripts/checks/deps/fast_tier_env.py), and its remaining plan-amendment cost is owned by rec-4757; the
       root-cause alternative (a replay environment carrying these packages) is closed by the keep-PR-CI-light ruling
       (Benjamin, 2026-10-18). It keeps the requirements-fast.txt and rec-2809 literals that registry row
@@ -192,7 +207,9 @@ acceptance_criteria:
   - >-
     validate_hermetic_fast_tier_collectability fails a diff-present, not-yet-implemented plan whose hermetic pre-deploy
     pytest step targets an existing test file guarded on a CI-absent package, and passes every unguarded shape.
-  - rec-2809 and rec-2779 are closed with acceptance oracles that hold at the closing sha.
+  - >-
+    rec-2809 is closed by the Resolves trailer with an acceptance oracle that holds at the closing sha; rec-2779 is
+    recorded superseded by the merged mechanism (Benjamin 2026-10-30).
 verification_plan:
   - step: 1
     phase: pre-deploy
@@ -268,8 +285,11 @@ verification_plan:
       "$P" -c "import importlib.util as u, sys; sys.exit(any(u.find_spec(n) for n in ('duckdb','psycopg2','pytz','radon')))" &&
       test "$(OTL_VENV_PYTHON="$P" bin/venv-python -c 'import sys; print(sys.executable)')" = "$P" &&
       { "$P" -m pytest tests/telemetry/test_append.py -q; test $? -eq 5; } &&
-      bin/venv-python -m pytest tests/telemetry/test_append.py -q
-    expected: exit 0 overall; the parity run reports 1 skipped and 0 collected, the full-venv run passes.
+      bin/venv-python -m pytest tests/telemetry/test_append.py -q &&
+      du -sh "$(dirname "$(dirname "$P")")"
+    expected: >-
+      exit 0 overall; the parity run reports 1 skipped and 0 collected, the full-venv run passes; the env's disk size is
+      printed for the report (measured against the per-session allowance).
     fix_if: >-
       An excluded package importable in the env -- the install sequence differs from CI's; fix it. Build fails with
       network errors -- read the proxy status per /root/.ccr/README.md, then re-run; never switch the step to
@@ -279,11 +299,13 @@ verification_plan:
   - step: 7
     phase: pre-deploy
     action: >-
-      End-to-end on the implementation branch: the default agent-container --pre re-executes and passes; --full-env prints the
-      not-CI-predictive banner; CI=true does not re-exec.
+      End-to-end on the implementation branch: the default agent-container --pre re-executes, runs in the env (the
+      banner names the env path the --ensure CLI prints) and passes; --full-env prints the not-CI-predictive banner.
+      The CI=true no-op is proven by step 1's unit tests, not here.
     command: >-
       bin/venv-python -m scripts.validate --pre 2>&1 | tee /tmp/pre-parity.log; test ${PIPESTATUS[0]} -eq 0 &&
       grep -q "CI-parity: running --pre in the CI-shaped fast-tier environment" /tmp/pre-parity.log &&
+      grep -qF "$(bin/venv-python -m scripts.checks.deps.fast_tier_env --ensure)" /tmp/pre-parity.log &&
       bin/venv-python -m scripts.validate --pre --full-env 2>&1 | grep -q "CI-parity: OFF (--full-env)"
     expected: exit 0; both banners found; the parity run's summary reads All checks passed.
     fix_if: >-
@@ -297,14 +319,14 @@ verification_plan:
     action: >-
       Re-point the two bundled recs' acceptance oracles to the delivered mechanism before the merge (Decision 201: the
       trailer job runs the acceptance at the closing sha): rec-2809 to the mirror test path (Decision 131 rename),
-      rec-2779 to the parity re-exec tests (Benjamin's 2026-10-30 ruling closes it as superseded by the mechanism; Decision 103 confirmation).
+      rec-2809 only. rec-2779 is NOT re-pointed and NOT in the Resolves trailer: Benjamin's 2026-10-30 ruling closes it
+      as superseded (Decision 103 semantic verdict), recorded post-merge by step 10.
     command: >-
       bin/venv-python -c "from scripts.ops_data_portal import update_rec as u;
-      u('rec-2809', {'acceptance': 'bin/venv-python -m pytest tests/checks/deps/test_validate_hermetic_fast_tier_collectability.py::TestFlagsGuardedTarget -q'});
-      u('rec-2779', {'acceptance': 'bin/venv-python -m pytest tests/checks/deps/test_fast_tier_env.py::TestReexecDecision -q'})"
+      u('rec-2809', {'acceptance': 'bin/venv-python -m pytest tests/checks/deps/test_validate_hermetic_fast_tier_collectability.py::TestFlagsGuardedTarget -q'})"
       && bin/venv-python -c "from src.common.ducklake_reader_client import fetch_recs_by_ids, make_reader;
-      rows, _ = fetch_recs_by_ids(make_reader(), ['rec-2809','rec-2779']); print([(r['id'], r['acceptance']) for r in rows])"
-    expected: exit 0; both rows print the new acceptance commands.
+      rows, _ = fetch_recs_by_ids(make_reader(), ['rec-2809']); print([(r['id'], r['acceptance']) for r in rows])"
+    expected: exit 0; the row prints the new acceptance command.
     fix_if: Portal unreachable -- restore the agent_platform chain and re-run; never edit a local cache.
     hermetic: false
     graduation: not-applicable
@@ -321,12 +343,18 @@ verification_plan:
   - step: 10
     phase: post-deploy
     action: >-
-      After the squash merge whose commit body carries the Resolves trailer for rec-2809 and rec-2779, confirm both
-      recs closed.
+      After the squash merge (Resolves trailer for rec-2809), record rec-2779 as superseded by the merged mechanism
+      (Benjamin 2026-10-30), then confirm rec-2809 closed and rec-2779 superseded. If the portal raises
+      ClosureArtifactRequired, pass closure_artifact naming the graduated check fast-tier-env-reexec-decision.
     command: >-
+      bin/venv-python -c "from scripts.ops_data_portal import update_rec as u; import subprocess;
+      sha = subprocess.check_output(['git', 'rev-parse', 'origin/main'], text=True).strip();
+      u('rec-2779', {'status': 'superseded', 'resolution': 'Superseded by PLAN-fast-tier-ci-parity at ' + sha + ': the
+      agent-container --pre runs CI-shaped, so a copied importorskip guard that hides a test from CI fails locally before
+      push; no skill prose (Benjamin 2026-10-30).'}, closure_fix_sha=sha)" &&
       bin/venv-python -c "from src.common.ducklake_reader_client import fetch_recs_by_ids, make_reader;
       rows, _ = fetch_recs_by_ids(make_reader(), ['rec-2809','rec-2779']); print({r['id']: r['status'] for r in rows})"
-    expected: both closed.
+    expected: rec-2809 closed, rec-2779 superseded.
     fix_if: >-
       Still open -- read the closure job's log on main; if the trailer was dropped, follow git-ops.yaml's resolves_trailer
       recovery; never close by hand without the acceptance verdict.
@@ -455,7 +483,7 @@ context:
   - The audit harness keeps its own ensure_fast_environment (combined install, audit-corpus semantics); unifying it is out of scope (critique F12, informational).
   - "fork: run --pre CI-shaped by default in the agent container (CI unset) vs an opt-in flag | chosen: default | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: this plan (Benjamin, write the plan, 2026-10-30)"
   - "fork: strip AWS credentials in the CI-shaped run | chosen: yes | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: this plan (Benjamin 2026-10-30)"
-  - "fork: rec-2779 prose rule vs close as superseded by the mechanism | chosen: close | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: this plan + rec-2779 acceptance (Benjamin 2026-10-30)"
+  - "fork: rec-2779 prose rule vs close as superseded by the mechanism | chosen: close | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: this plan + rec-2779 status superseded at merge (Benjamin 2026-10-30)"
   - "fork: wrapper override var vs forcing the PATH fallback | chosen: override, fail loud on bad value | class: consistency-only | precedent: Decision 148 | precedent_kind: decision | reversible: yes | persisted: bin/venv-python"
   - "fork: drift pin vs shared CI script or lock file | chosen: drift pin (both others edit PR CI) | class: consistency-only | precedent: BUILD-SEAMS F keep-CI-light | precedent_kind: answered-fork | reversible: yes | persisted: tests/checks/deps/test_fast_tier_env.py"
   - Decision-scout verdict FLAGS_FOUND (WARN 131 resolved by the mirror test name); CITE 73, 148, 55, 189, 163, 181, 169, 170, 128, 159, 182, 208, 201, 103.
@@ -487,7 +515,7 @@ execution_steps:
   - >-
     Merge under the project's standing rule (code review PROCEED and CI green). Squash with
     mcp__github__merge_pull_request(merge_method="squash") and an explicit commit_message whose body ends with the line
-    "Resolves: rec-2809, rec-2779" directly above the Co-Authored-By and Claude-Session trailers; then read the merge
+    "Resolves: rec-2809" directly above the Co-Authored-By and Claude-Session trailers; then read the merge
     commit back and confirm the trailer is present before reporting the merge.
   - 'Report: what was implemented, verification results'
 rollback: Revert the squash commit; --full-env is the in-place escape until then.
