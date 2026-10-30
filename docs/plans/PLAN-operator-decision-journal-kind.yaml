@@ -54,13 +54,13 @@ verification_plan:
     print('drift=%s' % bad)"
   expected: 'Prints PLAN-w3 VP 3''s and VP 9''s pinned lines unchanged and an empty drift list. Red before is not applicable: the
     step guards that section 9 leaves PLAN-w3''s assertions true.'
-  fix_if: A non-empty drift list means section 9 reused an existing yaml key, broke yaml parsing, or text was inserted inside sections
-    0-8.
+  fix_if: 'A non-empty drift list means section 9 reused an existing yaml key, broke yaml parsing, or text was inserted inside sections
+    0-8. A max_main or on_main change instead means the operator filed a candidate decision on main: stop and tell the coordinator
+    (execution step 1), never edit PLAN-w3.'
   hermetic: true
   graduation: waive
   graduation_waiver_reason: PLAN-w3's VP 3 pins max_main=CD.45 and rows=6, which the operator's own CD filing legitimately changes;
-    a standing registry row would go red on the edit it exists to allow, and the line-anchor invariant is guarded by Decision 221's
-    own graduated check.
+    a standing registry row would go red on the edit it exists to allow.
   expected_literals:
   - rows=6 validated=6 pending=6 ids=['CD.46', 'CD.47', 'CD.48', 'CD.50', 'CD.51', 'CD.52'] on_main=0 max_main=CD.45 routing_ids_equal=True
   - texts=10 phrases=15 denylist_hits=[]
@@ -111,19 +111,24 @@ verification_plan:
 - step: 5
   phase: pre-deploy
   action: Prove the roadmap diff touches only T4.36 c7's status and met_by.
-  command: 'git fetch --quiet origin main && git diff -U0 origin/main -- docs/ROADMAP-PLATFORM.yaml | grep -E ''^[-+] '' | grep -vE
-    ''^[-+]\s*(status|met_by):|^[-+]\s*- \{id: c7'' | wc -l'
-  expected: Prints 0 (no changed roadmap line other than c7's status, met_by or its flow-style line).
-  fix_if: A non-zero count names a stray edit; revert it.
+  command: git fetch --quiet origin main && bin/venv-python -c "import yaml,subprocess as S; a=yaml.safe_load(S.run(['git','show','origin/main:docs/ROADMAP-PLATFORM.yaml'],capture_output=True,text=True,check=True).stdout);
+    b=yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml',encoding='utf-8')); f=lambda d:[c for t in d['tier_items'] if t['id']=='T4.36'
+    for c in t['exit_criteria'] if isinstance(c,dict) and c['id']=='c7'][0]; ca,cb=f(a),f(b); flip=(cb.get('status'),cb.get('met_by'))==('met','operator-decision-journal-kind');
+    cb.clear(); cb.update(ca); print('roadmap flip=%s rest_equal=%s' % (flip,a==b))"
+  expected: 'Prints roadmap flip=True rest_equal=True: c7 is flipped and, with c7 restored to origin/main''s values, the parsed roadmap
+    equals origin/main''s.'
+  fix_if: rest_equal=False means a stray edit elsewhere in the roadmap (any item, criterion or T4.36's own status); revert it.
   hermetic: false
   graduation: not-applicable
 - step: 6
   phase: pre-deploy
   action: Read rec-3530 through the DuckLake reader after the portal update.
   command: bin/venv-python -c "from src.common.ducklake_reader_client import make_reader, fetch_recs_by_ids; rows,miss=fetch_recs_by_ids(make_reader(),['rec-3530']);
-    r=rows[0]; print('rec-3530 status=%s note=%s' % (r['status'],'PLAN-operator-decision-journal-kind' in r['context'] and 'declined'
-    in r['context']))"
-  expected: Prints rec-3530 status=open note=True.
+    r=rows[0]; c=r['context']; first=c.split(chr(10),1)[0]; print('rec-3530 status=%s leads=%s declined=%s original_kept=%s' % (r['status'],c.startswith('[')
+    and 'PLAN-operator-decision-journal-kind' in first,'is declined' in first,'This rec owns building (or deliberately declining'
+    in c))"
+  expected: 'Prints rec-3530 status=open leads=True declined=True original_kept=True: the dated note is the context''s first line
+    and the original context follows it.'
   fix_if: Re-run the update_rec call in execution_steps (agent_platform profile); a write that cannot reach the writer fails loudly,
     never retry silently.
   hermetic: false
@@ -135,6 +140,14 @@ verification_plan:
     -m scripts.validate --pre
   expected: Both exit 0.
   fix_if: Fix the named finding; never skip or disable a check.
+  hermetic: false
+  graduation: not-applicable
+- step: 8
+  phase: pre-deploy
+  action: Run the full tier to completion before the commit (handoff_policy).
+  command: bin/venv-python -m scripts.validate
+  expected: Exit 0.
+  fix_if: Fix the named finding; a timeout leaves the handoff blocked and the full tier reruns from the start.
   hermetic: false
   graduation: not-applicable
 test_obligations:
@@ -162,11 +175,19 @@ test_obligations:
     status=%s met_by=%s' % (c.get('status'),c.get('met_by')))"
   waiver_reason: Roadmap data flip already guarded standing by validate_platform_roadmap and the exit-criteria ledger.
 constraints:
-- 'Lines 1-859 of REPORT-w3 are never edited: Decision 221 (DECISIONS.md, cites :274-470, :290, :359, :380-382, :423, :619, :627)
-  and merged plans cite them, and Decision 221''s text is append-only (Decision 177).'
+- 'PLAN-w3''s VP parser merges all REPORT-w3 yaml blocks by top-level key: section 9 never reuses inputs, staged_criteria, staged_candidate_decisions,
+  cd_routing, parked_questions, answered_questions, consult_rows or consult_departures.'
+- 'Data model is direction only (data-modeling-standard.yaml design_time_walk at direction level: grain one row per answer, append_only,
+  boundary-derived identity, event-day partition, join keys fork_id, plan path+SHA, consult point, forge approval ref, tenant/project
+  ids); schemas are the build''s at CD.47 ratification.'
+- 'Lines 1-859 of REPORT-w3 are never edited: Decision 221 (DECISIONS.md, cites :274-470, :290, :359, :380-382, :423, :611, :619,
+  :627) and merged plans cite them, and Decision 221''s text is append-only (Decision 177).'
 - 'Order: the build PR merges only after PLAN-north-star-tier-a''s build has merged (T4.36 must exist on main). This plan PR shows
   validate_platform_roadmap red (''unknown tier_item T4.36'') until then and merges only after it, as PLAN-decision-serves-kind-grammar''s
-  PR does.'
+  PR does. The build also merges after PLAN-decision-serves-kind-grammar''s build, because section 9 points at decision-entry.yaml
+  field_shapes.kind and docs/contracts/decision-kind.yaml.'
+- 'Section 9 presumes CD.46, CD.47 and CD.51 are still unfiled (pending in REPORT-w3 only). If the operator has filed any candidate
+  decision past CD.45, stop: section 9''s re-draft premise needs his word first.'
 - Section 9 is Benjamin-approved verbatim; DATE is the only allowed variance. Any other word needs his new approval in the thread
   that acts (project rule).
 - No contract edit (overseer-dispatch.yaml untouched), no numbered Decision, and no table, verb, writer or check is built (Decision
@@ -175,28 +196,45 @@ constraints:
   loudly (Decision 84 I-4).
 - No rescue agents or workaround loops (Decision 55).
 context:
-- 'Decision-scout round 1: FLAGS_FOUND. Decisions triaged: 187 of 187. Roadmap items intersected: 0; CONFLICT: 0; RELATED: 0. CITE:
-  221, 235, 199, 200, 207, 209, 196, 232, 84, 86, 136. Flags: 181 WARN x2 (rec-3530 stays residual owner; class literals asked|consistency-only),
-  233 NOTE (gate rows record, never authorize), 86 SPIRIT (section 9 names its own plan; section 7 binds 0-8), 235 cd46-reshaped
-  trigger named in CD.46-r1.'
+- 'Decision-scout r1 FLAGS_FOUND (181 WARN x2, 233 NOTE, 86 SPIRIT; all adopted). Decisions triaged: 187 of 187. Roadmap items intersected:
+  0; CONFLICT: 0; RELATED: 0. CITE: 221, 235, 199, 200, 207, 209, 196, 232, 84, 86, 136.'
 - 'gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING'
-- 'Approvals (Benjamin): boundaries 2026-10-25 (msg cmsg_01PCtd8o8287wUrLv1SCjZEuXmAgyKSoCzipaTRYpd9mqQ, item 6); section 9 verbatim,
-  kind a (required, no default), counter a (outcome counter, offline drill) and ''write the plan'' 2026-10-30 (msg cmsg_01PCtd8o8287wUrLv1SCjZEu91AP5txow8X8QWSVdtX88N,
-  ''I agree with all recommendations, write the plan'').'
-- 'Direction source: operator message 2026-10-24 17:38Z (Human forks), exported to /mnt/project-files/north-star-tier-a/source-session-notes.md;
-  step 6b: /mnt/project-files/operator-decision-journal-kind/step6b-presentation.md.'
-- 'Advice consult: /mnt/project-files/operator-decision-journal-kind/ADVICE.md (blind; ran on Opus 5, Fable unavailable). Adopted
-  Q1-Q3, Q5-Q8; Q4 adopted for approval rate, adapted for standing bias (operator''s own definition kept).'
-- 'Data-model walk (direction level, data-modeling-standard.yaml design_time_walk): grain one row per answer to a fork; append_only,
-  supersede by pointer; boundary-derived identity (Decision 199 cl.3); partition on the answer''s event day; join keys fork_id, plan
-  path+SHA, consult point (rec-4435''s grain), forge approval reference, tenant_id/project_id. Schemas are the build''s at CD.47
-  ratification.'
-- 'Coupling: kind''s shape and meaning come from PLAN-decision-serves-kind-grammar (decision-entry.yaml field_shapes.kind points
-  to docs/contracts/decision-kind.yaml). The north-star Decision (number set at implementation) cites this staged kind via Decision
-  221 cl.7.'
-- 'PLAN-w3''s yaml parser merges all report blocks by top-level key: section 9 must never reuse inputs, staged_criteria, staged_candidate_decisions,
-  cd_routing, parked_questions, answered_questions, consult_rows or consult_departures.'
+- 'Evidence: /mnt/project-files/operator-decision-journal-kind/ (step6b-presentation.md, decision-scout-r1.md, ADVICE.md: blind consult,
+  ran on Opus 5 as Fable was unavailable).'
+- 'Approvals (Benjamin): boundaries 2026-10-25 (cmsg_01PCtd8o8287wUrLv1SCjZEuXmAgyKSoCzipaTRYpd9mqQ item 6); Q1-Q3 and ''write the
+  plan'' 2026-10-30 (cmsg_01PCtd8o8287wUrLv1SCjZEu91AP5txow8X8QWSVdtX88N).'
+- 'Coupling: kind comes from PLAN-decision-serves-kind-grammar (field_shapes.kind -> docs/contracts/decision-kind.yaml); the north-star
+  Decision (number set at build) cites this kind via Decision 221 cl.7.'
 - 'Related-work: scripts.ci_rca.red_overlap --plan verdict clear (no reds), 2026-10-30.'
+- 'LAMBDA-DEPLOY DEFERRED (CD.16 / Decision 79), data-pipeline: flagged only through docs/ROADMAP-PLATFORM.yaml (a manifest asset,
+  c7 bookkeeping); prompt-context read only, path triggers exclude the file; refreshes with its next governed deploy (PLAN-telemetry-production-catalog
+  precedent).'
+- 'fork: section 9 wording | chosen: approved verbatim (Q1) | class: asked | precedent: none | precedent_kind: none | reversible:
+  yes | persisted: REPORT-w3 section 9'
+- 'fork: kind on operator_decision rows | chosen: required, never defaulted, meaning from decision-entry.yaml field_shapes.kind (Q2
+  kind a) | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: CD.47-r1'
+- 'fork: approval-rate counter | chosen: approval_holding_share, drill in the Decision 231 offline lane (Q3 counter a) | class: asked
+  | precedent: none | precedent_kind: none | reversible: yes | persisted: register_rows_staged'
+- 'fork: rec-3530 | chosen: stays open, context[] validator declined, residual closes at the writer''s build | class: asked | precedent:
+  none | precedent_kind: none | reversible: yes | persisted: rec-3530 (answered 2026-10-30, all recommendations)'
+- 'fork: standing-bias metric | chosen: operator''s 2026-10-24 definition over the consult''s agent-classification reading | class:
+  asked | precedent: none | precedent_kind: none | reversible: yes | persisted: register_rows_staged (answered 2026-10-30)'
+- 'fork: register upstream | chosen: upstream [] in both rows (recommended; awaiting Benjamin) | class: asked | precedent: none |
+  precedent_kind: none | reversible: yes | persisted: register_rows_staged'
+- 'fork: reservation form | chosen: append section 9 under two new yaml keys | class: consistency-only | precedent: Decision 221
+  line cites | precedent_kind: decision | reversible: yes | persisted: this plan'
+- 'fork: grain under re-answer | chosen: one row per answer, append-only, supersede by pointer | class: consistency-only | precedent:
+  Decision 207 | precedent_kind: decision | reversible: yes | persisted: CD.47-r1'
+- 'fork: identity and partition | chosen: boundary-derived id, answer event day | class: consistency-only | precedent: Decision 199
+  cl.3 | precedent_kind: decision | reversible: yes | persisted: CD.47-r1'
+- 'fork: class literals | chosen: asked or consistency-only | class: consistency-only | precedent: overseer-dispatch.yaml record_grammar
+  | precedent_kind: contract | reversible: yes | persisted: CD.47-r1'
+- 'fork: gate-sourced rows | chosen: record after the forge approval, never the authority | class: consistency-only | precedent:
+  Decision 233 cl.4 | precedent_kind: decision | reversible: yes | persisted: CD.47-r1'
+- 'fork: tenant ids | chosen: writer-minted from a project reference | class: consistency-only | precedent: Decision 200 cl.1 | precedent_kind:
+  decision | reversible: yes | persisted: CD.47-r2'
+- 'fork: writer label | chosen: the /plan alignment sign-off | class: consistency-only | precedent: project-alignment.yaml legacy_labels
+  | precedent_kind: contract | reversible: yes | persisted: CD.47-r1'
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -205,7 +243,10 @@ pre_implementation_checklist:
 - Acceptance criteria understood and verifiable
 - T4.36 present on main (PLAN-north-star-tier-a build merged)
 execution_steps:
-- Confirm T4.36 exists on origin/main and REPORT-w3 on origin/main is still 859 lines; if either fails, stop and tell the coordinator.
+- 'Preconditions on origin/main; if any fails, stop and tell the coordinator: (a) T4.36 exists and its c7 is open and its text names
+  REPORT-w3 section 9 and CD.47; (b) REPORT-w3 is still 859 lines; (c) candidate_decisions'' highest id is CD.45 and none of CD.46-CD.52
+  is present; (d) docs/contracts/decision-kind.yaml exists and decision-entry.yaml carries field_shapes.kind (PLAN-decision-serves-kind-grammar''s
+  build merged).'
 - 'Append the VERBATIM section 9 below to docs/plans/reports/REPORT-w3-feedback-loop-staging.md: one blank line after line 859, then
   the text exactly, with DATE replaced by the build day (YYYY-MM-DD) and nothing else changed. The file ends with one trailing newline.'
 - |
@@ -314,7 +355,7 @@ execution_steps:
       counter: 'approval_holding_share: 1 - approved answers changed, withdrawn, or whose plan was reverted or needed a red-main repair within 90 days / approved answers; read from the supersede chain, revert PRs and ci_rca recs, never from the gate count'
       counter_floor: 0.99 (register seed, provisional; the operator sets it)
       drill: known-wrong recommendations mixed into the Decision 231 offline blind-adjudication stream, unmarked to the adjudicator; recall is read there, never on a live gate
-      upstream: [the operator_decision write verb]
+      upstream: []
     - detector: operator-decision-standing-bias
       metric: 'standing_bias: per decision class, the share of the last N answers (N at least the class minimum) that took the recommended option'
       decides: no rung; the proposal to codify a Tier C decision for the class, and the precondition that a mechanism class's record is sound before its lane reads it
@@ -323,12 +364,19 @@ execution_steps:
       counter: 'class_holding_share: 1 - answers in the class changed, withdrawn, or whose plan was reverted or needed a red-main repair within 90 days / answers in the class; read from the supersede chain, revert PRs and ci_rca recs'
       counter_floor: 0.99 (register seed, provisional; the operator sets it)
       drill: a seeded class whose recommended option is planted known-wrong, run through the Decision 231 offline blind-adjudication stream; recall = seeded answers marked wrong / seeded answers
-      upstream: [the operator_decision write verb]
+      upstream: []
   ```
 - 'In docs/ROADMAP-PLATFORM.yaml set T4.36 c7 to status: met and met_by: operator-decision-journal-kind, keeping c7''s text and style.'
 - |-
   Update rec-3530 through the portal (Python: scripts.ops_data_portal.update_rec('rec-3530', {'context': NOTE + two newlines + current context}), current context read via fetch_recs_by_ids), status unchanged, with NOTE (DATE = build day):
-  [DATE, PLAN-operator-decision-journal-kind] Direction (operator, 2026-10-24): the plan context[] fork line retires into the operator_decision record kind staged for CD.47 (docs/plans/reports/REPORT-w3-feedback-loop-staging.md section 9, entry CD.47-r1), written by the asking surface when the operator answers. This rec stays the residual owner named in docs/contracts/overseer-dispatch.yaml enforcement_coverage until that kind's writer is built; the residual then closes by removing the residual_agent_obligation row. The validate_plan_documents check over context[] fork lines is declined: it would validate a prose carrier that is being retired. Classification correctness (an agent marking a fork that weighs a credible alternative as consistency-only) stays this rec's residual; the staged standing-bias register row reads its consequence but does not close it.
-- 'Execute the Verification Plan: run each step; loop until pass; on an unrecoverable failure stop and RCA (Decision 55).'
-- 'Report: what was implemented, verification results. The build PR resolves no rec.'
+  [DATE, PLAN-operator-decision-journal-kind] Direction (operator, 2026-10-24): the plan context[] fork line retires into the operator_decision record kind staged for CD.47 (docs/plans/reports/REPORT-w3-feedback-loop-staging.md section 9, entry CD.47-r1), written by the asking surface when the operator answers. This rec stays the residual owner named in docs/contracts/overseer-dispatch.yaml enforcement_coverage until that kind's writer is built; the residual then closes by removing the residual_agent_obligation row. The validate_plan_documents check over context[] fork lines is declined: it would validate a prose carrier that is being retired. Classification correctness (an agent marking a fork that weighs a credible alternative as consistency-only) stays this rec's residual; the staged standing-bias register row reads its consequence but does not close it. The enforcement_coverage note's closure route (a validate_plan_documents check) is re-pointed by this note and is rewritten when the residual row is removed.
+- 'Execute the Verification Plan: run each step; loop until pass; on an unrecoverable failure stop and RCA (Decision 55). VP 8 (full
+  tier) runs to completion before the commit (handoff_policy).'
+- 'Commit, push, open the build PR (no Resolves: trailer; this build resolves no rec) and drive CI green by event-driven wake, never
+  polled. Independent code review, then merge on code review PROCEED plus green CI under the project''s standing rule.'
+- 'Closure evidence, recorded as four SEPARATE facts (implement skill Commit Flows): GitHub readiness state; parent validator evidence
+  (VP 8 full-tier exit 0 plus bin/venv-python -m scripts.checks.validation_result --verify-head for the pushed HEAD); structured
+  postflight evidence (write the scripts.session.postflight_evidence.CATEGORIES JSON in the scratchpad, then bin/venv-python -m scripts.session.postflight
+  --evidence <file>); the real outcome - push, build PR, CI green by event-driven wake, merge SHA.'
+- 'Report: what was implemented, verification results.'
 rollback: 'Revert the build PR: section 9 is append-only and c7 returns to open; re-update rec-3530''s context without the note.'
