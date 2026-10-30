@@ -30,15 +30,22 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+_ROOT = Path(__file__).resolve().parents[2]
 if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    sys.path.append(str(_ROOT))
 
+from scripts import terraform_apply_guard as _guard_module  # noqa: E402
 from scripts.terraform_apply_guard import (  # noqa: E402
     _INERT_ACTIONS,
     RESOURCE_POLICY_TYPES,
     _redact,
     iter_resource_changes,
 )
+
+
+def _package_resolves_under_root() -> bool:
+    return Path(_guard_module.__file__).resolve().is_relative_to(_ROOT)
+
 
 DIGEST_SIZE_CAP = 32768  # bytes
 
@@ -445,6 +452,9 @@ def fit_report(plan: dict, literals: frozenset[str] = frozenset(), cap: int = DI
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    if not _package_resolves_under_root():
+        print("terraform_plan_digest: the scripts package did not resolve under the repo root", file=sys.stderr)
+        return 2
     parser = argparse.ArgumentParser(prog="terraform_plan_digest.py")
     parser.add_argument("--literals-from", action="append", default=[], metavar="PATH")
     parser.add_argument("--fit-report", action="store_true")

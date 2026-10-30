@@ -34,6 +34,11 @@ contract:
     check: validate_terraform_cc_web_operations
 
 amendment_log:
+  - date: "2026-10-30"
+    semantic_break: false
+    change_class: governance_note_add
+    summary: >-
+      PLAN-trusted-plan-cutover PR 3 (rec-4637, Decision 238): speculative_plan_job describes the trusted plan job; tfplan_s3_prefix, capability_split and role_creation_guard_blocked name the trusted writer and the ducklake-artifacts job (wording approved 2026-10-29).
   - date: "2026-10-29"
     semantic_break: false
     change_class: prose_improvement
@@ -363,17 +368,16 @@ speculative_plan_and_apply_the_saved_plan:
     speculative plan (human-readable, guard-verdict-annotated) BEFORE it lands, and at merge the
     SAME reviewed plan.bin is applied -- not a re-plan.
   speculative_plan_job:
-    name: "speculative-plan in terraform-apply-sandbox.yml"
+    name: "plan in terraform-plan-trusted.yml (Decision 238)"
     steps:
-      - "Triggers on pull_request paths terraform/personal/**; same-repo fork-gated (if: head.repo.full_name == github.repository)."
-      - "Assumes agent-platform-github-ci-planner's PR-sub statement (tfstate-read, tfplan-write; no convergence write, no tfstate write/delete; T2.49 merged plan+drift into one dual-sub role)."
-      - "Runs terraform plan -lock=false (read-only; the plan role cannot take the S3 native lock)."
-      - "Passes a stub TF_VAR_neon_api_key and skips refresh: the planner's PR session holds no Secrets Manager value read on the Neon key or DSN, so the plan shows config-versus-state changes only; the hourly drift run is the drift signal."
-      - "Runs the unmodified guard to capture the PREDICTED verdict (advisory; the merge-time verdict is authoritative)."
-      - "Persists plan.bin to s3://agent-platform-data-lake/tfplan/personal/<pr-head-sha>.bin."
-      - "Scrubs account_id, both ExternalIds and owner_email from the comment via scripts/ci/redaction_check.py; self-fails if a 12-digit sequence survives the plan text or any secret literal survives the body (public-repo safety)."
-      - "Posts the redacted plan diff + predicted verdict as a PR comment."
-      - "Does NOT add a required status check (Decision 83 / CD.20 -- a required check wedges autonomous fix-merges)."
+      - "Triggers on pull_request_target paths terraform/personal/**; same-repo head and base main gated before checkout; environment tf-trusted-plan."
+      - "Runs main's workflow and scripts; only terraform/personal/*.tf come from the PR test-merge commit, after a main-side static screen; providers.tf, the lockfile and backend config are main's."
+      - "Assumes agent-platform-github-ci-trusted-plan; init is hermetic from the provider mirror; tfvars and the Neon key are process environment only; full refresh, -lock=false."
+      - "Runs the unmodified guard for the PREDICTED verdict (advisory; the merge-time verdict is authoritative)."
+      - "Persists plan.bin to s3://agent-platform-data-lake/tfplan/personal/<pr>/<pr-head-sha>.bin and posts the terraform-plan-digest status on the head sha."
+      - "Posts a names-only PR comment (addresses, actions, counts, attribute names); errors are a fixed category. No plan text or value reaches the PR or the log."
+      - "Does NOT add a required status check (Decision 83 / CD.20)."
+      - "A screen-refused PR gets no saved plan; its merge leaves an infra_error marker and is applied by a blank workflow_dispatch."
   apply_the_saved_plan_path:
     name: "push to main in apply-sandbox"
     steps:
@@ -396,15 +400,12 @@ speculative_plan_and_apply_the_saved_plan:
     acknowledge-and-retry (re-plans fresh, human-reviewed). NO silent re-plan-and-apply; the push
     path has no fallback.
   tfplan_s3_prefix: >-
-    `s3://agent-platform-data-lake/tfplan/personal/<pr-head-sha>.bin` -- write-IAM is the
-    planner role's PR-sub statement only; read is `github_ci_apply` via its existing
-    `DataLakeObjectIO` bucket-wide grant. Objects are inert once the speculative-plan job is
-    removed; prune optionally.
+    `s3://agent-platform-data-lake/tfplan/personal/<pr>/<pr-head-sha>.bin` -- written by the trusted plan job under agent-platform-github-ci-trusted-plan (Decision 238); the planner PR-sub statement keeps a write grant until rec-4637's last PR removes it. Read is `github_ci_apply` via its existing `DataLakeObjectIO` bucket-wide grant.
   capability_split: >-
     (github_ci_pr vs the planner role's PR-sub statement) `github_ci_pr`: convergence record
     read, provider-mirror read, DuckLake invoke. No tfstate read (fork-safe;
     simulate-principal-policy returns implicitDeny on s3:GetObject tfstate/...). Planner PR-sub
-    (T2.49 merged plan+drift): tfstate READ, tfplan WRITE, the refresh-read metadata surface with no Secrets Manager value read except the tfvars secret (the Neon key and catalog DSN value reads belong to the reserved drift session only; PR plans run with a stub key and skip refresh). No convergence write (see convergence_anchor below), no tfstate
+    (T2.49 merged plan+drift): since the Decision 238 cutover it only builds the PR's DuckLake artifacts (the ducklake-artifacts job) until rec-4640 deletes it; it keeps tfstate READ and the refresh-read metadata surface meanwhile (accepted interim risk, Decision 238 cl.6), tfplan WRITE until rec-4637's last PR removes it, and no Secrets Manager value read except the tfvars secret. No convergence write (see convergence_anchor below), no tfstate
     write/delete, no DeleteObject anywhere. Fork gating: enforced at the WORKFLOW JOB level (if:
     head.repo.full_name == github.repository) -- NOT the OIDC trust condition. Trust mirrors
     github_ci_pr (pull_request sub) plus a sts:RoleSessionName partition (see convergence_anchor
@@ -415,8 +416,8 @@ speculative_plan_and_apply_the_saved_plan:
     `tf-gated-apply` Environment (Decision 92; approve in GitHub Actions). Slice E's T2.48
     inversion made gated `iam:CreateRole` executable for a new boundary-carrying
     `agent-platform-*` role -- planner + deploy both declare the mandatory boundary in HCL, so
-    the gated create succeeds with no admin-apply detour. The speculative-plan and drift
-    workflows' `continue-on-error` on the assume-role step covers any residual bootstrap window.
+    the gated create succeeds with no admin-apply detour. The drift workflow's and the ducklake-artifacts job's
+    `continue-on-error` on the assume-role step covers any residual bootstrap window; the trusted plan job has none.
 
 alarm_only_scheduled_drift_detection:
   heading: "Alarm-only scheduled drift detection (CD.35 Wave 5 / T2.24)"

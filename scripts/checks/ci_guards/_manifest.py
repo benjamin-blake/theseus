@@ -215,6 +215,21 @@ ENTRIES: tuple[Entry, ...] = (
         full_segment="full_after_lint",
     ),
     Entry(
+        name="validate_trusted_plan_screen",
+        module="scripts.checks.ci_guards.validate_trusted_plan_screen",
+        attr="validate_trusted_plan_screen",
+        pre=True,
+        pre_globs=(
+            "terraform/personal/**",
+            "scripts/ci/terraform_hcl_screen.py",
+            "scripts/ci/terraform_hcl_lexer.py",
+            "scripts/checks/ci_guards/validate_trusted_plan_screen.py",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
+        full_segment="full_after_lint",
+    ),
+    Entry(
         name="validate_dispatch_gated_apply_topology",
         module="scripts.checks.ci_guards.validate_dispatch_gated_apply_topology",
         attr="validate_dispatch_gated_apply_topology",
