@@ -11,7 +11,7 @@ intent: >-
   Actions CD pipeline's wiring (speculative plan + apply-the-saved-plan, alarm-only drift detection, the convergence
   anchor), moved verbatim. Benjamin asked for the split 2026-10-30 13:25Z.
 plan_type: IMPLEMENTATION
-verification_tier: V1
+verification_tier: V2
 plan_path: docs/plans/PLAN-terraform-personal-cd-split.yaml
 phase: >-
   ad_hoc_rec (soft-warn category; no tier_item claimed, so the Tier Item Freshness Gate is skipped). Unblocks
@@ -62,6 +62,7 @@ scope:
       test_terraform_claude_md_missing_pointer_fails, test_named_path_that_does_not_exist_fails,
       test_empty_referenced_repo_paths_fails, test_section_in_both_contracts_fails,
       test_missing_sibling_skips_the_boundary_leg, test_live_repository_passes (repo_root=None against the real tree).
+      Module-level test functions (the node ids VP 1 names), not the template's test classes.
   - file: scripts/checks/contracts/_manifest.py
     action: Modify
     purpose: >-
@@ -100,8 +101,8 @@ scope:
     action: Modify
     purpose: >-
       Re-point (Fork 4A, execution step 8c): one sentence appended to the existing terraform-cc-web-operations scope
-      row, one new scope row for docs/contracts/terraform-personal-cd.yaml (PR 4), and the speculative_plan_job
-      test-obligation source names the new file. PR 1 and PR 3 history and every approved text are unchanged.
+      row, one new scope row for docs/contracts/terraform-personal-cd.yaml (PR 4), and one new test-obligation row for
+      it. PR 1 and PR 3 history (including their obligation row on the kept file) and every approved text are unchanged.
 bundled_recommendations: []
 followon_recs: []
 infrastructure_dependencies: []
@@ -197,24 +198,24 @@ verification_plan:
     action: Approved texts T1-T10 are present (key fragments) and the CLAUDE.md and file-router edits hold.
     command: |
       set -e
-      K=docs/contracts/terraform-cc-web-operations.yaml; N=docs/contracts/terraform-personal-cd.yaml; R=docs/contracts/file-router.yaml
-      grep -q "narrowed by PLAN-terraform-personal-cd-split" $K
-      grep -q "Boundary with docs/contracts/terraform-personal-cd.yaml" $K
-      grep -q "The CD pipeline's wiring is terraform-personal-cd.yaml's." $K
-      grep -q "PLAN-terraform-personal-cd-split: sticky_and_observed, concurrency_tradeoff" $K
-      grep -q "Boundary with docs/contracts/terraform-cc-web-operations.yaml" $N
-      grep -q 'ratified_via: "PLAN-terraform-personal-cd-split"' $N
-      grep -q "Decision 238 cl.6 names that file's speculative_plan_job row, which now lives here." $N
       test "$(wc -c < terraform/CLAUDE.md)" -le 10264
-      grep -q 'and `docs/contracts/terraform-personal-cd.yaml` (the' terraform/CLAUDE.md
       grep -qiE "read .{0,60}terraform-cc-web-operations" terraform/CLAUDE.md
-      grep -q "  - topic: terraform-personal-cd" $R
-      grep -q "CC-web terraform/personal hand-run procedure:" $R
-      grep -q "Four entries compacted (PLAN-terraform-personal-cd-split)." $R
       bin/venv-python - <<'EOF'
       import re, subprocess
       from scripts.checks.structural._classify import effective_lines
-      R = "docs/contracts/file-router.yaml"
+      K, N, R = ("docs/contracts/terraform-cc-web-operations.yaml", "docs/contracts/terraform-personal-cd.yaml",
+                 "docs/contracts/file-router.yaml")
+      norm = lambda s: " ".join(s.replace("#", " ").split())
+      want = {K: ["narrowed by PLAN-terraform-personal-cd-split", "Boundary with docs/contracts/terraform-personal-cd.yaml",
+                  "The CD pipeline's wiring is terraform-personal-cd.yaml's.",
+                  "PLAN-terraform-personal-cd-split: sticky_and_observed, concurrency_tradeoff"],
+              N: ["Boundary with docs/contracts/terraform-cc-web-operations.yaml", 'ratified_via: "PLAN-terraform-personal-cd-split"',
+                  "Decision 238 cl.6 names that file's speculative_plan_job row, which now lives here."],
+              "terraform/CLAUDE.md": ["and `docs/contracts/terraform-personal-cd.yaml` (the speculative-plan"],
+              R: ["- topic: terraform-personal-cd", "CC-web terraform/personal hand-run procedure:",
+                  "Four entries compacted (PLAN-terraform-personal-cd-split)."]}
+      missing = [f"{p}: {w}" for p, ws in want.items() for w in ws if norm(w) not in norm(open(p).read())]
+      if missing: raise SystemExit(f"TEXT_MISSING {missing}")
       base = subprocess.run(["git", "show", "origin/main:" + R], capture_output=True, text=True, check=True).stdout
       head = open(R).read()
       old = re.findall(r'^  - \{date: "2026-09-0[127]", .*summary: "(.*)"\}$', base, re.M)
@@ -258,8 +259,17 @@ verification_plan:
       b = b.replace("Prose only; validate_terraform_cc_web_operations checks", "Prose only; validate_terraform_personal_cd checks")
       if b != head(p): bad.append(p)
       p = "docs/plans/PLAN-trusted-plan-cutover.yaml"
-      h = head(p)
-      if h.count("file: " + NEW) != 1 or "After PLAN-terraform-personal-cd-split, the sections PR 3 and PR 4 edit live in" not in h: bad.append(p)
+      b = main(p)
+      row = "A dated amendment_log row per PR. validate_terraform_cc_web_operations stays green."
+      b = b.replace(row, row + " After PLAN-terraform-personal-cd-split, the sections PR 3 and PR 4 edit live in"
+          " docs/contracts/terraform-personal-cd.yaml (next row). - file: docs/contracts/terraform-personal-cd.yaml action: Modify"
+          " purpose: >- PR 4: deletes the two \"until rec-4637's last PR removes it\" clauses (APPROVED, as in the row above)"
+          " and adds a dated amendment_log row. validate_terraform_personal_cd stays green.")
+      ob = "waiver_reason: Contract prose; validate_terraform_cc_web_operations in --pre checks its structure and referenced paths."
+      b = b.replace(ob, ob + " - source: docs/contracts/terraform-personal-cd.yaml behavior: PR 4's two clause deletions"
+          " verification_step: 9 command: bin/venv-python -m scripts.validate --pre waiver_reason: Contract prose;"
+          " validate_terraform_personal_cd in --pre checks its structure and referenced paths.")
+      if b != head(p): bad.append(p)
       print(bad or "REPOINT_OK"); raise SystemExit(1 if bad else 0)
       EOF
     expected: exit 0, prints REPOINT_OK.
@@ -391,6 +401,13 @@ context:
   - "Order: merge this before the builds of PLAN-pr-plan-opaque-iam-policy-check, PLAN-secrets-to-ssm-retire and PLAN-trusted-plan-cutover PR 4 open their PRs (their scope gate reads the base ref). The admin setup and SSM cutover builds rebase and land unchanged."
   - "rec-4753 (filed 2026-10-30): registry entry tfvars-recovery-table-covers-module is red on origin/main (UNCOVERED neon_api_key since #1654); VP 5 skips it by name only."
   - "Stale paths redaction_check.py and both platform_roles.tf (cited by no section) stay in the kept file; out of scope."
+  - "Heads-up for the SSM retire builder (not this plan's to fix): its T4 targets 'holds no Secrets Manager value read on the Neon key or DSN', which trusted-plan PR 3 already rewrote out of speculative_plan_job on main."
+  - >-
+    plan-critique r1 REVISE dispositions: R1 8c keeps the kept file's obligation row and adds one for the new file, VP 4
+    now compares the trusted-plan plan exactly; R2 tier V1 to V2 (Python check; precedents
+    ambient-prose-contract-relocation, tfvars-recovery-contract-closure). Notes: N1 normalized matching stated; N2
+    non-path edits named in the PR body; N3 VP 3 matches normalized text; N5 module-level test functions. N4 (the
+    opaque-IAM row's "this row's 2026-10-30 precedent" wording) left: its change_class is stated explicitly.
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -547,9 +564,16 @@ execution_steps:
     PLAN-terraform-personal-cd-split, the sections PR 3 and PR 4 edit live in docs/contracts/terraform-personal-cd.yaml
     (next row)."; insert after that row a row with file docs/contracts/terraform-personal-cd.yaml, action Modify,
     purpose "PR 4: deletes the two \"until rec-4637's last PR removes it\" clauses (APPROVED, as in the row above) and
-    adds a dated amendment_log row. validate_terraform_personal_cd stays green."; in test_obligations, the row whose
-    behavior is "speculative_plan_job describes the trusted job" gets source docs/contracts/terraform-personal-cd.yaml.
-    Run VP 4 and VP 5.
-  - "VP 7 (full tier); commit; push; open the PR. The PR body lists every changed line of the three re-pointed plans."
+    adds a dated amendment_log row. validate_terraform_personal_cd stays green."; in test_obligations, keep the row whose
+    behavior is "speculative_plan_job describes the trusted job" unchanged (PR 1 and PR 3 history on the kept file) and
+    insert after it a row with source docs/contracts/terraform-personal-cd.yaml, behavior "PR 4's two clause
+    deletions", verification_step 9, command `bin/venv-python -m scripts.validate --pre`, waiver_reason "Contract prose;
+    validate_terraform_personal_cd in --pre checks its structure and referenced paths.". Every match in 8a-8c is on
+    whitespace-normalized text (the anchors wrap across lines in the target plans), exactly as VP 4 compares. Run VP 4,
+    VP 5, and `bin/venv-python -m scripts.roadmap.plan_document` on each of the three plans.
+  - >-
+    VP 7 (full tier); commit; push; open the PR. The PR body lists every changed line of the three re-pointed plans and
+    names the three non-path edits for Benjamin's sight: the added guard f in the opaque-IAM plan's VP 3 and the two
+    waiver_reason checker names (8a, 8b).
   - "Code review via a fresh-context code-review subagent; it compares T1-T10 against execution step 7 and step 8's re-points against VP 4."
   - "Merge on code review PROCEED + green CI + the coordinator's merge window (docs-and-check change; no Benjamin merge word needed). Then tell the coordinator so it nudges the five in-flight builds to rebase."
