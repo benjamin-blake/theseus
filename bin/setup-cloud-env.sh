@@ -53,10 +53,13 @@
 #     role_arn = arn:aws:iam::<ACCOUNT_ID>:role/PlatformAdmin
 #     source_profile = agent_static
 #     external_id = <PLACEHOLDER>
-#     duration_seconds = 36000
+#     duration_seconds = 1800
 #     region = eu-west-2
 #     sts_regional_endpoints = regional
 #     output = json
+#
+# PlatformAdmin's max_session_duration is 3600 (terraform/bootstrap/platform_roles.tf), so its profile must not ask
+# for more: 36000 here makes every PlatformAdmin AssumeRole fail. PlatformDev allows 36000.
 #
 # and set this in the (non-secret) env-var field:
 #     AWS_PROFILE=agent_platform_admin
@@ -221,6 +224,9 @@ fi
 # inherited shell state.
 if [ "${INSTALL_TERRAFORM:-0}" = "1" ]; then
     t0=$SECONDS
+    # The CC-web harness may set the env-var field after the setup script runs, so default the admin profile here;
+    # the mirror sync and the profile-free tfvars delegate below both rely on it.
+    export AWS_PROFILE="${AWS_PROFILE:-agent_platform_admin}"
     MIRROR_DIR="$HOME/.terraform-mirror"
     # rec-2518: RESOLVED_TFRC is a sibling FILE of $MIRROR_DIR, not a child of it -- writing the
     # resolved tfrc inside $MIRROR_DIR would inflate the `ls -A "$MIRROR_DIR"` non-empty gate below
