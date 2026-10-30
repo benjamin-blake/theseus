@@ -21,14 +21,18 @@ scope:
   - file: scripts/ci/terraform_plan_policy_rebuild.py
     action: Create
     purpose: >-
-      Stdlib-only, pure functions (imports only the stdlib, scripts.ci.terraform_hcl_lexer and the digest's own helpers by
-      absolute import, the #1736 `_ROOT` pattern). (1) load_policy_links(paths) lexes the .tf files given with
-      --literals-from (a directory means its *.tf, non-recursive, as load_literals) with terraform_hcl_lexer.lex and
-      returns PolicyLinks: policy -> document for each top-level `resource "<T>" "<N>"` block of a digest policy type whose
-      `policy` attribute is exactly `data.aws_iam_policy_document.<D>.json` or `.minified_json` and nothing else up to the
-      end of the line; document -> ordered sources for each `data "aws_iam_policy_document" "<D>"` block whose
-      `source_policy_documents` is exactly a list literal of such references. A file the lexer refuses contributes
-      nothing. (2) rebuild_policy(plan, entry, links) returns Rebuilt(document, statements, unknown_elements) or
+      Stdlib-only, pure functions. Imports only the stdlib, scripts.ci.terraform_hcl_lexer and scripts.terraform_apply_guard
+      (iter_resource_changes), by absolute import (the #1736 `_ROOT` pattern); it never imports
+      scripts.ci.terraform_plan_digest (the digest imports it, and review.sh runs the digest by path as __main__, so a
+      two-way import breaks). strip_instance_keys moves here unchanged and the digest re-exports it. (1)
+      load_policy_links(paths) lexes the .tf files given with --literals-from (a directory means its *.tf, non-recursive,
+      as load_literals) with terraform_hcl_lexer.lex and returns PolicyLinks: policy -> document for each top-level
+      `resource "<T>" "<N>"` block whose `policy` attribute is exactly `data.aws_iam_policy_document.<D>.json` or
+      `.minified_json` and nothing else up to the end of the line; document -> ordered sources for each
+      `data "aws_iam_policy_document" "<D>"` block whose `source_policy_documents` is exactly a list literal of such
+      references. It never raises: like load_literals it skips a file on OSError and decodes with errors="replace", and a
+      file the lexer refuses (LexRefusal) or any other parse problem contributes nothing. (2) rebuild_policy(plan, entry,
+      links) never raises (any malformed plan shape is Incomplete) and returns Rebuilt(document, statements, unknown_elements) or
       Incomplete(reason). It links the policy entry to its document only through PolicyLinks AND the configuration
       `policy` references (both must name the same document); finds that document's single planned `read` entry in
       resource_changes (any non-empty action_reason); maps each `change.after.statement` block to an IAM statement (sid
@@ -38,7 +42,10 @@ scope:
       JSON; an unknown element resolves only through the PolicyLinks source list to a deferred document whose own rebuild
       is Rebuilt, depth at most 3, no cycles), then own statements (a non-empty Sid replaces the same-Sid sourced
       statement in place, otherwise appended). Unknown elements (after_unknown true at a list index) become per-position
-      sentinels that never equal a value and are counted. Incomplete reasons are exactly this closed list: "policy is not
+      sentinel strings ("\x00unknown:" plus document, statement index, field and element index) that sort as strings,
+      survive json.dumps in the Sid fingerprint, never equal a value, gate to <non-literal> if ever rendered as an action,
+      and are counted. Incomplete reasons are exactly this closed list: "malformed plan entry" (any entry, change, after
+      or after_unknown of an unexpected shape), "policy is not
       exactly the document's json", "several instances", "statement list unknown", "statement field unknown" (a whole
       statement, a Sid, an Effect, a whole list field, or a principal type or condition test or variable unknown),
       "unmodelled argument" (override_policy_documents, source_json or override_json non-null or unknown),
@@ -49,9 +56,12 @@ scope:
   - file: scripts/ci/terraform_plan_digest.py
     action: Modify
     purpose: >-
-      main() computes links = load_policy_links(args.literals_from) once and passes it to build_digest and fit_report
-      (and to the sibling's --fit-check path if present); build_digest, fit_report and _Parts gain a keyword `links`
-      defaulting to None, and None keeps every line byte for byte as today (no rebuild is attempted). With links, a
+      Imports strip_instance_keys and the rebuild functions from scripts.ci.terraform_plan_policy_rebuild and re-exports
+      strip_instance_keys (tests import it from here). main() computes links = load_policy_links(args.literals_from) once,
+      inside the sibling's --fit-check guarded region (so nothing it does can put a path or traceback in the public
+      trusted-job log), and passes it to build_digest, fit_report and the --fit-check path; build_digest, fit_report and
+      _Parts gain a keyword `links` defaulting to None, and None attempts no rebuild (every opaque policy line stays
+      today's). With links, a
       policy-type entry whose after_unknown.policy is true and whose configuration references name a document with a
       planned read is passed to rebuild_policy: Rebuilt prints ` policy: rebuilt from deferred read <document> (<n>
       statements, <u> elements unknown until apply): <delta>` (singular "statement" / "element" when the count is 1),
@@ -59,8 +69,8 @@ scope:
       joined by "; ", or "no action, Sid, or count delta" when there are none (a create has no before statements);
       Incomplete prints today's opaque line with "; not rendered: <reason>" appended before the closing parenthesis.
       _deferred_context collects reads with action_reason read_because_dependency_pending or read_because_config_unknown
-      (today only the first), and the generic note names the reasons present, sorted (unchanged text when only the first
-      is present). REVIEWER_PREAMBLE gains, after its last sentence: "A policy shown as rebuilt from a deferred read was
+      (today only the first), with or without links, and the generic note names the reasons present, sorted (unchanged
+      text when only the first is present). REVIEWER_PREAMBLE gains, after its last sentence: "A policy shown as rebuilt from a deferred read was
       computed at plan time from the document's planned arguments; elements counted as unknown are decided at apply."
       The module docstring's description of the IAM renderer names the rebuilt line and the exact-link rule. Known-policy
       lines, the sibling's opaque_entries, OPAQUE fit line and --fit-check exit codes are unchanged. Stays under 500 SLOC
@@ -77,9 +87,21 @@ scope:
     action: Create
     purpose: >-
       rec-4741's acceptance file. The nodes VP 2 names, over the fixtures below and in-test variants built from them by
-      deep copy (the harmful iam:* statement, a transform expression, an unknown statement list). Exports two helpers VP 7
-      and the replay import: padded_ci_policies_plan() (the ci_policies fixture plus inert entries to #1692's scale, 146
-      resource changes) and ci_policies_links(). Module docstring records the fixture-generation recipe (execution step 2).
+      deep copy (the harmful statement, a transform expression, an unknown statement list). The harmful variant appends
+      one statement {sid "AdminEscalation", effect Allow, actions ["iam:*"], resources ["*"]} to
+      github_ci_branch's planned read AND appends the matching HCL `statement { sid = "AdminEscalation" actions =
+      ["iam:*"] resources = ["*"] }` block to that document in its literal source text, so "iam:*" and "AdminEscalation"
+      gate as literals (as they would on a real PR adding the grant); it exports harmful_ci_policies_plan() and
+      harmful_ci_policies_source() for the replay. test_no_links_keeps_todays_lines asserts that build_digest of the
+      ci_policies fixture without links prints, for each CI role policy, exactly today's
+      ` policy=(known after apply; deferred data read: data.aws_iam_policy_document.<name>)`.
+      test_real_scale_plan_stays_within_the_byte_budget_and_renders_every_policy asserts, for
+      padded_ci_policies_plan() with its literals and links, that build_digest returns without DigestOverflow, every CI
+      role policy line is a rebuilt line, and fit_report's word is OPAQUE (the sibling's unchanged predicate, fork 3 A),
+      never OVERFLOW. Exports the helpers VP 7 and the replay import: padded_ci_policies_plan() (the ci_policies fixture
+      plus inert entries to #1692's scale, 146 resource changes), ci_policies_literals() (load_literals of the fixture's
+      source.tf.txt) and ci_policies_links() (load_policy_links of the same file). Module docstring records the
+      fixture-generation recipe (execution step 2).
   - file: tests/fixtures/terraform_plan_digest_deferred/ci_policies/plan.json
     action: Create
     purpose: >-
@@ -87,8 +109,9 @@ scope:
       resource_changes and configuration: github_ci_branch, github_ci_planner and a third CI-shaped document, their
       aws_iam_role_policy updates, ci_full_refresh_read (deferred, sourcing ci_ssm_refresh_read) and
       ci_ssm_refresh_read (read at plan time), one document with a dynamic statement block, all deferred by an in-place
-      update of a terraform_data stand-in for aws_s3_bucket.data_lake (the default_tags residual). Placeholder account
-      text, never 12 digits; no key material anywhere.
+      update of a terraform_data stand-in for aws_s3_bucket.data_lake (the default_tags residual); references re-pointed
+      at a stand-in use its `.id`, as probe/main.tf does. Placeholder account text, never 12 digits; no key material
+      anywhere.
   - file: tests/fixtures/terraform_plan_digest_deferred/ci_policies/source.tf.txt
     action: Create
     purpose: >-
@@ -146,8 +169,9 @@ acceptance_criteria:
     rebuilt statements equal that JSON as canonical sets (sourced statements and dynamic statements included; the
     planner's two-deep source chain resolved).
   - >-
-    A harmful variant (one added Allow statement, Sid AdminEscalation, Action iam:*, Resource *) prints `Allow +[iam:*]
-    -[]; Sids +[AdminEscalation] -[]` after the provenance clause; the unknown-element create prints its added actions and
+    A harmful variant (one added Allow statement, Sid AdminEscalation, Action iam:*, Resource *, present both in the
+    planned read and as a matching statement block in its literal source) prints `Allow +[iam:*] -[]; Sids
+    +[AdminEscalation] -[]` after the provenance clause; the unknown-element create prints its added actions and
     Sid with `1 element unknown until apply`; every Incomplete reason in the closed list prints today's line plus `;
     not rendered: <reason>` and nothing else; a policy written as a transform of the document's json is never rendered.
   - >-
@@ -155,9 +179,12 @@ acceptance_criteria:
     before policy and instance keys never appear in build_digest output or, through review.sh end to end, in the
     reviewer's stdin, argv, env or transcript.
   - >-
-    With links=None every digest line is byte for byte today's, and with links every line for the existing fixtures
-    under tests/fixtures/terraform_apply_guard/ and the #1692 realistic plan equals origin/main's output apart from the
-    preamble line; the realistic plan and the ci_policies fixture padded to #1692 scale are FITS.
+    With links=None every digest line apart from the preamble (line 1) is today's, except that a policy line linked to a
+    read_because_config_unknown read now carries the deferral note; with links, every line for the JSON fixtures under
+    tests/fixtures/terraform_apply_guard/ and the #1692 realistic plan equals origin/main's output apart from line 1.
+    "Fits" means the byte budget: _realistic_plan(opaque=False) gets a FITS fit line, and the ci_policies fixture padded
+    to #1692 scale, with its literals and links, builds without DigestOverflow and gets the OPAQUE fit word (the sibling's
+    predicate, unchanged), never OVERFLOW.
   - >-
     The new module is in CODEOWNERS and validate_trusted_plan_environment (predicate h) passes; the digest stays under
     500 SLOC with no budget raise.
@@ -205,10 +232,10 @@ verification_plan:
       "tests/test_terraform_plan_digest_deferred_statements.py::test_links_never_change_known_policy_lines"
       "tests/test_terraform_plan_digest_deferred_statements.py::test_config_unknown_read_is_named_in_the_note"
       "tests/test_terraform_plan_digest_deferred_statements.py::test_sentinel_values_never_print"
-      "tests/test_terraform_plan_digest_deferred_statements.py::test_real_scale_plan_fits_and_renders_every_policy"
+      "tests/test_terraform_plan_digest_deferred_statements.py::test_real_scale_plan_stays_within_the_byte_budget_and_renders_every_policy"
       "tests/test_terraform_plan_digest_deferred_statements.py::test_cli_reads_links_from_literals_from"
     expected: >-
-      exit 0; every node passes (test_incomplete_reasons_print_the_fallback_line is parametrized over all seven reasons
+      exit 0; every node passes (test_incomplete_reasons_print_the_fallback_line is parametrized over all eight reasons
       and asserts each full line). Each fails before the change (the file does not exist).
     fix_if: >-
       Fix the module, never the assertion. A rebuilt-equals-provider failure means the block mapping or merge order is
@@ -282,19 +309,26 @@ verification_plan:
   - step: 7
     phase: pre-deploy
     action: >-
-      rec-4686 interim rule: show the fit report for #1692's real-scale plan and for the ci_policies fixture padded to the
-      same scale.
+      rec-4686 interim rule: show the fit report for #1692's real-scale plan (its sibling-added opaque=False variant,
+      which reports bytes) and the byte size of the ci_policies fixture padded to the same scale, rendered with its
+      literals and links.
     command: >-
-      bin/venv-python -c "from scripts.ci.terraform_plan_digest import fit_report;
+      bin/venv-python -c "from scripts.ci.terraform_plan_digest import fit_report, build_digest, budget_for, DIGEST_SIZE_CAP;
       from tests.test_terraform_plan_digest_actionable import _realistic_plan;
-      from tests.test_terraform_plan_digest_deferred_statements import padded_ci_policies_plan, ci_policies_links;
-      print(fit_report(_realistic_plan())); print(fit_report(padded_ci_policies_plan(), links=ci_policies_links()))"
+      from tests.test_terraform_plan_digest_deferred_statements import padded_ci_policies_plan, ci_policies_literals, ci_policies_links;
+      print(fit_report(_realistic_plan(opaque=False))); p=padded_ci_policies_plan(); L=ci_policies_literals(); K=ci_policies_links();
+      print('Padded ci_policies digest:', len(build_digest(p, L, links=K).encode('utf-8')), 'of', budget_for(DIGEST_SIZE_CAP), 'budget bytes');
+      print(fit_report(p, L, links=K).split(':')[0])"
     expected: >-
-      Two "Reviewer digest:" FITS lines (actionable count and bytes, under 32768); paste both into the PR body.
-    fix_if: OVERFLOW or OPAQUE on the padded fixture -- the rendering is too long or the predicate changed; stop and report.
+      Line 1 "Reviewer digest: <a> actionable of <t> resource change(s), <b> of 32768 bytes."; line 2 "Padded ci_policies
+      digest: <n> of <budget> budget bytes" with n at most the budget; line 3 "Reviewer digest OPAQUE" (the sibling's
+      unchanged predicate; the padded plan holds unknown policies by design). Paste all three into the PR body.
+    fix_if: >-
+      OVERFLOW on line 1 or 3, or a DigestOverflow traceback -- the rendering is too long; stop and report. Line 3 FITS
+      means the sibling predicate changed under this plan; stop and report.
     hermetic: false
     graduation: waive
-    graduation_waiver_reason: Evidence for the PR body; the FITS assertion itself is the graduated node in step 2.
+    graduation_waiver_reason: Evidence for the PR body; the byte-budget assertion itself is the graduated node in step 2.
   - step: 8
     phase: pre-deploy
     action: Census check on the bundled rec (project rule) -- rec-4741's acceptance classifies probeable on the finished tree.
@@ -345,12 +379,12 @@ verification_plan:
       && bin/venv-python "$R/sequential_replay.py" control --known "$R/digests/control-known.txt"
       --rebuilt "$R/digests/control-rebuilt.txt" --out "$R/results-control-$(git rev-parse --short HEAD).json"
     expected: >-
-      Last line "REPLAY control PASS pairs=<n> known_revise=<k> rebuilt_revise=<r>" with r >= k - 3 decided at or before 25
-      pairs.
+      Last line "REPLAY control PASS pairs=<n> known_revise=<k> rebuilt_revise=<r> starved=<s>", decided by the
+      curtailment rule at or before 25 counted pairs, with s at most 3; results file written.
     fix_if: >-
-      "FAIL": the rebuilt line makes the reviewer more lenient; stop and return to planning. If k < n/2 at the end, the
-      reviewer is lenient on iam:* even for known lines: still report PASS or FAIL as computed, and file a rec for the
-      reviewer (not this plan's scope).
+      "FAIL": the rebuilt line makes the reviewer more lenient; stop and return to planning, never re-run. "INCONCLUSIVE"
+      (more than 3 STARVED): an infra problem; report it. If k < n/2 at the end, the reviewer is lenient on iam:* even for
+      known lines: still report PASS or FAIL as computed, and file a rec for the reviewer (not this plan's scope).
     hermetic: false
     graduation: not-applicable
   - step: 12
@@ -425,7 +459,7 @@ constraints:
   - No rescue agents or workaround loops (Decision 55); a missed replay bar returns to planning, never a re-run.
 context:
   - "Decision-scout verdict FLAGS_FOUND (NOTE 128: keep the digest file the entry point, re-export anything moved; NOTE 100: no plan-time native render exists for a deferred read, fall back for unmodelled arguments). Decisions triaged: 191 of 191. Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1. CITE: 77, 158, 183, 238, 101, 128."
-  - "gates: decision-scout=FLAGS_FOUND; step-6b=write-the-plan 2026-10-30 12:44Z; plan-critique=PENDING"
+  - "gates: decision-scout=FLAGS_FOUND; step-6b=write-the-plan 2026-10-30 12:44Z; plan-critique=PENDING (r1 REVISE addressed)"
   - 'red_overlap (2026-10-30): {"verdict": "clear", "slo_hours": 4, "reds": []}'
   - >-
     Approvals: Benjamin "write the plan, 4 A dynamic", 2026-10-30 12:44Z (cmsg_01Cqz6E4mzSv6kkGCSCub3WMKyWZ7gLJvUKxiuLYmnKK7D),
@@ -453,6 +487,11 @@ context:
     Unproven until it happens: a real deferred document reaching the reviewer on a live path (rare after #1730; the
     default_tags residual or a Reconcile/acknowledge-and-retry fresh plan). The coordinator notes it; no VP step waits on it.
   - "Replay baseline: /mnt/project-files/secrets-to-ssm/expand-red-rca/ (RCA.md, replay/digest-red.txt, run_review.sh; 4 REVISE of 25 with the opaque line, 0 of 12 without)."
+  - >-
+    plan-critique r1 REVISE dispositions: F1 fits = byte budget (VP 7, AC4, VP 2 node); F2 AC4 baseline; F3 import
+    direction pinned; F4 harmful literal source; F5 closure and merge steps; F6 never-raise, guarded, new reason
+    "malformed plan entry" (post-6b, fail-safe, told with the exact-link rule); F7 replay freshness, control STARVED;
+    F8 sentinels are fixed-prefix strings (sort and json.dumps unaided). Info (name-built ARNs) out of scope.
   - "Decisions 132/189: the replay steps are LLM judgement, never graduated. Decision 119: the hashicorp/aws provider initialises in CC-web, so fixtures are generated locally from a probe root, never from terraform/personal."
 pre_implementation_checklist:
   - Branch confirmed not on main
@@ -468,33 +507,52 @@ execution_steps:
     skip_metadata_api_check, credentials only from AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY env with dummy values (so no
     key text lands in any file), terraform_data stand-ins for the managed resources the documents reference, and the
     documents and role policies the scope rows name (statements copied from terraform/personal at the base commit,
-    managed references re-pointed at the stand-ins, account text a non-numeric placeholder). `terraform apply` once
-    (local state only; terraform_data and aws_iam_policy_document make no AWS call; use -target to skip the role
-    policies), change the stand-in in place, `terraform plan -out` and `terraform show -json`. Trim to format_version,
-    terraform_version, resource_changes and configuration (drop provider_config). For each role-policy entry, set
-    actions ["update"] and before.policy to the document's json from prior_state (what the provider wrote), keep
-    after_unknown.policy true; the unknown-element case stays a create. Save the probe HCL as source.tf.txt. Record the
-    recipe in the test module docstring. Probe evidence: /mnt/project-files/ci-policy-plan-time/deferred-policy-digest/probe/.
+    managed references re-pointed at the stand-in's `.id` as probe/main.tf does, account text a non-numeric
+    placeholder). `terraform apply` once (local state only; terraform_data and aws_iam_policy_document make no AWS call;
+    use -target to skip the role policies), change the stand-in in place, `terraform plan -out` and `terraform show
+    -json`. Trim to format_version, terraform_version, resource_changes and configuration (drop provider_config). For
+    each role-policy entry, set actions ["update"] and before.policy to the document's json from prior_state (what the
+    provider wrote), keep after_unknown.policy true; the unknown-element case stays a create. Save the probe HCL as
+    source.tf.txt. Record the recipe in the test module docstring. Probe evidence:
+    /mnt/project-files/ci-policy-plan-time/deferred-policy-digest/probe/.
   - "Write scripts/ci/terraform_plan_policy_rebuild.py and the digest changes as scoped; add the CODEOWNERS line."
   - "Write tests/test_terraform_plan_digest_deferred_statements.py (VP 2 node names verbatim), extend the sentinel fixture and its test, and update the sibling's expectations only as scoped."
-  - "Run VP 2-9; open the PR (body: Resolves: rec-4741; the VP 7 fit lines; the census line), drive CI green."
+  - >-
+    Run VP 2-8, then VP 9 (full tier) to completion; commit and push; open the build PR (body: Resolves: rec-4741; the
+    VP 7 lines; the census line) and drive CI green by event-driven wake (never polled).
   - >-
     Replay (VP 10-11), at the CI-green head, writing only under
     /mnt/project-files/ci-policy-plan-time/deferred-policy-digest/replay/ (never in the repo). build_digests.py imports
     the branch's modules and writes three digests from the RCA's replay/digest-red.txt: incident-rebuilt.txt (line 1 is
     the new REVIEWER_PREAMBLE; lines 12 and 19 are replaced by the lines build_digest prints, with links, for the
     ci_policies fixture's aws_iam_role_policy.github_ci_branch and data.aws_iam_policy_document.github_ci_branch entries);
-    control-rebuilt.txt (the same, from the harmful variant); control-known.txt (new preamble; line 12 is the line
-    build_digest prints when that role policy's after.policy is the harmful variant's rebuilt JSON, known; line 19
-    removed). Every replaced line comes from the code, never typed by hand. sequential_replay.py runs `claude -p --model
-    claude-sonnet-4-6 --output-format json --tools "" --strict-mcp-config --max-turns 5 "$PROMPT"` from a fresh empty
-    temp directory with the digest on stdin, PROMPT read from review.sh's PROMPT= line with ${CONTEXT_DESCRIPTION} set to
-    "the sandbox auto-apply pipeline", and classifies with scripts/ci/review_verdict.py. Incident set: one run at a time;
-    first REVISE -> FAIL; 25 PROCEED -> PASS; STARVED runs are not counted and more than 3 -> INCONCLUSIVE. Control:
-    batches of 5 pairs; after n pairs with m = 25 - n remaining, PASS when rebuilt_revise >= known_revise + m - 3, FAIL
-    when rebuilt_revise + m < known_revise - 3, else continue; at 25 pairs PASS iff rebuilt_revise >= known_revise - 3.
-    Save per-run verdicts and REVISE reasons (names-only text) to the results files; post the two summary lines on the PR.
-  - "Code review (independent), then ask Benjamin for his word on the final diff; squash-merge with the PR body as the commit message."
+    control-rebuilt.txt (the same, from harmful_ci_policies_plan() with literals and links from
+    harmful_ci_policies_source(), so iam:* and AdminEscalation print as literals); control-known.txt (new preamble; line
+    12 is the line build_digest prints, with the same harmful literals, when that role policy's after.policy is the
+    harmful variant's rebuilt JSON, known; line 19 removed). Every replaced line comes from the code, never typed by
+    hand. sequential_replay.py runs `claude -p --model claude-sonnet-4-6 --output-format json --tools ""
+    --strict-mcp-config --max-turns 5 "$PROMPT"` from a fresh empty temp directory with the digest on stdin, PROMPT read
+    from review.sh's PROMPT= line with ${CONTEXT_DESCRIPTION} set to "the sandbox auto-apply pipeline", and classifies
+    with scripts/ci/review_verdict.py. Incident set: one run at a time; first REVISE -> FAIL; 25 PROCEED -> PASS;
+    STARVED runs are not counted and more than 3 -> INCONCLUSIVE. Control: batches of 5 pairs (one known run and one
+    rebuilt run each); a STARVED run is re-run in place, so a pair counts only once both of its runs have a PROCEED or
+    REVISE verdict, and more than 3 STARVED runs in the set -> INCONCLUSIVE. After n counted pairs with m = 25 - n
+    remaining, PASS when rebuilt_revise >= known_revise + m - 3, FAIL when rebuilt_revise + m < known_revise - 3, else
+    continue; at 25 pairs PASS iff rebuilt_revise >= known_revise - 3. Save per-run verdicts and REVISE reasons
+    (names-only text) to the results files; post the two summary lines on the PR. Freshness: if any later commit changes
+    a byte of the three rendered digests (re-run build_digests.py and compare), re-run VP 10-11 at the new head; that is
+    new evidence for new code, never a re-roll of a failed set.
+  - >-
+    Closure evidence, recorded as four SEPARATE facts (implement skill Commit Flows): GitHub readiness state; parent
+    validator evidence (VP 9 full-tier exit 0 plus bin/venv-python -m scripts.checks.validation_result --verify-head for
+    the pushed HEAD); structured postflight evidence (write the scripts.session.postflight_evidence.CATEGORIES JSON in the
+    scratchpad, then bin/venv-python -m scripts.session.postflight --evidence <file>); the real outcome - push, build PR,
+    CI green by event-driven wake (never polled), VP 10-11 summary lines on the PR, merge SHA.
+  - >-
+    Code review (independent), then ask Benjamin for his word on the final diff (code-owned digest files and CODEOWNERS).
+    Merge only on code review PROCEED, every check finished green (get_check_runs), VP 10-11 PASS at the current digest
+    bytes, a coordinator-confirmed merge window and his word; squash-merge with the PR body (carrying Resolves:
+    rec-4741) as the commit message.
   - "Post-merge: VP 12 (ask Benjamin to dispatch the smoke), VP 13."
   - 'Report: what was implemented, verification results, replay summary lines, what stays unproven.'
 rollback: >-
