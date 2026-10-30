@@ -1,7 +1,7 @@
 """Tests for the trusted plan's environment wrappers (Decision 238 cl.4, PLAN-trusted-plan-cutover PR 2).
 
 Drives trusted_plan_env.sh, quiet_run.sh and materialise_tfvars.sh --stdout under the literal GitHub composite
-argv (Decision 162 R2) with a stubbed `aws` on PATH, never touching real Secrets Manager. Fixture values are
+argv (Decision 162 R2) with a stubbed `aws` on PATH, never touching real AWS. Fixture values are
 non-numeric and non-email-shaped placeholders so they cannot trip the Decision 101 leak guard.
 """
 

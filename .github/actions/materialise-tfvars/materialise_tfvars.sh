@@ -62,10 +62,9 @@ mask_values() {
 }
 
 if [ "$MODE" = stdout ]; then
-  if ! SECRET=$(aws secretsmanager get-secret-value \
-      --secret-id agent-platform-terraform-personal-tfvars \
-      --query SecretString --output text); then
-    echo "materialise-tfvars: FETCH_FAILED could not fetch agent-platform-terraform-personal-tfvars from Secrets Manager" >&2
+  if ! SECRET=$(aws ssm get-parameter --name /secret/agent-platform-terraform-personal-tfvars \
+      --with-decryption --query Parameter.Value --output text); then
+    echo "materialise-tfvars: FETCH_FAILED could not fetch /secret/agent-platform-terraform-personal-tfvars from SSM Parameter Store" >&2
     exit 1
   fi
   if [ -z "$SECRET" ]; then
@@ -88,11 +87,10 @@ TMP=$(mktemp "${DEST}.XXXXXX")
 FETCH_ERR=$(mktemp)
 trap 'rm -f "$TMP" "$FETCH_ERR"' EXIT
 
-if ! aws secretsmanager get-secret-value \
-    --secret-id agent-platform-terraform-personal-tfvars \
-    --query SecretString --output text \
+if ! aws ssm get-parameter --name /secret/agent-platform-terraform-personal-tfvars \
+    --with-decryption --query Parameter.Value --output text \
     >"$TMP" 2>"$FETCH_ERR"; then
-  echo "materialise-tfvars: FETCH_FAILED could not fetch agent-platform-terraform-personal-tfvars from Secrets Manager: $(cat "$FETCH_ERR")" >&2
+  echo "materialise-tfvars: FETCH_FAILED could not fetch /secret/agent-platform-terraform-personal-tfvars from SSM Parameter Store: $(cat "$FETCH_ERR")" >&2
   exit 1
 fi
 
