@@ -1,10 +1,12 @@
-"""Standing guard: the shared ducklake_reader never reaches production telemetry (PLAN-telemetry-production-flip).
+"""Standing guard: the shared ducklake_reader carries no telemetry state (PLAN-telemetry-production-flip).
 
-The telemetry writer's catalog pin moved to the production telemetry catalog (Decision 230); the production read path is
-the separate telemetry reader (Decision 236), so the shared reader keeps the smoke binding by its fixed locals until the
-flip's narrow PR retires it. Pins, over the real terraform/personal tree: every shared-reader TELEMETRY_* env value is the
-smoke local for its key and resolves to no production value; at most one statement reaches telemetry-blobs/, and it is
-s3:GetObject only on telemetry-blobs/ducklake_smoke/*; and no S3 statement or list prefix covers ducklake-telemetry/ or
+The telemetry writer's catalog pin moved to the production telemetry catalog (Decision 230) and event reads are the
+separate telemetry reader's (Decision 236); the flip's narrow PR retired the smoke binding the shared reader kept through
+the expand window. Pins, over the real terraform/personal tree: no shared-reader TELEMETRY_* env key and no statement that
+is named for, names, covers or lists telemetry-blobs/, while the ops data grants stay on the ducklake/ and smoke prefixes;
+and the flip's looser production fence, which any reintroduced binding must still pass: every TELEMETRY_* env value is the
+smoke local for its key and resolves to no production value, at most one statement reaches telemetry-blobs/ (s3:GetObject
+only on telemetry-blobs/ducklake_smoke/*), and no S3 statement or list prefix covers ducklake-telemetry/ or
 telemetry-blobs/ducklake_telemetry/. Each predicate has red cases on synthetic HCL.
 """
 
@@ -29,7 +31,9 @@ _SMOKE_ENV = {
 _SMOKE_BLOB = f"{_ARN}/telemetry-blobs/ducklake_smoke/*"
 _PRODUCTION_KEYS = ("ducklake-telemetry/probe-key", "telemetry-blobs/ducklake_telemetry/probe-key")
 _PRODUCTION_VALUE = re.compile(r"\bducklake_telemetry\b|ducklake-telemetry/")
-_HINT = "the shared reader keeps the smoke binding until the flip's narrow PR; production reads are the telemetry reader's"
+_HINT = "the flip's narrow PR retired the shared reader's telemetry binding; event reads are the telemetry reader's"
+_BLOB_KEYS = ("telemetry-blobs/ducklake_smoke/probe-key", "telemetry-blobs/ducklake_telemetry/probe-key")
+_OPS_DATA_PREFIXES = ["ducklake/*", "ducklake-neon-smoke/*"]
 
 
 def _brace_slice(text: str, open_idx: int) -> str:
@@ -143,6 +147,27 @@ def assert_shared_reader_never_reaches_production_telemetry(text: str) -> None:
         assert s["resources"] == [_SMOKE_BLOB] and not s["prefixes"], f"{_READER} {sid} must be on {_SMOKE_BLOB} only"
 
 
+def assert_shared_reader_carries_no_telemetry_state(text: str) -> None:
+    leaked = sorted(k for k in _reader_env(text) if k.startswith("TELEMETRY_"))
+    assert not leaked, f"{_READER} env carries telemetry state {leaked}: {_HINT}"
+    statements = _reader_statements(text)
+    for sid, s in statements.items():
+        named = [v for v in s["resources"] + s["prefixes"] if "telemetry" in v]
+        assert not sid.startswith("Telemetry") and not named, f"{_READER} {sid} is a telemetry grant {named}: {_HINT}"
+        if s["effect"] != "Allow" or not _s3_capable(s):
+            continue
+        keys = [f"{_ARN}/{k}" for k in _BLOB_KEYS]
+        assert not any(fnmatchcase(k, r) for k in keys for r in s["resources"]), f"{_READER} {sid} covers telemetry-blobs/"
+        lists = s["not_action"] or any(fnmatchcase("s3:listbucket", a.lower()) for a in s["actions"])
+        if lists and any(fnmatchcase(_ARN, r) for r in s["resources"]):
+            covering = not s["prefixes"] or any(fnmatchcase(k, p) for k in _BLOB_KEYS for p in s["prefixes"])
+            assert not covering, f"{_READER} {sid} can list telemetry-blobs/: {_HINT}"
+    ro, lst = statements.get("S3DataReadOnly"), statements.get("S3ListDataPrefix")
+    want = [f"{_ARN}/{p}" for p in _OPS_DATA_PREFIXES]
+    assert ro is not None and ro["resources"] == want, f"{_READER} S3DataReadOnly must stay on {want}"
+    assert lst is not None and lst["prefixes"] == _OPS_DATA_PREFIXES, f"{_READER} S3ListDataPrefix must stay on ops prefixes"
+
+
 _ARN_REF = "${aws_s3_bucket.data_lake.arn}"
 _OPS_RO = {
     "Sid": "S3DataReadOnly",
@@ -252,3 +277,38 @@ def test_shared_reader_guard_rejects_a_production_reach() -> None:
     for doc in bad_docs:
         with pytest.raises(AssertionError):
             assert_shared_reader_never_reaches_production_telemetry(doc)
+
+
+def test_shared_reader_carries_no_telemetry_state() -> None:
+    assert_shared_reader_carries_no_telemetry_state(tf_dir_file_texts(_TERRAFORM_PERSONAL_DIR)["ducklake_lambdas.tf"])
+
+
+def test_no_telemetry_state_guard_rejects_a_leaky_shared_reader() -> None:
+    cleared = dict.fromkeys(_SMOKE_ENV)
+    narrowed = [_OPS_RO, _LIST, _METRICS]
+    assert_shared_reader_carries_no_telemetry_state(_doc(env=cleared, stmts=narrowed))
+    blobs = "${local.telemetry_blob_data_prefix}"
+    bad_docs = [
+        _doc(),
+        _doc(stmts=narrowed),
+        *(_doc(env={**cleared, key: value}, stmts=narrowed) for key, value in _SMOKE_ENV.items()),
+        _doc(env={**cleared, "TELEMETRY_DSN_SECRET_ID": '"unused"'}, stmts=narrowed),
+        _doc(env=cleared),
+        _doc(env=cleared, stmts=[*narrowed, {**_BLOB, "Sid": "BlobRead"}]),
+        _doc(env=cleared, stmts=[*narrowed, {"Action": ["s3:GetObject"], "Resource": [f"{_ARN_REF}/*"]}]),
+        _doc(env=cleared, stmts=[*narrowed, {"Sid": "Wide", "NotAction": ["s3:PutObject"], "Resource": ["*"]}]),
+        _doc(env=cleared, stmts=[*narrowed, {**_LIST, "Sid": "ListBlobs", "prefix": [f"{blobs}/*"]}]),
+        _doc(env=cleared, stmts=[*narrowed, {**_LIST, "Sid": "ListAll", "prefix": ["*"]}]),
+        _doc(env=cleared, stmts=[*narrowed, {"Sid": "ListNoCond", "Action": ["s3:ListBucket"], "Resource": [_ARN_REF]}]),
+        _doc(
+            env=cleared,
+            stmts=[*narrowed, {"Sid": "TelemetryMetrics", "Action": ["cloudwatch:PutMetricData"], "Resource": ["*"]}],
+        ),
+        _doc(env=cleared, stmts=[{**_OPS_RO, "Resource": _OPS_RO["Resource"][:1]}, _LIST, _METRICS]),
+        _doc(env=cleared, stmts=[_OPS_RO, {**_LIST, "prefix": _LIST["prefix"][:1]}, _METRICS]),
+        _doc(env=cleared, stmts=[_LIST, _METRICS]),
+        _doc(env=cleared, stmts=[_OPS_RO, _METRICS]),
+    ]
+    for doc in bad_docs:
+        with pytest.raises(AssertionError):
+            assert_shared_reader_carries_no_telemetry_state(doc)

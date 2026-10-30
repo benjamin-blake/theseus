@@ -140,9 +140,9 @@ def test_event_verbs_route_by_the_deploy_output(aws: Aws, monkeypatch: pytest.Mo
     monkeypatch.setenv(read_route.CATALOG_ENV, SMOKE)
     ops = Ops()
     smoke = read_route.make_routed_reader(ops=ops)
-    assert smoke.named(EVENT_VERB, day="d") == [{"reader": "ops", "verb": EVENT_VERB}] and ops.calls == [
-        (EVENT_VERB, {"day": "d"})
-    ]
+    with pytest.raises(read_route.NoEventReaderOnSmoke):
+        smoke.named(EVENT_VERB, day="d")
+    assert ops.calls == []
     assert (smoke.catalog, smoke.shared, smoke.event_function) == (SMOKE, True, read_route.SHARED_READER_FUNCTION)
     assert smoke.binding() is None and Events.built == 0
 
@@ -152,6 +152,20 @@ def test_event_verbs_route_by_the_deploy_output(aws: Aws, monkeypatch: pytest.Mo
     assert prod.named(EVENT_VERB, day="d") == [{"reader": "telemetry", "verb": EVENT_VERB}] and ops.calls == []
     assert prod.named(EVENT_VERB) and Events.built == 1 and prod._events.profile == "a-profile"
     assert (prod.catalog, prod.shared, prod.event_function) == (PROD, False, read_route.READER_FUNCTION)
+
+
+def test_an_event_verb_on_the_smoke_route_raises_without_a_call(aws: Aws, monkeypatch: pytest.MonkeyPatch) -> None:
+    resolved: list[str | None] = []
+    monkeypatch.setattr(read_route, "resolve_catalog", lambda profile=None: resolved.append(profile) or SMOKE)
+    ops = Ops()
+    routed = read_route.make_routed_reader(ops=ops)
+    assert routed.named(OPS_VERB, day="d") == [{"reader": "ops", "verb": OPS_VERB}]
+    for verb in sorted(EVENT_READS):
+        with pytest.raises(read_route.NoEventReaderOnSmoke) as raised:
+            routed.named(verb, day="d")
+        assert isinstance(raised.value, read_route.TelemetryCatalogUnresolved)
+        assert str(raised.value) == f"the telemetry catalog route {SMOKE} has no event reader"
+    assert ops.calls == [(OPS_VERB, {"day": "d"})] and Events.built == 0 and aws.calls == [] and resolved == [None]
 
 
 def test_describe_merges_ops_rows_with_the_event_readers_rows(aws: Aws, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -261,3 +275,42 @@ def test_the_read_clients_import_where_fcntl_is_absent() -> None:
         [sys.executable, "-c", code], cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False
     )
     assert (done.returncode, done.stdout.strip()) == (0, SMOKE), done.stderr[-2000:]
+
+
+CONTENT_VERB = sorted(read_route.CONTENT_VERBS)[0]
+
+
+def test_content_route_resolves_env_then_ssm_then_the_function_url(aws: Aws, monkeypatch: pytest.MonkeyPatch) -> None:
+    reader = read_route.content_reader("a-profile")
+    assert aws.calls == []
+    monkeypatch.setenv(read_route.CONTENT_READER_URL_ENV, "https://env.example/")
+    assert reader._reader_url() == "https://env.example" and aws.calls == []
+    monkeypatch.delenv(read_route.CONTENT_READER_URL_ENV)
+    aws.answers[("ssm", read_route.CONTENT_READER_URL_PARAMETER)] = "https://ssm.example/\n"
+    assert reader._reader_url() == "https://ssm.example"
+    aws.answers[("ssm", read_route.CONTENT_READER_URL_PARAMETER)] = None
+    aws.answers[("lambda", read_route.CONTENT_READER_FUNCTION)] = "https://fn.example/"
+    assert reader._reader_url() == "https://fn.example"
+
+
+def test_content_route_errors_name_a_source_never_a_value(aws: Aws) -> None:
+    with pytest.raises(RuntimeError) as raised:
+        read_route.content_reader()._reader_url()
+    assert read_route.CONTENT_READER_URL_ENV in str(raised.value) and DENIED not in str(raised.value)
+
+
+def test_content_and_event_verbs_never_cross_routes(aws: Aws, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert read_route.CONTENT_VERBS.isdisjoint(read_route.EVENT_VERBS)
+    monkeypatch.setenv(read_route.CATALOG_ENV, PROD)
+    ops = Ops()
+    routed = read_route.make_routed_reader(ops=ops)
+    with pytest.raises(read_route.WrongRoute):
+        routed.named(CONTENT_VERB, session_id="x")
+    assert ops.calls == [] and Events.built == 0
+    sent: list[Any] = []
+    monkeypatch.setattr(read_route.DuckLakeReader, "named", lambda self, verb, **p: sent.append(verb) or [])
+    with pytest.raises(read_route.WrongRoute):
+        read_route.content_reader().named(EVENT_VERB)
+    with pytest.raises(read_route.WrongRoute):
+        read_route.content_reader().named(OPS_VERB)
+    assert sent == [] and read_route.content_reader().named(CONTENT_VERB) == [] and sent == [CONTENT_VERB]

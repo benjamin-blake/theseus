@@ -10,8 +10,8 @@ and asserts the Neon key never reaches a PR-triggered plan:
       NotAction Allow fails closed.
   (2) exactly one aws_iam_role_policy and zero aws_iam_role_policy_attachment resources target the planner role.
   (3) the reserved session name is a role-session-name value in terraform-drift.yml only.
-  (4) -refresh=false is on the speculative-plan job's plan command and on no other terraform plan; every other
-      terraform plan or apply of the personal root runs through `neon_api_key.sh run --`.
+  (4) -refresh=false appears on no personal-root terraform plan, and every personal-root terraform plan or apply
+      runs through `neon_api_key.sh run --` (the trusted plan wraps it in trusted_plan_env.sh and quiet_run.sh).
   (5) no aws_secretsmanager_secret_version data source exists under terraform/personal.
   (6) every job that runs `neon_api_key.sh run --` also uses the terraform-init-retry composite, which carries
       the neon_api_key_check.sh delegate step, and the delegate execs `neon_api_key.sh check`.
@@ -32,11 +32,16 @@ import yaml
 
 from scripts.checks import _common, registry
 from scripts.checks.iam_tf import validate_invoke_implies_resolve as _vir
+from scripts.checks.iam_tf import validate_secret_parameter_grants as _spg
 
 # Only Benjamin can add to this list (plan neon-key-out-of-pr-plans). The tfvars secret stays unconditioned
 # until plan C.
 ALLOWED_UNCONDITIONED = frozenset(
-    {"arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:agent-platform-terraform-personal-tfvars-*"}
+    {
+        "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:agent-platform-terraform-personal-tfvars-*",
+        # Decision 237 cl.2: the terraform-personal tfvars parameter every plan reads.
+        "arn:aws:ssm:${var.aws_region}:${var.account_id}:parameter/secret/agent-platform-terraform-personal-tfvars",
+    }
 )
 _NEON_KEY_ARN = "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:neon-api-key-*"
 _DSN_ARN = "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:ducklake-neon-catalog-dsn-*"
@@ -46,19 +51,21 @@ _SESSION_LOCAL_RE = re.compile(r'convergence_writer_session_name\s*=\s*"([^"]+)"
 _PLANNER = "github_ci_planner"
 
 _WORKFLOW_DIR = Path(".github") / "workflows"
-_PERSONAL_WORKFLOWS = ("terraform-apply-sandbox.yml", "reconcile.yml", "terraform-drift.yml")
-_SPECULATIVE_JOB = ("terraform-apply-sandbox.yml", "speculative-plan")
+_PERSONAL_WORKFLOWS = ("terraform-apply-sandbox.yml", "reconcile.yml", "terraform-drift.yml", "terraform-plan-trusted.yml")
 _ACTION_DIR = Path(".github") / "actions" / "terraform-init-retry"
 _INIT_RETRY_USES = "./.github/actions/terraform-init-retry"
 _RUN_PREFIX_RE = re.compile(r"neon_api_key\.sh\"?\s+run\s+--")
 _TF_CMD_RE = re.compile(
     r"^(?:\w+=\$\()?(?:[A-Za-z_]\w*=\S+\s+)*"
+    r"(?:bash\s+\S*trusted_plan_env\.sh\"?\s+--\s+)?"
     r"(?:bash\s+\S*neon_api_key\.sh\"?\s+run\s+--\s+)?"
+    r"(?:bash\s+\S*quiet_run\.sh\"?\s+\S+\s+--\s+)?"
     r"(?:python3\s+\S*stale_plan_signature\.py\"?\s+--wrap\s+--\s+)?"
     r"terraform\s+(plan|apply)\b"
 )
 _EFFECT_RE = re.compile(r'\beffect\s*=\s*"([^"]*)"')
 _NOT_ACTIONS_RE = re.compile(r"\bnot_actions\s*=")
+_NOT_RESOURCES_RE = re.compile(r"\bnot_resources\s*=")
 _CONDITION_BLOCK_RE = re.compile(r"condition\s*\{")
 _TEST_RE = re.compile(r'\btest\s*=\s*"([^"]*)"')
 _VARIABLE_RE = re.compile(r'\bvariable\s*=\s*"([^"]*)"')
@@ -96,6 +103,8 @@ def _find_statements(body: str) -> list[dict]:
                 "effect": effect_m.group(1) if effect_m else "Allow",
                 "actions": _vir._QUOTED_RE.findall(actions_m.group("body")) if actions_m else [],
                 "has_not_actions": bool(_NOT_ACTIONS_RE.search(stmt_body)),
+                "has_not_resources": bool(_NOT_RESOURCES_RE.search(stmt_body)),
+                "resources_raw": resources_m.group("body") if resources_m else None,
                 "resources": _vir._QUOTED_RE.findall(resources_m.group("body")) if resources_m else [],
                 "conditions": conditions,
             }
@@ -128,6 +137,23 @@ def _has_reserved_condition(stmt: dict) -> bool:
         c["test"] == "StringLike" and c["variable"] == "aws:userid" and _RESERVED_LOCAL_MARKER in c["values_raw"]
         for c in stmt["conditions"]
     )
+
+
+def _ssm_unconditioned_reads(allows: list[dict]) -> list[str]:
+    """Sids of Allow statements with an SSM value verb reaching /secret/ (or unresolvable) without the drift condition."""
+    bad: list[str] = []
+    for s in allows:
+        if not (s["has_not_actions"] or _spg.covers_value_verb(s["actions"])):
+            continue
+        listed = None if s["resources_raw"] is None else _spg.string_list(s["resources_raw"])
+        if s["has_not_resources"] or listed is None:
+            bad.append(f"{s['sid'] or '<no-sid>'} (resource expression is not a list of string literals)")
+            continue
+        by_path = s["has_not_actions"] or _spg.covers_by_path(s["actions"])
+        reaching = [r for r in listed if _spg.reaches_secret(r, by_path)]
+        if reaching and not _has_reserved_condition(s) and not set(reaching) <= ALLOWED_UNCONDITIONED:
+            bad.append(s["sid"] or "<no-sid>")
+    return bad
 
 
 def _sids(statements: list[dict]) -> str:
@@ -163,6 +189,14 @@ def _check_policy(text: str, key: str, failed: list[str]) -> None:
             f"{key} {_PLANNER} has unconditioned Secrets Manager value read(s) outside the tfvars secret "
             f"(sid(s): {_sids(bad)}) -- PR sessions must not read the Neon key, DSN, PAT or inference keys; "
             "condition them on the reserved drift session (never widen ALLOWED_UNCONDITIONED)"
+        )
+
+    ssm_bad = _ssm_unconditioned_reads(allows)
+    if ssm_bad:
+        failed.append(
+            f"{key} {_PLANNER} has unconditioned SSM value read(s) reaching parameter/secret/ outside the tfvars "
+            f"parameter (sid(s): {', '.join(ssm_bad)}) -- condition them on the reserved drift session "
+            "(Decision 237 cl.2; never widen ALLOWED_UNCONDITIONED)"
         )
 
     drift_reads = [
@@ -225,18 +259,11 @@ def _logical_commands(run: str) -> list[str]:
 
 def _check_command(name: str, job_id: str, cmd: str, m: re.Match[str], key: str, failed: list[str]) -> tuple[bool, bool]:
     """Check one terraform plan/apply command. Returns (wrapped, has_refresh_false)."""
-    speculative = (name, job_id) == _SPECULATIVE_JOB and m.group(1) == "plan"
     has_refresh_false = "-refresh=false" in cmd
     wrapped = bool(_RUN_PREFIX_RE.search(cmd))
     where = f"{key} {name}:{job_id}"
-    if speculative:
-        if not has_refresh_false or wrapped:
-            failed.append(
-                f"{where} speculative plan must run -refresh=false with a stub key and no neon_api_key.sh run prefix"
-            )
-        return wrapped, has_refresh_false
     if has_refresh_false:
-        failed.append(f"{where} -refresh=false outside the speculative plan: {cmd[:90]}")
+        failed.append(f"{where} -refresh=false on a personal-root plan: {cmd[:90]}")
     if not wrapped:
         failed.append(f"{where} personal-root terraform {m.group(1)} is not run through neon_api_key.sh run --: {cmd[:90]}")
     return wrapped, has_refresh_false
@@ -287,10 +314,8 @@ def _check_workflows(root: Path, session_name: str, key: str, failed: list[str])
             e, r = _check_job(name, job_id, job, key, failed)
             examined += e
             refresh_false += r
-    if refresh_false != 1:
-        failed.append(
-            f"{key} -refresh=false must appear on exactly one plan command (the speculative plan), found {refresh_false}"
-        )
+    if refresh_false != 0:
+        failed.append(f"{key} -refresh=false must appear on no personal-root plan command, found {refresh_false}")
     return examined
 
 

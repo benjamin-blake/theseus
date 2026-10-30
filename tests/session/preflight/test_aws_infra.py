@@ -194,7 +194,10 @@ class TestCredentialsOrderingInMain:
             patch("scripts.preflight.aws_infra.check_credentials", return_value="ok"),
             patch("scripts.preflight.aws_infra._handle_credentials_startup", side_effect=_track_creds),
             patch("scripts.sync.ops.warm_sync", side_effect=_track_sync),
-            patch("scripts.preflight.context_docs.parse_last_session", return_value=""),
+            patch(
+                "scripts.preflight.session_history.read_session_history",
+                return_value={"status": "empty", "window_days": 2, "recent_sessions": [], "last_session": ""},
+            ),
             patch("scripts.preflight.priority_queue.read_priority_queue", return_value=[]),
             patch("scripts.preflight.priority_queue.print_priority_queue"),
             patch(
@@ -202,7 +205,6 @@ class TestCredentialsOrderingInMain:
                 return_value={
                     "roadmap_phase": "",
                     "open_decisions_count": 0,
-                    "recent_sessions": [],
                     "strategic_review_due": False,
                     "recommendations_count": 0,
                 },

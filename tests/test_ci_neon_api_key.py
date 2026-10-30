@@ -67,13 +67,21 @@ def _calls(env: dict[str, str]) -> list[str]:
     return log.read_text(encoding="utf-8").splitlines() if log.exists() else []
 
 
-@pytest.mark.parametrize("event", ["pull_request", "pull_request_target"])
-def test_check_skips_on_pr_events_without_calling_aws(env, event):
-    env["GITHUB_EVENT_NAME"] = event
+def test_check_skips_on_pull_request_without_calling_aws(env):
+    env["GITHUB_EVENT_NAME"] = "pull_request"
     r = _run(env, "check")
     assert r.returncode == 0
-    assert "skipped (PR plan uses a stub)" in r.stdout
+    assert "skipped (no personal-root plan runs on pull_request)" in r.stdout
     assert _calls(env) == []
+
+
+def test_check_on_pull_request_target_fetches_the_key(env):
+    env["GITHUB_EVENT_NAME"] = "pull_request_target"
+    r = _run(env, "check")
+    assert r.returncode == 0
+    assert "fetch ok" in r.stdout
+    assert len(_calls(env)) == 1
+    assert STUB_KEY not in r.stdout + r.stderr
 
 
 def test_check_on_push_calls_aws_once_and_prints_no_value(env):
