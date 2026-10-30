@@ -263,3 +263,15 @@ def test_fits_and_overflow_render_no_address_line(tmp_path: Path) -> None:
         fit = tmp_path / "fit"
         fit.write_text(text, encoding="utf-8")
         assert "Unknown at plan time" not in run(tmp_path, "--fit-file", str(fit), plan=_plan()).stdout
+
+
+def test_opaque_addresses_round_trip_the_producer_line() -> None:
+    from scripts.ci.terraform_personal_plan_report import opaque_addresses
+    from scripts.ci.terraform_plan_digest import _opaque_line
+
+    line = _opaque_line(["aws_iam_role_policy.a[*]", "module.m[*].aws_iam_policy.b"], ["data.aws_iam_policy_document.c"])
+    assert opaque_addresses(line) == [
+        "aws_iam_role_policy.a[*]",
+        "module.m[*].aws_iam_policy.b",
+        "data.aws_iam_policy_document.c",
+    ]
