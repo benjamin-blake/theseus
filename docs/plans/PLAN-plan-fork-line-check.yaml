@@ -23,11 +23,16 @@ scope:
   - file: scripts/roadmap/plan_fork_lines.py
     action: Create
     purpose: >-
-      Pure engine, no git and no corpus glob; never raises on bad input, returns findings. FIELDS (fork, chosen, class,
+      Pure engine, no git and no direct filesystem access: every file it needs (docs/decisions-index.json, a cited
+      contract, a referenced plan) is requested by repo-relative path through a caller-supplied read(rel) -> str | None,
+      and it never lists a directory. Never raises on bad input; returns findings. FIELDS (fork, chosen, class,
       precedent, precedent_kind, reversible, persisted) and the enums CLASS (consistency-only, asked), PRECEDENT_KIND
       (decision, contract, answered-fork, none) and REVERSIBLE (yes, no) are module constants, and
-      template_from_record_grammar(text) extracts the quoted template from record_grammar so a caller can assert they are
-      equal (Decision 169 derive-and-assert; the contract stays the one rule source, Decision 210 clause 3). A context[]
+      template_from_record_grammar(text) extracts the quoted template from record_grammar so a caller can assert they
+      agree (Decision 169 derive-and-assert; the contract stays the one rule source, Decision 210 clause 3). The
+      comparison rule: FIELDS, CLASS and REVERSIBLE equal the template's exactly; PRECEDENT_KIND minus "none" equals the
+      template's precedent_kind enum; "none" is admitted only because record_grammar carries the sentence "precedent:
+      none | precedent_kind: none is legal ONLY on a class: asked line", which the comparison also asserts. A context[]
       entry is a fork record when its stripped text starts with "fork:" or it contains " | class: " or
       " | precedent_kind: " (a near-miss that does not start with "fork:" is itself a failure). Parsing splits on " | "
       only where the next expected key follows, so " | " inside prose is tolerated and a missing or reordered key still
@@ -43,9 +48,10 @@ scope:
       mapping (a small local walk; Decision 104 keeps check-domain helpers out of scripts/roadmap). answered-fork
       pointers are "PLAN-<slug> fork <n>": the plan must not be the one being judged, docs/plans/PLAN-<slug>.yaml must
       exist and parse, and its n-th context[] entry starting "fork:" (1-based) must contain "| class: asked" as a word.
-      Each referenced file is read at most once per call. CLI: `bin/venv-python -m scripts.roadmap.plan_fork_lines
-      PLAN.yaml ...` judges every fork line of the named plans (not diff-scoped), prints one line per failure naming
-      path, fork ordinal, rule and the template, and exits 1 on any failure, else 0.
+      Each referenced path is requested at most once per call. CLI: `bin/venv-python -m scripts.roadmap.plan_fork_lines
+      PLAN.yaml ...` binds read to the working tree and judges every fork line of the named plans (not diff-scoped),
+      prints one line per failure naming the plan path, "fork <n>", the rule and the template, and exits 1 on any
+      failure, else 0.
   - file: scripts/checks/roadmap/validate_plan_fork_lines.py
     action: Create
     purpose: >-
@@ -59,8 +65,11 @@ scope:
       and skipped (validate_plan_documents owns that failure). registry.examined(n, unit="fork_lines") with n the lines
       judged, examined(0) on a diff with none (Decision 170). Failures print path, fork ordinal and the engine message,
       then append "Plan fork-line validation". Seams root/base/changed/read_base/read_head as in
-      validate_test_skip_citations.run_check. CLI `--base REF --head REF` replays one range (for the rec-4786
-      re-measure). Never globs docs/plans.
+      validate_test_skip_citations.run_check; the engine's read is bound to read_head (the working tree, or `git show
+      <head>:<rel>` under the CLI's `--base REF --head REF` replay, so pointers resolve at REF). Reads, bounded: the
+      diff's plan paths (base and head), docs/contracts/overseer-dispatch.yaml, and the engine's own requests; it never
+      globs or lists docs/plans. A plan renamed in the diff arrives as an added path (--no-renames), so all its lines
+      are judged; accepted.
   - file: scripts/checks/roadmap/_manifest.py
     action: Modify
     purpose: >-
@@ -87,15 +96,19 @@ scope:
     purpose: >-
       Check tests through the seams. TestOnlyNewLinesAreJudged: a bad line already on the base passes; the same bad line
       added, or an edited base line, fails; an added plan judges all its lines; non-plan paths and deleted plans are
-      ignored; read_base and read_head are called only for plan paths in the diff, never for an unchanged plan (the
-      check never reads the corpus). TestAccounting: base None -> skipped; no plan in the diff -> examined(0); a record_grammar/engine mismatch
-      appends a failure.
+      ignored. TestBoundedReads (Benjamin's CI-time concern): over a fixture tree holding the diff plan, one plan its
+      answered-fork pointer names, two unreferenced plans (one an unparseable sentinel) and the index and contracts, the
+      set of paths requested through read_base/read_head equals exactly the diff plan, the contract, the index, each
+      cited contract and the one referenced plan; and with Path.glob, Path.rglob, Path.iterdir, os.listdir, os.scandir
+      and glob.glob patched to raise, run_check and the engine still complete. TestContractDrift: a record_grammar whose
+      template disagrees with the engine constants appends a failure naming the field. TestAccounting: base None ->
+      skipped; no plan in the diff -> examined(0).
   - file: docs/contracts/overseer-dispatch.yaml
     action: Modify
     purpose: >-
       APPROVED_CONTRACT verbatim (execution_steps): record_grammar gains the pointer rules; enforcement_coverage gains the
       mechanical validate_plan_fork_lines row and the residual row narrows to rec-4786; amendment_log gains one entry and
-      the 2026-09-03 and 2026-10-18 entries are compacted to one line each (Decision 166 relief valve; 488 of 500
+      the 2026-09-03 and 2026-10-18 entries are compacted to one line each (Decision 166 relief valve; 489 of 500
       effective lines after, 492 before).
   - file: tests/test_plan_fork_classification_contract.py
     action: Modify
@@ -119,7 +132,10 @@ acceptance_criteria:
     On such a consistency-only line, reversible must be yes and precedent must carry at least one pointer of its kind,
     every one of which resolves: a current Decision, a docs/contracts file with any anchor present, or another plan's
     n-th fork line that is class: asked.
-  - The check fails loudly when record_grammar's template and the engine constants disagree.
+  - The check fails loudly when record_grammar's template and the engine constants disagree under the scoped comparison rule.
+  - >-
+    On CI the check reads no docs/plans file outside the diff except one referenced plan per answered-fork pointer, and
+    lists no directory.
   - >-
     docs/contracts/overseer-dispatch.yaml equals APPROVED_CONTRACT, stays at or under 500 effective lines, and the
     contract test pins that the new row's enforced_by is a registered check and the residual owner is rec-4786.
@@ -147,16 +163,14 @@ verification_plan:
     graduation_check_id: plan-fork-line-precedent-pointers
   - step: 3
     phase: pre-deploy
-    action: The engine constants equal the repo contract's record_grammar template, and the CLI exits 1 on a bad plan.
-    command: bin/venv-python -m pytest tests/test_plan_fork_lines.py::TestGrammarMatchesContract tests/test_plan_fork_lines.py::TestCli -q
-    expected: Exit 0, every node passes.
+    action: The engine constants agree with the repo contract's record_grammar under the comparison rule; a mutated template fails.
+    command: bin/venv-python -m pytest tests/test_plan_fork_lines.py::TestGrammarMatchesContract -q
+    expected: Exit 0, every node passes. Red before because the file does not exist.
     expected_literals: []
-    fix_if: A mismatch -> the contract or the constants drifted; reconcile to APPROVED_CONTRACT.
+    fix_if: A mismatch -> the engine constants drifted from the frozen contract; fix the constants, never the contract or the test.
     hermetic: true
-    graduation: waive
-    graduation_waiver_reason: >-
-      The check itself performs the same derive-and-assert on every run that touches the contract or the engine (both
-      are in its pre_globs), so a registry row would duplicate it.
+    graduation: graduate
+    graduation_check_id: plan-fork-line-grammar-matches-contract
   - step: 4
     phase: pre-deploy
     action: Only fork lines new against the base are judged.
@@ -169,15 +183,39 @@ verification_plan:
     graduation_check_id: plan-fork-line-new-lines-only
   - step: 5
     phase: pre-deploy
-    action: Accounting and skip paths.
-    command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_plan_fork_lines.py::TestAccounting -q
+    action: The check reads exactly the diff plans, the contract, the index, cited contracts and one plan per answered-fork pointer, and lists no directory.
+    command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_plan_fork_lines.py::TestBoundedReads -q
+    expected: Exit 0, every node passes. Red before because the file does not exist.
+    expected_literals: []
+    fix_if: An extra path is read or a listing call fires -> route the read through the injected reader; never widen the expected set.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: plan-fork-line-bounded-reads
+  - step: 6
+    phase: pre-deploy
+    action: A record_grammar template that disagrees with the engine constants fails the check.
+    command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_plan_fork_lines.py::TestContractDrift -q
+    expected: Exit 0, every node passes. Red before because the file does not exist.
+    expected_literals: []
+    fix_if: A drifted template passes -> the check must compare before judging any line.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: plan-fork-line-contract-drift-fails
+  - step: 7
+    phase: pre-deploy
+    action: Accounting and skip paths, and the engine CLI's exit codes.
+    command: >-
+      bin/venv-python -m pytest tests/checks/roadmap/test_validate_plan_fork_lines.py::TestAccounting
+      tests/test_plan_fork_lines.py::TestCli -q
     expected: Exit 0, every node passes.
     expected_literals: []
-    fix_if: A silent green on an unreachable base -> call registry.skipped.
+    fix_if: A silent green on an unreachable base -> call registry.skipped; a wrong CLI exit -> fix main().
     hermetic: true
     graduation: waive
-    graduation_waiver_reason: validate_check_accounting already fails any registered check that declares neither examined nor skipped.
-  - step: 6
+    graduation_waiver_reason: >-
+      validate_check_accounting already fails any registered check that declares neither examined nor skipped, and the
+      CLI is a thin wrapper over the engine path steps 1 and 2 graduate; step 10 exercises it on real plans.
+  - step: 8
     phase: pre-deploy
     action: The contract's new coverage rows and record_grammar pointer rules are pinned.
     command: bin/venv-python -m pytest tests/test_plan_fork_classification_contract.py::TestForkLineCheckCoverage -q
@@ -187,7 +225,7 @@ verification_plan:
     hermetic: true
     graduation: graduate
     graduation_check_id: plan-fork-classification-coverage-rows
-  - step: 7
+  - step: 9
     phase: pre-deploy
     action: The existing contract-shape and project-alignment tests still pass on the amended contract.
     command: bin/venv-python -m pytest tests/test_plan_fork_classification_contract.py tests/test_project_alignment_contract.py -q
@@ -197,33 +235,37 @@ verification_plan:
     hermetic: false
     graduation: waive
     graduation_waiver_reason: Whole-file re-run of files this plan modifies; they already run in every --pre that touches them.
-  - step: 8
+  - step: 10
     phase: pre-deploy
     action: Real-data discrimination and dogfood.
     command: >-
-      bin/venv-python -m scripts.roadmap.plan_fork_lines docs/plans/PLAN-admin-terraform-assets-session-hook.yaml;
-      test $? -eq 1 && bin/venv-python -m scripts.roadmap.plan_fork_lines docs/plans/PLAN-plan-fork-line-check.yaml
-    expected: The historical plan's five-field lines are named and the first command exits 1; this plan's own fork lines pass, so the whole command exits 0.
+      out=$(bin/venv-python -m scripts.roadmap.plan_fork_lines docs/plans/PLAN-admin-terraform-assets-session-hook.yaml
+      2>&1); rc=$?; test "$rc" -eq 1 && printf '%s' "$out" | grep -q 'PLAN-admin-terraform-assets-session-hook.yaml'
+      && printf '%s' "$out" | grep -q 'fork 1' && ! printf '%s' "$out" | grep -q Traceback && bin/venv-python -m
+      scripts.roadmap.plan_fork_lines docs/plans/PLAN-plan-fork-line-check.yaml
+    expected: >-
+      The historical plan's four-field lines are reported by path and "fork 1" with exit 1 and no traceback; this plan's
+      own fork lines pass, so the whole command exits 0.
     expected_literals: []
     fix_if: >-
-      The historical plan passes -> the parser is too lenient; this plan fails -> fix its context fork lines only if the
-      failure is a typo against the approved text, else STOP and escalate.
+      The historical plan passes -> the parser is too lenient; a traceback -> the engine raised; this plan fails -> fix
+      its context fork lines only if the failure is a typo against the approved text, else STOP and escalate.
     hermetic: false
     graduation: waive
-    graduation_waiver_reason: Pins one historical plan's text as a one-time real-data proof; the standing guards are steps 1, 2 and 4.
-  - step: 9
+    graduation_waiver_reason: Pins one historical plan's text as a one-time real-data proof; the standing guards are steps 1-6.
+  - step: 11
     phase: pre-deploy
     action: The branch's own diff passes the new check, and the contract stays under its size cap.
     command: >-
-      bin/venv-python -m scripts.checks.roadmap.validate_plan_fork_lines && bin/venv-python -m
-      scripts.checks.structural.size_limits
+      bin/venv-python -m scripts.checks.roadmap.validate_plan_fork_lines && bin/venv-python -c "from
+      scripts.checks.structural.size_limits import validate_structural_size_limits as v; f=[]; v(f); assert not f, f"
     expected: Exit 0 from both, no FAIL line.
     expected_literals: []
     fix_if: The contract is over 500 effective lines -> it differs from APPROVED_CONTRACT; never raise the budget.
     hermetic: false
     graduation: waive
     graduation_waiver_reason: Depends on this branch's diff; both registered checks run on every PR.
-  - step: 10
+  - step: 12
     phase: pre-deploy
     action: Full validation before handoff.
     command: bin/venv-python -m scripts.validate
@@ -233,7 +275,7 @@ verification_plan:
     hermetic: false
     graduation: waive
     graduation_waiver_reason: Invokes scripts.validate (recursion refusal); it is the handoff gate itself.
-  - step: 11
+  - step: 13
     phase: post-deploy
     action: rec-3530 superseded by rec-4786; rec-4786 open.
     command: >-
@@ -245,30 +287,40 @@ verification_plan:
     hermetic: false
 test_obligations:
   - source: scripts/roadmap/plan_fork_lines.py
-    behavior: Every grammar rule and every consistency-only pointer rule rejects its malformed case.
+    behavior: Every grammar rule rejects its malformed case and a conforming line passes.
     verification_step: 1
     test_selector: tests/test_plan_fork_lines.py::TestGrammar
+    red_green_expectation: red before (file absent), green after
+  - source: scripts/roadmap/plan_fork_lines.py
+    behavior: On a consistency-only line, reversible no and every missing, unresolved, superseded, self or notice-line pointer fails.
+    verification_step: 2
+    test_selector: tests/test_plan_fork_lines.py::TestConsistencyOnlyPointers
     red_green_expectation: red before (file absent), green after
   - source: scripts/checks/roadmap/validate_plan_fork_lines.py
     behavior: Only fork lines new against the diff base are judged; base lines never are.
     verification_step: 4
     test_selector: tests/checks/roadmap/test_validate_plan_fork_lines.py::TestOnlyNewLinesAreJudged
     red_green_expectation: red before (file absent), green after
+  - source: scripts/checks/roadmap/validate_plan_fork_lines.py
+    behavior: The check reads only the diff plans, the contract, the index, cited contracts and one plan per answered-fork pointer, and lists no directory.
+    verification_step: 5
+    test_selector: tests/checks/roadmap/test_validate_plan_fork_lines.py::TestBoundedReads
+    red_green_expectation: red before (file absent), green after
   - source: docs/contracts/overseer-dispatch.yaml
     behavior: The coverage rows name a registered check and the successor owner, and record_grammar carries the pointer rules.
-    verification_step: 6
+    verification_step: 8
     test_selector: tests/test_plan_fork_classification_contract.py::TestForkLineCheckCoverage
     red_green_expectation: red before (class absent), green after
   - source: scripts/checks/roadmap/_manifest.py
     behavior: The new Entry registers validate_plan_fork_lines in both tiers.
-    verification_step: 6
+    verification_step: 8
     test_selector: tests/test_plan_fork_classification_contract.py::TestForkLineCheckCoverage
     red_green_expectation: red before (registry.resolve raises for the unregistered name), green after
   - source: config/ci_rca_taxonomy.yaml
     behavior: The new check maps to a failure category.
-    verification_step: 10
+    verification_step: 12
     command: bin/venv-python -m scripts.validate
-    waiver_reason: validate_ci_rca_taxonomy fails on a registered check with no taxonomy row; step 10 runs it.
+    waiver_reason: validate_ci_rca_taxonomy fails on a registered check with no taxonomy row; step 12 runs it.
 constraints:
   - >-
     Every scope file stays under 500 SLOC (Decision 128); a Create file that would exceed it is not split into an
@@ -295,7 +347,7 @@ context:
     line, the newest merged that day. The whole corpus postdates the 2026-09-03 grammar.
   - >-
     Gotchas: parse context[] from loaded YAML, never raw text; never glob docs/plans in the check (Benjamin's CI-time
-    concern; step 4 pins it); decided-with-notice is the notice tier, not a class; the contract test still needs both
+    concern; step 5 pins it); decided-with-notice is the notice tier, not a class; the contract test still needs both
     status kinds.
   - >-
     Coupling for PLAN-operator-decision-journal-kind at rebase: its section 9 declared_guard names plan-critique and
@@ -313,24 +365,24 @@ context:
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
-  - 'Only the plan-cited decision sections read: 181, 163, 159, 169, 170'
+  - 'Only the plan-cited decision sections read: 181, 163, 159, 169, 170, 131'
   - All files in scope located and readable
   - Acceptance criteria understood and verifiable
 execution_steps:
   - >-
     Confirm the checklist. STOP if docs/contracts/overseer-dispatch.yaml's residual row or record_grammar differs from
     the OLD text quoted in APPROVED_CONTRACT (main 64fa015f), or if rec-4786 is not open.
-  - Write the red tests first (steps 1, 2, 4, 6 nodes) and confirm each fails for the stated reason.
+  - Write the red tests first (steps 1-6 and 8 nodes) and confirm each fails for the stated reason.
   - scripts/roadmap/plan_fork_lines.py, then scripts/checks/roadmap/validate_plan_fork_lines.py, as scoped.
-  - Manifest Entry, taxonomy row, and the four graduated registry shards (steps 1, 2, 4, 6) per the Verification Graduation walk.
+  - Manifest Entry, taxonomy row, and the seven graduated registry shards (steps 1-6 and 8) per the Verification Graduation walk.
   - Land APPROVED_CONTRACT verbatim (the date only may vary) and add TestForkLineCheckCoverage.
-  - Execute VP steps 1-10; loop until pass; never weaken an assertion.
-  - Code review via a fresh code-review subagent; fix blocking findings and rerun steps 1-10.
+  - Execute VP steps 1-12; loop until pass; never weaken an assertion.
+  - Code review via a fresh code-review subagent; fix blocking findings and rerun steps 1-12.
   - >-
-    Closure per the implement skill and docs/contracts/git-ops.yaml: implementation_declared true, rebase, step 10 on
+    Closure per the implement skill and docs/contracts/git-ops.yaml: implementation_declared true, rebase, step 12 on
     the committed clean tree, PR, subscribe; squash-merge on code review PROCEED and green CI with no Resolves trailer
     for rec-3530 (its acceptance grep stays non-zero by design).
-  - 'After merge, run APPROVED_REC_UPDATE (variance: PR number and merge sha only), then VP step 11.'
+  - 'After merge, run APPROVED_REC_UPDATE (variance: PR number and merge sha only), then VP step 13.'
   - |-
     APPROVED_CONTRACT (approved by Benjamin 2026-10-30; land verbatim in docs/contracts/overseer-dispatch.yaml; allowed
     variance: <landing date> becomes the merge-day date. Each OLD block must match exactly once, else STOP).
