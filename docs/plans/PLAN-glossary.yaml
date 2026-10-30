@@ -9,7 +9,7 @@ intent: >-
   side a sentence is written from (Benjamin, 2026-10-27). Lands docs/contracts/glossary.yaml and Decision NNN exactly
   as approved, adds validate_glossary (the contract's shape plus a lint that fails added governed lines using
   "platform" or "product" unqualified), projects the glossary into get_rec_write_guidance, makes the rec portal refuse
-  a rec title or context whose new text does the same (a producer-side glossary_lint rule declared in
+  a rec title, context or verification whose new text does the same (a producer-side glossary_lint rule declared in
   ops_recommendations.yaml, Benjamin's option C, 2026-10-30), and points docs/CLAUDE.md at it. Existing text is rec-4676's follow-on plan: live surfaces rewritten, older Decisions given a reads-through
   note.
 plan_type: IMPLEMENTATION
@@ -70,8 +70,8 @@ scope:
   - file: docs/contracts/ops_recommendations.yaml
     action: Modify
     purpose: >-
-      Declare the glossary_lint leg and its producer-side exemption on title and context, with one amendment_log row
-      each, paid for by compacting the oldest top-level amendment_log block (556-line grandfathered budget, Decision
+      Declare the glossary_lint leg and its producer-side exemption on title, context and verification, with one
+      amendment_log row each, paid for by compacting the oldest top-level amendment_log block (556-line grandfathered budget, Decision
       166; execution step 9).
   - file: config/lambda/ducklake/field_semantics.yaml
     action: Modify
@@ -92,7 +92,7 @@ scope:
     action: Create
     purpose: This plan artefact.
 bundled_recommendations: []
-followon_recs: [rec-4676, rec-4762]
+followon_recs: [rec-4676, rec-4762, rec-4768]
 infrastructure_dependencies:
   - >-
     Lambda-packaged: src/row_rules/rules.py and config/lambda/ducklake/field_semantics.yaml ship in the DuckLake
@@ -126,11 +126,11 @@ acceptance_criteria:
     get_rec_write_guidance() carries a glossary entry whose terms and say_instead values equal the contract's, and
     docs/CLAUDE.md carries the approved Names section within its S2 budget (VP steps 6, 12 and 13).
   - >-
-    file_rec refuses a title or context using either word unqualified, update_rec judges only new sentences, the writer
+    file_rec refuses a title, context or verification using either word unqualified (resolution is never linted), update_rec judges only new sentences, the writer
     records glossary_lint as a producer-side exemption, and the contract, its projection and the rule grammar agree
     (VP steps 14-17).
   - >-
-    The fast and full tiers pass; after the squash-merge dec-NNN reaches ops_decisions, rec-4676 and rec-4762 stay
+    The fast and full tiers pass; after the squash-merge dec-NNN reaches ops_decisions, rec-4676, rec-4762 and rec-4768 stay
     open, the governed DuckLake deploy for the merge commit succeeds with fresh deploy records, and the row-rule smoke
     passes (VP steps 18-22).
 verification_plan:
@@ -264,7 +264,7 @@ verification_plan:
     command: >-
       bin/venv-python -c "from scripts.checks.decisions.validate_decision_entry_conformance import validate_decision_entry_conformance as a; from scripts.checks.decisions.validate_decisions_size import validate_decisions_size as b; from scripts.checks.decisions.validate_decisions_index_freshness import validate_decisions_index_freshness as d; f=[]; [g(f) for g in (a, b, d)]; assert not f, f; print('DECISION_GATES_OK')"
     expected: >-
-      Exit 0 and the marker; the entry measured about 5,020 bytes at plan time with a three-digit number and a date
+      Exit 0 and the marker; the entry measured about 5,215 bytes at plan time with a three-digit number and a date
       (cap 6,144). The envelope's kind block is tolerated today (extract_entry_envelope checks required fields only).
     fix_if: A size failure means wording was added -- restore the verbatim text; an index failure means bin/venv-python -m scripts.decisions_index --write was not re-run.
     hermetic: true
@@ -376,9 +376,9 @@ verification_plan:
     graduation_waiver_reason: Invokes scripts.validate (recursion); the full tier runs post-merge on main as the standing guard.
   - step: 20
     phase: post-deploy
-    action: After the squash-merge, ETL the Decision to the warehouse, prove its row exists and both follow-on recs are still open.
+    action: After the squash-merge, ETL the Decision to the warehouse, prove its row exists and the three follow-on recs are still open.
     command: >-
-      bin/venv-python -m scripts.ops_data_portal --backfill-decisions-md && bin/venv-python -c "import re; from pathlib import Path; n=int(re.search(r'^## Decision (\\d+): One name per thing where On The Loop meets its adopters', Path('docs/DECISIONS.md').read_text(encoding='utf-8'), re.M).group(1)); from scripts.ops_portal.decisions import _fetch_decision_from_reader as g; from scripts.ops_data_portal import _fetch_rec_from_reader as r; assert g(f'dec-{n}'), n; assert r('rec-4676')['status'] == 'open' and r('rec-4762')['status'] == 'open'; print('POST_MERGE_OK', n)"
+      bin/venv-python -m scripts.ops_data_portal --backfill-decisions-md && bin/venv-python -c "import re; from pathlib import Path; n=int(re.search(r'^## Decision (\\d+): One name per thing where On The Loop meets its adopters', Path('docs/DECISIONS.md').read_text(encoding='utf-8'), re.M).group(1)); from scripts.ops_portal.decisions import _fetch_decision_from_reader as g; from scripts.ops_data_portal import _fetch_rec_from_reader as r; assert g(f'dec-{n}'), n; assert all(r(x)['status'] == 'open' for x in ('rec-4676', 'rec-4762', 'rec-4768')); print('POST_MERGE_OK', n)"
     expected: Exit 0 and the marker with the Decision number.
     fix_if: A missing row after a clean backfill means the entry did not parse -- re-run VP step 11 against main.
     hermetic: false
@@ -477,14 +477,14 @@ test_obligations:
       Red before -- with the contract leg declared but the grammar unchanged, validate_ops_rule_source rejects the
       unknown leg (exit 1). Green after; the registered check is the standing guard.
   - source: scripts/ops_portal/write_validators.py
-    behavior: gate_write refuses a rec title or context using either word unqualified, judging only sentences the stored value does not hold.
+    behavior: gate_write refuses a rec title, context or verification using either word unqualified, judging only sentences the stored value does not hold.
     verification_step: 14
     test_selector: tests/test_ops_data_portal_validators.py::test_glossary_lint_refuses_unqualified_title
     red_green_expectation: >-
       Red before -- the node does not exist (pytest exit 4); with the node and the contract leg but no handler,
       gate_write fails closed naming the missing glossary_lint handler. Green after.
   - source: docs/contracts/ops_recommendations.yaml
-    behavior: title and context declare the glossary_lint leg and its repository_state exemption, which drive the portal rule.
+    behavior: title, context and verification declare the glossary_lint leg and its repository_state exemption, which drive the portal rule.
     verification_step: 15
     test_selector: tests/test_ops_data_portal_validators.py::test_glossary_lint_update_judges_only_new_sentences
     red_green_expectation: >-
@@ -508,7 +508,8 @@ constraints:
     Approved text (Benjamin, 2026-10-27: msg cmsg_01PCtd8o8287wUrLv1SCjZEuAj5Eg1uFhjvZufwJZ1CRyC for the first
     wording; msg cmsg_01PCtd8o8287wUrLv1SCjZEu2Jk1q3T6ZYNKU7RBCQ7AvS for revision 2, which answers the decision scout;
     2026-10-30: msg cmsg_01PCtd8o8287wUrLv1SCjZEu7ULw4MUcxgc6tzdxa2eM6E for revision 3, clause 5 and Coverage after
-    option C; frozen in /mnt/project-files/terminology/approved/r3/ with SHA256SUMS): every APPROVED TEXT
+    option C; msg cmsg_01PCtd8o8287wUrLv1SCjZEuPG2jZbUEwvWD5YtghyuGzc for revision 4, after critique round 2; frozen in
+    /mnt/project-files/terminology/approved/r4/ with SHA256SUMS): every APPROVED TEXT
     block in execution_steps lands verbatim. Allowed variance: NNN (the next free Decision number at build time, the
     same everywhere it appears) and DATE (the merge date, YYYY-MM-DD). Any other wording change needs Benjamin's word.
   - >-
@@ -547,7 +548,7 @@ context:
   - "Critique round 1 (REVISE): F1 check-owner identifier exemption, F3 root CLAUDE.md and SKILL.md nodes, F4 named compaction rows, F5 red_overlap re-runs, F6 DATE re-check, F7 open-PR notice at merge, F8 accounting counts shape items, F9 #1683 re-check, F10 parametrized tests -- all fixed. F11 (reuse validate_diff_coverage.added_line_numbers_by_file) disputed: it is hard-wired to src/ and scripts/ Python and returns line numbers only; this lint needs line text and removed lines, and generalising it would change another registered check. F2 (Coverage line, Decision 181 cl.2) put to Benjamin."
   - "F2 answer (Benjamin, 2026-10-30, option C): enforce rec text in this plan through the declared producer-side rule path (acceptance_lint precedent, Decision 210 cl.3), V2 -> V3; clause 2 is a declared residual owned by rec-4762 (filed 2026-10-30). Revision 3 of the Decision text (clause 5 and Coverage) approved the same day. Design note: /mnt/project-files/terminology/approved/r3/CHANGES.md."
   - "Rec-rule survey (2026-10-30): no automated file_rec template in scripts/ or .github/ and no rec-writing test fixture uses either word; the ci-rca agent writes its own prose and gets the refusal's say_instead text."
-  - "Critique round 2 (REVISE): F1 6-line test_rules.py node (489 SLOC), F2 fallback files dropped (stop and ask), F3 telemetry-reader record and HOLD branch, F4 hyphen compounds narrowed to identifier shapes (reverses the r2 sign-off notice), F5 agent and prompt globs plus revision 4, F6 Decision 226 non-test-code sense (revision 4), F7 exemption reason, F8 per-branch nodes; I1, I2, I5, I6, I7 adopted; I3, I4 no change; F11 dispute upheld."
+  - "Critique round 2 (REVISE): F1 6-line test_rules.py node (489 SLOC), F2 fallback files dropped (stop and ask), F3 telemetry-reader record and HOLD branch, F4 hyphen compounds narrowed to identifier shapes (reverses the r2 sign-off notice), F5 agent and prompt globs plus revision 4 (verification linted, resolution a residual owned by rec-4768), F6 Decision 226 non-test-code sense (revision 4), F7 exemption reason, F8 per-branch nodes; I1, I2, I5, I6, I7 adopted; I3, I4 no change; F11 dispute upheld."
   - "gates: decision-scout=FLAGS_FOUND after 1 round; plan-critique=REVISE after 2 rounds, confirming round pending"
 pre_implementation_checklist:
   - Branch confirmed not on main
@@ -586,7 +587,7 @@ execution_steps:
         value: numbered_decision
         justification: >-
           Durable, reversal-relevant naming of where On The Loop meets its adopters, setting how wording in Decisions 77, 178, 184, 195,
-          196, 198, 200, 205, 209, 220, 232 and 233 reads. Not field_semantics: it names no data field or config key, and no
+          196, 198, 200, 205, 209, 220, 226, 232 and 233 reads. Not field_semantics: it names no data field or config key, and no
           contract can set how a Decision reads. Not amendment_forms: no single prior entry owns it.
       ```
 
@@ -603,9 +604,9 @@ execution_steps:
       2. **Adopter and customer.** An adopter runs a release on its own repositories, free; On The Loop Labs is one. A customer pays On The Loop Labs for the paid service. One organisation can be both, and the word follows the relationship the sentence is about. A user is a human, never an organisation.
       3. **Relative words.** New governed text in this repository (contracts, Decisions, plans, skills, agent instruction files and recs) never uses "platform" or "product" unqualified; it uses a glossary name. This is house style (Decision 211 clause 2), so it binds an adopter only through the optional profile. Identifiers keep their spelling; renaming one is its own change.
       4. **Older text is read, never rewritten.** Text older than this entry reads through the glossary's read_as rows (Decision 177; Decision 233 clause 1 is the precedent), and no clause's meaning changes: Decision 196's "platform decisions" (Tier B) are the decisions a release ships, Decision 77's "platform environments" are the operator deployment's, and Decision 178's "platform-only" repository holds only On The Loop's source.
-      5. **Enforcement.** validate_glossary checks the contract's shape and fails changed governed text that uses either relative word unqualified. The rec portal refuses a rec title or context whose new text does the same (the producer-side glossary_lint rule in ops_recommendations.yaml), and get_rec_write_guidance carries the glossary so a rec's author sees it first. docs/CLAUDE.md points every agent that reads or writes under docs/ at the glossary. rec-4676 handles existing text.
+      5. **Enforcement.** validate_glossary checks the contract's shape and fails changed governed text that uses either relative word unqualified. The rec portal refuses a rec title, context or verification whose new text does the same (the producer-side glossary_lint rule in ops_recommendations.yaml), and get_rec_write_guidance carries the glossary so a rec's author sees it first. docs/CLAUDE.md points every agent that reads or writes under docs/ at the glossary. rec-4676 handles existing text.
 
-      **Coverage (Decision 181 cl.2):** cl.1, cl.3 and cl.5 -- validate_glossary for files and the portal's glossary_lint rule for recs; cl.2's choice between adopter, customer and user -- unenforced residual, being judgement, owned by rec-4762; cl.4 -- the read_as rows; existing text -- rec-4676.
+      **Coverage (Decision 181 cl.2):** cl.1, cl.3 and cl.5 -- validate_glossary for files and the portal's glossary_lint rule for rec title, context and verification; cl.3 in rec resolution text -- unenforced residual, since automated closers write it and a refusal would hold a close, owned by rec-4768; cl.2's choice between adopter, customer and user -- unenforced residual, being judgement, owned by rec-4762; cl.4 -- the read_as rows; existing text -- rec-4676.
 
       ```yaml reversal-conditions
       decision: NNN
@@ -623,7 +624,7 @@ execution_steps:
           description: "An agent misreads the same read_as phrase twice after rec-4676 lands: rewrite that live surface instead of extending clause 4."
       ```
 
-      **Related:** Decisions 77, 84, 86, 177, 178, 181, 184, 195, 196, 198, 200, 205, 209, 211, 220, 232, 233; rec-3925, rec-4560, rec-4676.
+      **Related:** Decisions 77, 84, 86, 177, 178, 181, 184, 195, 196, 198, 200, 205, 209, 211, 220, 226, 232, 233; rec-3925, rec-4560, rec-4676.
 
       ---
   - |-
@@ -740,7 +741,7 @@ execution_steps:
         platform:
           say_instead: "On The Loop, core, this repository, this repository's roadmap, release, operator deployment, or Tier B"
         product:
-          say_instead: "On The Loop for ours, adopter product for an adopter's"
+          say_instead: "On The Loop for ours, adopter product for an adopter's, or non-test code when the contrast is with tests"
         identifiers: >-
           Identifiers keep their spelling and are not uses of a relative word: agent-platform-*, PlatformDev, the
           agent_platform profile, docs/ROADMAP-PLATFORM.yaml, ontheloop/platform.yaml and check owner platform. Renaming
@@ -763,6 +764,7 @@ execution_steps:
           - {phrase: "the product, meaning On The Loop", where: "Decisions 184, 196, 232", reads_as: "On The Loop"}
           - {phrase: "products, trading product, showcase product, products monorepo, PRODUCT phase axis", where: "Decisions 77, 178, 198, 209, 220", reads_as: "On The Loop Labs' adopter products"}
           - {phrase: "the product, product decisions, in Tiers A and C", where: "Decision 196 clause 2", reads_as: "the adopter product"}
+          - {phrase: "product regression, merged product behaviour", where: "Decision 226, red-main-recovery.yaml", reads_as: "non-test code: what the tests exercise"}
           - {phrase: "user, meaning an organisation", where: "Decision 196", reads_as: "adopter"}
           - {phrase: "free tier, open core", where: "Decisions 184, 209, 233", reads_as: "core"}
           - {phrase: "paid management plane, paid plane", where: "Decisions 184, 205", reads_as: "the paid service's control plane"}
@@ -870,23 +872,25 @@ execution_steps:
     validate_glossary: they need a diff. (r2) In src/row_rules/rules.py add "glossary_lint" to PRODUCER_SIDE_KINDS. In
     scripts/checks/contracts/_rule_grammar.py add "glossary_lint" to SCD2_VOCABULARY, "glossary_lint":
     frozenset({"exclude_before"}) to _SUBKEYS and "glossary_lint": "repository_state" to PRODUCER_CLASS. (r3) In
-    docs/contracts/ops_recommendations.yaml extend the title and context dq_intent flow mappings in place with
+    docs/contracts/ops_recommendations.yaml extend the title, context and verification dq_intent flow mappings in
+    place with
     glossary_lint: {} and the write_time_exemptions entry glossary_lint: {class: repository_state, reason: "the token rule
     needs lookaround, outside the regex subset a writer leg admits (_rule_grammar.regex_subset_error), and reads its
     say_instead text from docs/contracts/glossary.yaml", owner: scripts/ops_portal/write_validators.py}
-    (context gains its first write_time_exemptions key). Undated is correct: a leg with a producer-side exemption owes
+    (context and verification gain their first write_time_exemptions key; verification's dq_intent is {} today and it
+    gains its first amendment_log). resolution gets no leg: Decision NNN declares it a residual owned by rec-4768. Undated is correct: a leg with a producer-side exemption owes
     no exclude_before (_rule_ratchet._new_leg_errors), and the writer never evaluates it. Append to each column's
     amendment_log one flow-style row dated the build date: semantic_break true, change_class accepted_values_narrow
     (the acceptance leg's 2026-09-01 precedent), a summary naming PLAN-glossary and Decision <n> and saying the portal
     now refuses new text that uses either relative word unqualified, and a migration_story saying it is not
-    retroactive (inserts are judged whole, updates only on sentences the stored value does not hold). Neither row uses
-    a relative word outside identifiers, so both pass the lint. The file is at its grandfathered 556 effective lines
-    (config/structural_size_budgets.yaml, Decision 166): pay for the two rows by rewriting the oldest top-level
+    retroactive (inserts are judged whole, updates only on sentences the stored value does not hold). No row uses a
+    relative word outside identifiers, so all three pass the lint. The file is at its grandfathered 556 effective lines
+    (config/structural_size_budgets.yaml, Decision 166): pay for the three rows by rewriting the oldest top-level
     amendment_log row (2026-06-21, CD.25) as one flow-style line keeping its date, change_class, summary and
     migration_story text and every T- and CD. token; if that does not bring the file to 556 or below, do the same to
     the 2026-10-04 row. Measure with scripts.checks.structural._classify.effective_lines before and after; never
     raise the budget. (r4) Regenerate config/lambda/ducklake/field_semantics.yaml with bin/venv-python -m
-    scripts.schema_to_field_semantics, never by hand; the projection gains the two write_time_exemptions entries only.
+    scripts.schema_to_field_semantics, never by hand; the projection gains the three write_time_exemptions entries only.
     (r5) In scripts/ops_portal/write_validators.py add class _GlossaryLint beside _ElementReference. It is built with
     the stored row (None on insert) and loads docs/contracts/glossary.yaml once per process (functools.lru_cache, path
     from the repository root); a missing or unreadable contract raises ValueError (fail closed: the contract is in the
@@ -896,7 +900,7 @@ execution_steps:
     ValueError(f'{column}: unqualified "{word}" -- say instead: {say_instead}; see docs/contracts/glossary.yaml'),
     never quoting the value. Change _producer_handlers to take the stored row and register "glossary_lint" there, so
     the (column, value, params) handler signature stays; _run_producer_rules passes existing. acceptance is not linted
-    (it is a shell command). Update the module docstring's producer-side sentence in one line, and the title and
+    (it is a shell command), nor is resolution (a declared residual). Update the module docstring's producer-side sentence in one line, and the title and
     context semantics prose only if validate_contract_drift requires it.
   - >-
     Create tests/checks/contracts/test_validate_glossary.py. A fixture builds a temporary git repository: copies of
@@ -938,7 +942,8 @@ execution_steps:
     test_glossary_lint_update_judges_only_new_sentences (with a stored context holding a sentence that uses the word,
     an update that keeps it and appends a clean sentence passes, and one that appends a new sentence using "product"
     fails), test_glossary_lint_fails_closed_without_contract (the glossary path pointed at a missing file raises
-    ValueError), and one passing node each for a quoted mention, an identifier and a None value; in
+    ValueError), test_glossary_lint_covers_verification_not_resolution (an unqualified word in verification is
+    refused; the same word in resolution passes), and one passing node each for a quoted mention, an identifier and a None value; in
     test_producer_side_rules_follow_the_contract_exemptions add a no-op glossary_lint to the _producer_handlers patch
     so its fails-closed assertion still names array_element_reference. In tests/row_rules/test_rules.py add
     test_glossary_lint_is_a_producer_side_kind in at most six lines, modelled on
