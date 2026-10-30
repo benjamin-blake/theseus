@@ -9,9 +9,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
+from scripts.contract_rules import parse_yaml
 from scripts.roadmap.vp_literals import (
     _BACKTICK_LITERAL_RE,
     SELF_SATISFYING_VERDICT,
@@ -488,8 +488,7 @@ def load(path: str | Path) -> PlanDocument:
     must be named PLAN-{slug}.yaml.
     """
     path = Path(path)
-    with path.open(encoding="utf-8") as fh:
-        data = yaml.safe_load(fh)
+    data = parse_yaml(path.read_text(encoding="utf-8"))
     doc = PlanDocument.model_validate(data)
     expected_name = f"PLAN-{doc.slug}.yaml"
     if path.name != expected_name:
