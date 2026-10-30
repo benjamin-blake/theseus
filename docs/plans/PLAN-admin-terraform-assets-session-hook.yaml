@@ -22,11 +22,14 @@ scope:
     action: Create
     purpose: >-
       Shared fetch script. Default mode syncs s3://agent-platform-data-lake/tf-provider-mirror/ to $HOME/.terraform-mirror
-      with one `aws s3 sync "s3://agent-platform-data-lake/tf-provider-mirror/" ...` command on ONE line whose flags end
-      `--only-show-errors --delete --profile agent_platform` before any redirection (the registry grep in
-      setup-cloud-env-mirror-hygiene reads that line), then writes RESOLVED_TFRC="$HOME/.terraform-mirror.tfrc" (a sibling
-      file, never inside the mirror dir, rec-2518) from config/terraform/cc-web.tfrc only after a successful non-empty
-      sync, and removes it after a failed one. `--tfvars` mode runs the unchanged
+      with one command on ONE line, `aws s3 sync "s3://agent-platform-data-lake/tf-provider-mirror/" "$MIRROR_DIR"
+      --exclude "*" --include "registry.terraform.io/kislerdm/*" --only-show-errors --delete --profile agent_platform`
+      before any redirection (the registry grep in setup-cloud-env-mirror-hygiene reads that line). The include filter
+      names exactly the namespaces config/terraform/cc-web.tfrc's filesystem_mirror block routes through the mirror
+      (today only kislerdm/*: about 6.4 MB per cold sync instead of about 166 MB, since hashicorp/* resolves direct). Then
+      it writes RESOLVED_TFRC="$HOME/.terraform-mirror.tfrc" (a sibling file, never inside the mirror dir, rec-2518) from
+      config/terraform/cc-web.tfrc only after a successful non-empty sync, and removes any existing one after a failed or
+      empty sync (EMPTY_MIRROR, exit 1). `--tfvars` mode runs the unchanged
       .github/actions/materialise-tfvars/materialise_tfvars.sh from the repo root with AWS_PROFILE=agent_platform_admin
       set and GITHUB_ACTIONS unset for that call only (so no ::add-mask:: line can carry a value into the session); it
       never runs in default mode. Each AWS call: two attempts, 3 s apart, each under `timeout 25`; NO_CREDENTIALS and
@@ -53,8 +56,8 @@ scope:
   - file: .claude/settings.json
     action: Modify
     purpose: >-
-      Register `bash .claude/hooks/session_start_terraform_assets.sh` in the first SessionStart group with
-      `"timeout": 60`.
+      Register `bash .claude/hooks/session_start_terraform_assets.sh` at the END of the first SessionStart group with
+      `"timeout": 60` (session_start_aws.sh stays first: test_capture_hook_registration's order test).
   - file: .claude/hooks/hooks.json
     action: Modify
     purpose: Re-render with `bin/venv-python .claude/hooks/plugin_hooks.py render` (test_plugin_hooks parity).
@@ -65,7 +68,7 @@ scope:
       its else line; step 4's sync-deps still installs terraform when INSTALL_TERRAFORM=1. Header: the setup script runs
       before environment variables are set and the proxy never signs its requests (replaces the "harness is
       unreliable ... BEFORE or AFTER" sentence, and the ADMIN header block must contain the phrase "the agent proxy never
-      signs its requests"); the responsibility split and "What it does" lists name the new hook; the ADMIN template is
+      signs its requests" on ONE comment line, since the test joins header lines with newlines); the responsibility split and "What it does" lists name the new hook; the ADMIN template is
       otherwise unchanged.
   - file: tests/test_sync_terraform_assets.py
     action: Create
@@ -92,10 +95,10 @@ scope:
       Fails on origin/main (file absent), passes on HEAD (Decision 132 VF-06).
   - file: docs/contracts/terraform-cc-web-operations.yaml
     action: Modify
-    purpose: Texts T1-T5 in execution step 6, verbatim.
+    purpose: Texts T1-T5 in execution step 7, verbatim.
   - file: docs/contracts/deploy-paths.yaml
     action: Modify
-    purpose: Texts T5-T6 in execution step 6, verbatim.
+    purpose: Texts T5-T6 in execution step 7, verbatim.
   - file: config/terraform/cc-web.tfrc
     action: Modify
     purpose: Comment line 3 becomes text T7.
@@ -110,6 +113,7 @@ bundled_recommendations:
 followon_recs:
   - rec-4748
   - rec-4749
+  - rec-4750
 infrastructure_dependencies: []
 acceptance_criteria:
   - >-
@@ -117,7 +121,9 @@ acceptance_criteria:
     log read `mirror-sync: OK`, exit 0; the aws call carries `--profile agent_platform` whatever AWS_PROFILE says; a
     first failure is retried once after the backoff; NO_CREDENTIALS and NO_REGION are not retried; a hung attempt
     reports TIMEOUT; all attempts failing removes a pre-existing resolved tfrc, prints a WARNING with the class, exits
-    1; an empty sync writes no tfrc and reports EMPTY_MIRROR; default mode never runs the delegate.
+    1; an empty sync writes no tfrc, removes a pre-existing one, reports EMPTY_MIRROR and exits 1; the sync carries
+    `--exclude "*"` and one `--include` per namespace cc-web.tfrc routes through the mirror; default mode never runs
+    the delegate.
   - >-
     --tfvars mode runs the delegate with AWS_PROFILE=agent_platform_admin even when the ambient profile is
     agent_platform, prints `tfvars-fetch: OK` on success, and on a delegate failure whose stderr carries an ARN, a
@@ -135,7 +141,8 @@ acceptance_criteria:
   - >-
     The repointed registry entry passes on HEAD and fails on origin/main; validate_terraform_cc_web_operations and the
     deploy-paths evaluator pass; texts T1-T8 are present verbatim (allowed variance: T5/T8 dates are the build's
-    commit date; line wrapping).
+    commit date; line wrapping). VP 5 checks key fragments; code review compares each text in full against execution
+    step 7.
   - >-
     Live, in the build's ADMIN container at the CI-green head: the hook syncs the mirror; a scratch-copy terraform init
     through the mirror installs kislerdm/neon from it; PlatformDev can read the prefix; one on-demand --tfvars run
@@ -153,7 +160,8 @@ verification_plan:
       "tests/test_sync_terraform_assets.py::test_credential_and_region_errors_are_not_retried"
       "tests/test_sync_terraform_assets.py::test_hung_attempt_reports_timeout"
       "tests/test_sync_terraform_assets.py::test_failed_sync_removes_resolved_tfrc_and_exits_one"
-      "tests/test_sync_terraform_assets.py::test_empty_sync_writes_no_resolved_tfrc"
+      "tests/test_sync_terraform_assets.py::test_empty_sync_removes_the_resolved_tfrc_and_exits_one"
+      "tests/test_sync_terraform_assets.py::test_sync_fetches_only_the_namespaces_the_tfrc_routes_through_the_mirror"
       "tests/test_sync_terraform_assets.py::test_default_mode_never_runs_the_delegate"
       "tests/test_sync_terraform_assets.py::test_tfvars_mode_pins_the_admin_profile"
       "tests/test_sync_terraform_assets.py::test_output_and_log_never_carry_account_id_arn_or_unique_id"
@@ -251,8 +259,8 @@ verification_plan:
     expected_literals: ["TEXTS_PRESENT", "TEXTS_OK"]
     graduation: waive
     graduation_waiver_reason: >-
-      Text presence of approved wording, already guarded by the contracts' own evaluators; a registry row would pin
-      prose that later approved amendments may legitimately change.
+      A registry row would pin approved prose that later approved amendments may legitimately change; the contract
+      evaluators it runs are already standing checks.
   - step: 6
     phase: pre-deploy
     action: Full tier, to completion (handoff evidence).
@@ -343,11 +351,11 @@ verification_plan:
       Live: one on-demand tfvars fetch (a read-only PlatformAdmin secret read, approved as one of this plan's live
       checks), checked without printing it, then removed.
     command: >-
-      bash bin/sync-terraform-assets.sh --tfvars > /tmp/tfv.out 2>&1; rc=$?
+      o=$(mktemp); bash bin/sync-terraform-assets.sh --tfvars > "$o" 2>&1; rc=$?
       ; T=terraform/personal/terraform.personal.tfvars
       ; echo "rc=$rc"; test -s "$T" && test "$(stat -c %a "$T")" = 600 && echo TFVARS_OK || echo TFVARS_BAD
-      ; grep -qE '[0-9]{12}|arn:' /tmp/tfv.out && echo OUT_LEAK || echo OUT_CLEAN
-      ; rm -f "$T" /tmp/tfv.out
+      ; grep -qE '[0-9]{12}|arn:' "$o" && echo OUT_LEAK || echo OUT_CLEAN
+      ; rm -f "$T" "$o"
     expected: rc=0, TFVARS_OK, OUT_CLEAN.
     fix_if: >-
       rc=1: read the printed class (never cat the file). OUT_LEAK: stop, delete the output, tell Benjamin (Decision 101).
@@ -453,7 +461,7 @@ context:
   - "Decision-scout verdict FLAGS_FOUND (SPIRIT 126, 224 on automatic tfvars; resolved by Fork 1A). Decisions triaged: 191 of 191. Roadmap items intersected: 5; CONFLICT: 0; RELATED: 5. CITE: 119, 120, 126, 113, 157, 237, 162, 101, 177, 181."
   - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
   - 'red_overlap (2026-10-30): {"verdict": "clear", "slo_hours": 4, "reds": []}'
-  - "Approvals: Benjamin 'please write the plan', 2026-10-30 11:11Z (cmsg_01Cqz6E4mzSv6kkGCSCub3WMScsmZHzCrP52Ks3Wo6tmWC), on the 6b at /mnt/project-files/credential-proxy/admin-setup-fetch/step6b-presentation.md: Forks 1A and 2A and texts T1-T8 as shown. Allowed variance: T5/T8 dates become the build commit date; line wrapping. Build merges under the standing rule (code review PROCEED + green CI + the V3 resolution's posted live evidence): no IAM, deploy or unapproved wording."
+  - "Approvals: Benjamin 'please write the plan', 2026-10-30 11:11Z (cmsg_01Cqz6E4mzSv6kkGCSCub3WMScsmZHzCrP52Ks3Wo6tmWC), on the 6b at /mnt/project-files/credential-proxy/admin-setup-fetch/step6b-presentation.md: Forks 1A and 2A and texts T1-T8 as shown. Allowed variance: T5/T8 dates become the build commit date; line wrapping. Build merges under the standing rule (code review PROCEED + green CI + the V3 resolution's posted live evidence): no IAM, deploy or unapproved wording. V3 run-URL waiver: Benjamin chose 'Approve the waiver', 2026-10-30 11:46Z (card cmsg_01Cqz6E4mzSv6kkGCSCub3WMCsnaU2zquxUS4Jsw35Ymvp)."
   - "fork: tfvars fetch timing | chosen: on demand (A) | class: asked | precedent: none (answered 2026-10-30)"
   - "fork: mirror sync identity | chosen: PlatformDev via existing grant, named grant deferred to rec-4748 (A) | class: asked | precedent: Benjamin 2026-10-29 PlatformDev-default rule (rec-4707)"
   - "Cause evidence: FINDINGS.md (replay; cloud docs: setup runs before env vars are set, proxy never signs setup requests); Fable ADVICE.md."
@@ -466,9 +474,8 @@ context:
     output in the implementing ADMIN container at the CI-green head, posted counts-only on the PR with $PR_HEAD_SHA; a
     new head re-runs it. In-container evidence has no workflow run URL, so the run-URL requirement is waived for this
     plan in both places that carry it: code-review's V3 run-URL bullet and the implement skill's V3 Merge Gate step 5.
-    The new-session start-up line (VP 13) and rec closure (VP 14) are post-merge acceptance (Decision 48). Waiver asked
-    of Benjamin 2026-10-30 (card cmsg_01Cqz6E4mzSv6kkGCSCub3WMCsnaU2zquxUS4Jsw35Ymvp); his answer is recorded under
-    Approvals before this plan merges.
+    The new-session start-up line (VP 13) and rec closure (VP 14) are post-merge acceptance (Decision 48). Approved by
+    Benjamin 2026-10-30 11:46Z (Approvals).
   - >-
     Build session: ADMIN (VP 7). Every project thread runs in the ADMIN container today; the check makes that explicit.
     Project threads run the installed plugin's hooks.json, not the checkout's settings.json, so VP 13 also depends on
@@ -479,6 +486,15 @@ context:
     waive; F5 weakening candidates named in scope; F6 VP 5 normalised; F7 scrub-then-truncate, whole-stderr class and
     shared mask; F8 predicate anchored; F9 wording fixed. Info: VP 13 plugin precondition and VP 10 error line adopted;
     cc-web.tfrc:20 left (still true for the CI consumer; unapproved wording).
+  - >-
+    Cost correction to the 6b's "about 1.5 s": every new ADMIN session starts from a snapshot whose mirror dir is empty,
+    so each session start is a cold sync. Filtering to the tfrc-routed namespace makes that about 6.4 MB (kislerdm/neon
+    only) instead of about 166 MB; told to Benjamin with the plan PR.
+  - >-
+    plan-critique r2 REVISE dispositions: 1 sync filtered to the routed namespace (new VP 1 node, cost corrected);
+    2 empty sync removes the tfrc (AC 1, renamed node); 3 waiver approval recorded; 4 seed-workflow comment filed as
+    rec-4750 (followon_recs); 5 step references fixed; 6 VP 5 waiver reason narrowed, full-text comparison assigned to
+    code review. Also: hook appended last in its group, header phrase on one line, VP 12 uses mktemp.
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -555,8 +571,9 @@ execution_steps:
     Allowed variance: the date becomes the build's commit date; line wrapping.
   - "Run VP 1-5 and VP 8 on the finished tree; loop until pass; on unrecoverable failure stop and RCA (Decision 55)."
   - >-
-    Code review via a fresh-context code-review subagent with the "V3 resolution:" context line quoted; fix every
-    blocking finding and re-run the affected VP steps.
+    Code review via a fresh-context code-review subagent with the "V3 resolution:" context line quoted and an
+    instruction to compare each T1-T8 text in full against execution step 7; fix every blocking finding and re-run the
+    affected VP steps.
   - >-
     CLOSURE -- separate facts, in order (a)-(e) (implement skill Commit Flows; docs/contracts/git-ops.yaml), each reported
     on its own. (a) READINESS: bin/venv-python -m scripts.session.github_readiness (unknown is never PASS). (b) Set
