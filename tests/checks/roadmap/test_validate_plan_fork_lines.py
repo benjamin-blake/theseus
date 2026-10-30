@@ -245,3 +245,30 @@ class TestAccounting:
         monkeypatch.setattr(_common, "run", fake_run)
         assert check.main(["--base", "BASE", "--head", "HEAD1"]) == 1
         assert f"HEAD1:{P}" in shown and "FAILED" in capsys.readouterr().out
+
+
+class TestSeamsAndEntrypoints:
+    def test_read_worktree_reads_and_tolerates_missing(self, tmp_path: Path) -> None:
+        (tmp_path / "a.txt").write_text("hi", encoding="utf-8")
+        assert check._read_worktree(tmp_path, "a.txt") == "hi"
+        assert check._read_worktree(tmp_path, "nope.txt") is None
+
+    def test_read_at_ref_returns_none_on_git_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(_common, "run", lambda cmd, **_k: type("R", (), {"returncode": 128, "stdout": ""})())
+        assert check._read_at_ref(Path("/unused"), "BASE", "x") is None
+
+    def test_context_of_non_plan_text_is_none_or_empty(self) -> None:
+        assert check._context(None) is None
+        assert check._context("[1, 2]") is None
+        assert check._context("a: 1") == []
+
+    def test_main_skips_when_the_base_is_unreachable(self, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+        monkeypatch.setattr(_common, "status_diff_base", lambda root=None: None)
+        assert check.main([]) == 0
+        assert "SKIP" in capsys.readouterr().out
+
+    def test_main_on_the_working_tree_passes_a_clean_diff(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(_common, "status_diff_base", lambda root=None: "BASE")
+        monkeypatch.setattr(_common, "get_status_aware_diff", lambda root=None: [])
+        monkeypatch.setattr(check, "_read_worktree", lambda root, rel: _files().get(rel))
+        assert check.main([]) == 0

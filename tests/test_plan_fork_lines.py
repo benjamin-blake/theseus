@@ -208,3 +208,45 @@ class TestCli:
 
     def test_good_plan_exits_zero(self, tmp_path, monkeypatch) -> None:
         assert pfl.main([self._plan(tmp_path, monkeypatch, ASKED)]) == 0
+
+
+class TestEdgeInputs:
+    def test_malformed_template_is_a_mismatch(self) -> None:
+        assert any("separated" in p for p in pfl.grammar_mismatches("'fork: a | no colon here'"))
+
+    def test_load_record_grammar_tolerates_bad_input(self) -> None:
+        assert pfl.load_record_grammar(None) is None
+        assert pfl.load_record_grammar("{ not: [valid") is None
+        assert pfl.load_record_grammar("autonomy_tiers: {}") is None
+        assert pfl.load_record_grammar("autonomy_tiers: {plan_fork_classification: {record_grammar: 3}}") is None
+
+    def test_fork_records_of_a_non_list_is_empty(self) -> None:
+        assert pfl.fork_records("not a list") == []
+
+    def test_unparseable_decisions_index_fails_loudly(self) -> None:
+        read = {pfl.DECISIONS_INDEX: "{not json"}.get
+        assert {f.rule for f in _fails(_line(), read)} == {"pointer-unresolved"}
+
+    def test_unparseable_contract_with_an_anchor_fails(self) -> None:
+        read = {"docs/contracts/bad.yaml": "{ not: [valid"}.get
+        text = _line(precedent="bad.yaml#a.b", precedent_kind="contract")
+        assert {f.rule for f in _fails(text, read)} == {"pointer-unresolved"}
+
+    def test_anchor_deeper_than_a_scalar_fails(self, tmp_path: Path) -> None:
+        read = {"docs/contracts/my-c.yaml": yaml.safe_dump({"top": 1})}.get
+        text = _line(precedent="my-c.yaml#top.deeper", precedent_kind="contract")
+        assert {f.rule for f in _fails(text, read)} == {"pointer-unresolved"}
+
+    def test_successor_falls_back_to_the_supersedes_holder_then_to_nothing(self) -> None:
+        def index(extra: list[dict]) -> object:
+            rows = [{"number": 5, "currency": "superseded_compacted", "live": True, "status": "x"}, *extra]
+            return {pfl.DECISIONS_INDEX: json.dumps({"decisions": rows})}.get
+
+        text = _line(precedent="Decision 5")
+        assert "Decision 6" in _fails(text, index([{"number": 6, "supersedes": [5]}]))[0].message
+        assert "its successor" in _fails(text, index([]))[0].message
+
+    def test_worktree_reader_reads_and_tolerates_missing(self, tmp_path: Path) -> None:
+        (tmp_path / "a.txt").write_text("hi", encoding="utf-8")
+        read = pfl._worktree_reader(tmp_path)
+        assert read("a.txt") == "hi" and read("nope.txt") is None
