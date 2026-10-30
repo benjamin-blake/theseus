@@ -66,7 +66,13 @@ if [[ ! "${CONTEXT_DESCRIPTION:-}" =~ $CONTEXT_RE ]]; then
   exit 1
 fi
 
-if ! python3 "${WORKSPACE_ROOT}/scripts/ci/terraform_plan_digest.py" --literals-from . plan.json > plan_digest.txt; then
+python3 "${WORKSPACE_ROOT}/scripts/ci/terraform_plan_digest.py" --literals-from . plan.json > plan_digest.txt
+DIGEST_RC=$?
+if [ "$DIGEST_RC" -eq 3 ]; then
+  _starved_marker "digest overflow: actionable content exceeds the reviewer digest cap; apply blocked, convergence record NOT overwritten (Decision 55). Split the change or raise DIGEST_SIZE_CAP by PR; after a PR touching only scripts/ci/, drain with a blank workflow_dispatch of terraform-apply-sandbox."
+  echo "outcome=starved" >> "$GITHUB_OUTPUT"
+  exit 1
+elif [ "$DIGEST_RC" -ne 0 ]; then
   _starved_marker "plan digest build failed (infra failure, not a plan rejection)."
   echo "outcome=starved" >> "$GITHUB_OUTPUT"
   exit 1
@@ -133,12 +139,14 @@ PYEOF
 
 _review review.json
 _stats review.json
+VERDICT_FILE=review.json
 VERDICT=$(python3 "${WORKSPACE_ROOT}/scripts/ci/review_verdict.py" review.json)
 
 if [ "$VERDICT" = "STARVED" ]; then
   echo "Reviewer STARVED on first attempt; retrying once at the SAME turn budget (${MAX_TURNS} -- never larger, T2.39 c2)." >&2
   _review review_retry.json
   _stats review_retry.json
+  VERDICT_FILE=review_retry.json
   VERDICT=$(python3 "${WORKSPACE_ROOT}/scripts/ci/review_verdict.py" review_retry.json)
 fi
 
@@ -150,6 +158,12 @@ case "$VERDICT" in
     ;;
   REVISE)
     echo "Subagent returned REVISE; failing closed." >&2
+    REASON=$(python3 "${WORKSPACE_ROOT}/scripts/ci/review_verdict.py" --reason "$VERDICT_FILE" 2> /dev/null | tr '\r\n' '  ') || true
+    [ -n "${REASON// /}" ] || REASON="(no reason given)"
+    echo "[SUBAGENT-REVIEW] REVISE reason: ${REASON}" >&2
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+      printf '\n## Subagent review REVISE\n\n`[SUBAGENT-REVIEW] REVISE reason: %s`\n' "$(printf '%s' "$REASON" | tr '`' "'")" >> "$GITHUB_STEP_SUMMARY"
+    fi
     echo "outcome=revise" >> "$GITHUB_OUTPUT"
     exit 1
     ;;

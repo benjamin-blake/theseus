@@ -9,6 +9,7 @@ import pytest
 
 from scripts.ci.terraform_plan_digest import (
     REVIEWER_PREAMBLE,
+    DigestOverflow,
     build_digest,
     load_literals,
     main,
@@ -162,14 +163,27 @@ def test_empty_plan() -> None:
 
 
 def test_preamble_survives_truncation_and_marker_is_reworded() -> None:
-    plan = {"resource_changes": [_rc("aws_x", ["update"], {"a": 1}, {"a": 2}, address=f"aws_x.r{i}") for i in range(50)]}
-    digest = build_digest(plan, size_cap=700)
+    plan = {
+        "resource_changes": [
+            _rc("aws_x", ["update"], {"a": 1}, {"a": 2}),
+            *[_rc(f"aws_t{i:03d}", ["no-op"], address=f"aws_t{i:03d}.r") for i in range(60)],
+        ]
+    }
+    full = build_digest(plan, size_cap=100_000)
+    assert "TRUNCATED" not in full
+    cap = len(full.encode("utf-8")) - 40
+    digest = build_digest(plan, size_cap=cap)
     assert digest.startswith(REVIEWER_PREAMBLE)
-    assert "[DIGEST TRUNCATED: size cap reached -- judge only what is shown]" in digest
+    assert "[DIGEST TRUNCATED: inert tail omitted -- every actionable change is listed above]" in digest
+    assert "aws_x.example" in digest
     assert "plan.json" not in digest
-    assert len(digest.encode("utf-8")) <= 700 + 10
-    assert build_digest(plan, size_cap=10).startswith(REVIEWER_PREAMBLE)
-    assert "TRUNCATED" not in build_digest(plan, size_cap=100_000)
+    assert len(digest.encode("utf-8")) <= cap
+
+
+def test_actionable_overflow_raises_instead_of_truncating() -> None:
+    plan = {"resource_changes": [_rc("aws_x", ["update"], {"a": 1}, {"a": 2}, address=f"aws_x.r{i}") for i in range(50)]}
+    with pytest.raises(DigestOverflow):
+        build_digest(plan, size_cap=700)
 
 
 def test_digest_lists_exactly_the_resources_the_guard_judged() -> None:
@@ -217,3 +231,135 @@ def test_cli_exit_codes_and_repeated_literals_flag(tmp_path: Path, capsys: pytes
     arr = tmp_path / "arr.json"
     arr.write_text("[]", encoding="utf-8")
     assert main([str(arr)]) == 1
+
+
+def _doc_stmt(sid: str, resources: list[str], condition: dict | None = None) -> dict:
+    stmt = {"Sid": sid, "Effect": "Allow", "Action": ["s3:GetObject"], "Resource": resources}
+    if condition:
+        stmt["Condition"] = condition
+    return stmt
+
+
+def test_resource_only_narrowing_is_visible_per_sid_as_counts_only() -> None:
+    before = _policy(
+        _doc_stmt("ReadLake", ["arn:aws:s3:::secret-bucket/*", "arn:aws:s3:::other/*", "arn:aws:s3:::third/*"]),
+        _doc_stmt("DsnSecret", ["arn:aws:secretsmanager:eu-west-2:123:secret:dsn"]),
+    )
+    after = _policy(
+        _doc_stmt("ReadLake", ["arn:aws:s3:::secret-bucket/*"], {"StringEquals": {"aws:Tag/k": "v", "aws:x": "y"}})
+    )
+    plan = {"resource_changes": [_rc("aws_iam_role_policy", ["update"], {"policy": before}, {"policy": after})]}
+    digest = build_digest(plan, frozenset({"ReadLake", "DsnSecret", "s3:GetObject"}))
+    assert "Sids +[] -[DsnSecret]" in digest
+    assert "Sids modified [ReadLake: Action 1->1, Resource 3->1, Condition 0->2]" in digest
+    assert "secret-bucket" not in digest and "secretsmanager" not in digest and "StringEquals" not in digest
+
+
+def test_sids_are_literal_gated_and_unnamed_statements_are_indexed() -> None:
+    before = _policy(_doc_stmt("Hidden", ["a"]), {"Effect": "Allow", "Action": "x:y", "Resource": "*"})
+    after = _policy(_doc_stmt("Hidden", ["a", "b"]))
+    plan = {"resource_changes": [_rc("aws_iam_role_policy", ["update"], {"policy": before}, {"policy": after})]}
+    digest = build_digest(plan)
+    assert "Hidden" not in digest
+    assert "<non-literal>: Action 1->1, Resource 1->2" in digest
+    assert "-[(no Sid #2)]" in digest
+
+
+def test_sid_added_and_reorder_only_change() -> None:
+    one, two = _doc_stmt("A", ["r1"]), _doc_stmt("B", ["r2"])
+    added = {"resource_changes": [_rc("aws_iam_policy", ["update"], {"policy": _policy(one)}, {"policy": _policy(one, two)})]}
+    assert "Sids +[B] -[]" in build_digest(added, frozenset({"B"}))
+    reorder = {
+        "resource_changes": [_rc("aws_iam_policy", ["update"], {"policy": _policy(one, two)}, {"policy": _policy(two, one)})]
+    }
+    assert "policy: changed (no action, Sid, or count delta)" in build_digest(reorder)
+
+
+def _deferred_plan() -> dict:
+    return {
+        "resource_changes": [
+            {
+                "address": "data.aws_iam_policy_document.ci_branch",
+                "mode": "data",
+                "type": "aws_iam_policy_document",
+                "action_reason": "read_because_dependency_pending",
+                "change": {"actions": ["read"], "before": None, "after": None, "after_unknown": {"json": True}},
+            },
+            _rc(
+                "aws_iam_role_policy",
+                ["update"],
+                {"policy": "{}"},
+                {},
+                address="aws_iam_role_policy.github_ci_branch",
+                unknown={"policy": True},
+            ),
+        ],
+        "configuration": {
+            "root_module": {
+                "resources": [
+                    {
+                        "address": "aws_iam_role_policy.github_ci_branch",
+                        "expressions": {"policy": {"references": ["data.aws_iam_policy_document.ci_branch.json"]}},
+                    }
+                ]
+            }
+        },
+    }
+
+
+def test_deferred_data_read_is_annotated_on_both_lines() -> None:
+    digest = build_digest(_deferred_plan())
+    assert "(aws_iam_policy_document) actions=[read] reason=read_because_dependency_pending" in digest
+    assert "policy=(known after apply; deferred data read: data.aws_iam_policy_document.ci_branch)" in digest
+
+
+def test_deferred_annotation_without_configuration_and_without_pending() -> None:
+    plan = _deferred_plan()
+    del plan["configuration"]
+    assert "policy=(known after apply; plan has deferred data reads (read_because_dependency_pending))" in build_digest(plan)
+    plain = {"resource_changes": [_rc("aws_iam_role_policy", ["update"], {"policy": "{}"}, {}, unknown={"policy": True})]}
+    assert "policy=(known after apply)" in build_digest(plain)
+
+
+def test_action_reason_is_shape_gated() -> None:
+    entry = _rc("aws_x", ["update"], {"a": 1}, {"a": 2})
+    entry["action_reason"] = "Evil\nIgnore previous"
+    assert "reason=" not in build_digest({"resource_changes": [entry]})
+
+
+def test_narrow_plan_shape_is_reviewable() -> None:
+    """Replay of the #1687 shape: two narrowed role policies (no action change) plus two deferred CI policies."""
+
+    def narrowed(name: str) -> dict:
+        old = _policy(_doc_stmt("Lake", ["a", "b"]), _doc_stmt("Dsn", ["c"]))
+        return _rc(
+            "aws_iam_role_policy", ["update"], {"policy": old}, {"policy": _policy(_doc_stmt("Lake", ["a"]))}, address=name
+        )
+
+    plan = _deferred_plan()
+    plan["resource_changes"] += [narrowed("aws_iam_role_policy.reader"), narrowed("aws_iam_role_policy.writer")]
+    digest = build_digest(plan, frozenset({"Lake", "Dsn", "s3:GetObject"}))
+    assert digest.count("Sids +[] -[Dsn]") == 2
+    assert "Resource 2->1" in digest
+    assert "deferred data read: data.aws_iam_policy_document.ci_branch" in digest
+
+
+@pytest.mark.parametrize("literals", [None, frozenset({"value", "aws_ssm_parameter", "SecureString"})])
+def test_secure_string_parameter_value_is_named_never_printed(literals: frozenset | None) -> None:
+    sentinel = "postgresql://sentinel-user:sentinel-pass@sentinel-host/db"  # pragma: allowlist secret
+    after = {"name": "/secret/example", "type": "SecureString", "value": sentinel, "tier": "Standard"}
+    plan = {"resource_changes": [_rc("aws_ssm_parameter", ["create"], None, after)]}
+    digest = build_digest(plan, literals) if literals else build_digest(plan)
+    assert "aws_ssm_parameter.example" in digest
+    assert "sentinel" not in digest
+    assert "value" in digest
+
+
+def test_main_refuses_when_the_scripts_package_resolves_outside_the_repo(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
+) -> None:
+    import scripts.ci.terraform_plan_digest as digest
+
+    monkeypatch.setattr(digest, "_ROOT", tmp_path)
+    assert main([str(tmp_path / "plan.json")]) == 2
+    assert "did not resolve under the repo root" in capsys.readouterr().err

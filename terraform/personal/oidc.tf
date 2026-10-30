@@ -8,6 +8,7 @@
 # Two roles, split by trust:
 #   branch (write) -- refs/heads/main + refs/heads/agent/*  -> main-validate / ci-rca portal writes
 #   pr (read-only)  -- refs/pull/*                          -> PR-context read queries
+#   trusted-plan    -- tf-trusted-plan Environment + job_workflow_ref -> speculative plan (oidc_trusted_plan_role.tf)
 # The account ID in ARNs comes from var.account_id (gitignored tfvars); never a committed literal.
 
 locals {
@@ -43,7 +44,7 @@ locals {
 
   # T2.49 c2 hardening item 3 (single-source, DEP-12 / Decision 144): the RESERVED session-name
   # that discriminates the planner role's fail-closed convergence-write path. Referenced at
-  # EXACTLY 5 coupled sites -- changing this value requires updating all five in the same commit:
+  # EXACTLY 6 coupled sites -- changing this value requires updating all six in the same commit:
   #   1. github_ci_planner trust, main-sub statement: sts:RoleSessionName StringEquals
   #      (oidc_pipeline_roles.tf)
   #   2. github_ci_planner trust, pr-sub statement:   sts:RoleSessionName StringNotEquals
@@ -53,6 +54,8 @@ locals {
   #   4. .github/workflows/terraform-drift.yml: configure-aws-credentials role-session-name (a
   #      workflow literal outside Terraform's reach -- MUST equal this value verbatim)
   #   5. github_ci_planner policy, DriftSessionSecretValueRead: aws:userid StringLike "*:<this>"
+  #      (oidc_pipeline_roles.tf)
+  #   6. github_ci_planner policy, DriftSessionSecretParameterRead: aws:userid StringLike "*:<this>"
   #      (oidc_pipeline_roles.tf)
   convergence_writer_session_name = "tf-drift-convergence-writer"
 }
@@ -71,7 +74,7 @@ resource "aws_iam_openid_connect_provider" "github_actions" {
 # composes ci_ssm_refresh_read via source_policy_documents rather than re-declaring the SSM
 # statements inline (validated credential-free by
 # scripts/checks/iam_tf/validate_invoke_implies_resolve.py, T2.34:c2); github_ci_planner
-# additionally composes the shared 17-statement refresh-read surface via
+# additionally composes the shared 19-statement refresh-read surface via
 # ci_full_refresh_read (which itself sources ci_ssm_refresh_read). IAM read statements stay
 # enumerated with literal ARNs (Decision 35/98) -- composition relocates statements, it never
 # collapses them into a wildcard.
@@ -182,7 +185,9 @@ data "aws_iam_policy_document" "ci_full_refresh_read" {
       "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-pr",
       "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-apply",
       "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-planner",
-      "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-deploy"
+      "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-deploy",
+      # rec-4636: the trusted speculative-plan role (oidc_trusted_plan_role.tf).
+      "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-trusted-plan"
     ]
   }
 
@@ -311,6 +316,24 @@ data "aws_iam_policy_document" "ci_full_refresh_read" {
     effect    = "Allow"
     actions   = ["secretsmanager:DescribeSecret", "secretsmanager:GetResourcePolicy"]
     resources = ["arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:ducklake-neon-catalog-dsn-*"]
+  }
+
+  statement {
+    # Decision 237: the tfvars SecureString parameter, read by every plan to materialise terraform.personal.tfvars.
+    # The one value read of a /secret/ parameter that validate_planner_secret_value_reads allows without a session condition.
+    sid       = "SecretParameterTfvarsRead"
+    effect    = "Allow"
+    actions   = ["ssm:GetParameter"]
+    resources = ["arn:aws:ssm:${var.aws_region}:${var.account_id}:parameter/secret/agent-platform-terraform-personal-tfvars"]
+  }
+
+  statement {
+    # Decision 237: refresh of aws_ssm_parameter.ducklake_neon_catalog_dsn reads its tags. Metadata only; the value read is
+    # DriftSessionSecretParameterRead (oidc_pipeline_roles.tf), conditioned on the reserved drift session.
+    sid       = "SecretParameterMetadataRead"
+    effect    = "Allow"
+    actions   = ["ssm:ListTagsForResource"]
+    resources = ["arn:aws:ssm:${var.aws_region}:${var.account_id}:parameter/secret/ducklake-neon-catalog-dsn"]
   }
 
   statement {

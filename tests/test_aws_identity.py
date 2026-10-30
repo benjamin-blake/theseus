@@ -9,6 +9,7 @@ import pytest
 from botocore.exceptions import ClientError
 
 from scripts import aws_identity
+from scripts.ci.redaction_check import ACCOUNT_ID_SHAPE
 
 FROZEN = ("AK", "SK", "TOK")
 ROLE_ARN = "arn:aws:sts::acct:assumed-role/PlatformDev/session"
@@ -59,12 +60,16 @@ def test_no_credentials_raises() -> None:
             aws_identity.caller_arn("agent_platform")
 
 
-def test_cli_prints_arn(capsys: pytest.CaptureFixture[str]) -> None:
-    with patch.object(aws_identity, "caller_arn", return_value=ROLE_ARN) as fn:
+def test_cli_masks_account_id(capsys: pytest.CaptureFixture[str]) -> None:
+    account = str(10**11 + 7)
+    full = f"arn:aws:sts::{account}:assumed-role/PlatformDev/session"
+    with patch.object(aws_identity, "caller_arn", return_value=full) as fn:
         assert aws_identity.main(["caller-arn", "--profile", "agent_platform"]) == 0
     fn.assert_called_once_with("agent_platform")
     out = capsys.readouterr()
-    assert out.out.strip() == ROLE_ARN
+    assert out.out.strip() == "arn:aws:sts::[ACCOUNT_ID]:assumed-role/PlatformDev/session"
+    assert "assumed-role/PlatformDev/" in out.out
+    assert not ACCOUNT_ID_SHAPE.search(out.out)
     assert out.err == ""
 
 

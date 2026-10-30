@@ -226,3 +226,28 @@ def test_telemetry_smoke_runs_the_production_gate() -> None:
     assert len(gate) == 1 and len(url_loop) == 1 and len(reader_gate) == 1
     assert url_loop[0] < gate[0] < reader_gate[0] and "if" not in steps[gate[0]]
     assert _PREFIX + "telemetry-writer" in _freshness_set("telemetry-smoke")
+
+
+def test_production_telemetry_deploy_holds_while_a_column_add_is_pending() -> None:
+    steps = _jobs()["deploy-telemetry"]["steps"]
+    names = [step.get("id") for step in steps]
+    assert "hold" in names and "deploy_code" in names
+    assert names.index("hold") < names.index("deploy_code")
+    hold, deploy = steps[names.index("hold")], steps[names.index("deploy_code")]
+    gate_module = r"python -m scripts\.checks\.ops_governance\.validate_reconcile_pending_gate"
+    assert re.search(gate_module + r" --telemetry-hold \| tee -a \"\$GITHUB_OUTPUT\"", hold["run"])
+    assert "set -euo pipefail" in hold["run"]
+    assert "steps.oidc_deploy.outcome == 'success'" in hold["if"]
+    assert "steps.hold.outputs.held == 'false'" in deploy["if"]
+    assert "steps.oidc_deploy.outcome == 'success'" in deploy["if"]
+    assert "config/lambda/ducklake/**" in _WORKFLOW.read_text(encoding="utf-8")
+
+    paths = yaml.safe_load((_ROOT / "docs" / "contracts" / "deploy-paths.yaml").read_text(encoding="utf-8"))
+    recovery = " ".join(paths["deploy_code"]["recovery"].split())
+    assert "TELEMETRY PRODUCTION COLUMN HOLD" in recovery and "provision_telemetry_catalog" in recovery
+
+    channel = (_CONTRACT).read_text(encoding="utf-8")
+    governed = next(
+        line for line in channel.splitlines() if line.strip().startswith("governed_channel: .github/workflows/deploy-ducklake")
+    )
+    assert "--telemetry-hold" in governed

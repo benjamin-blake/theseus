@@ -36,9 +36,12 @@ def test_ingestion_shape_is_per_request_commit_with_three_triggers() -> None:
 
 def test_production_column_set_is_recorded() -> None:
     column_set = _telemetry_tables()["production_column_set"]
-    assert column_set["rec"] == "rec-4292"
+    assert column_set["plan"] == "PLAN-telemetry-production-catalog"
     assert set(column_set["typed_by_decision_222"]) == {"cache_creation_1h_tokens", "cache_creation_5m_tokens"}
     assert column_set["metadata_only"] == ["prefix_hash"]
+    rule = " ".join(column_set["rule"].split())
+    for needle in ("pending_reconcile", "telemetry_catalog", "--telemetry-hold"):
+        assert needle in rule, needle
 
     registry = yaml.safe_load((_ROOT / "config/lambda/ducklake/field_semantics.yaml").read_text(encoding="utf-8"))
     columns = registry["ops_tables"]["telemetry_observations"]["columns"]
