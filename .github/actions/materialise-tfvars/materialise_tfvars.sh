@@ -50,7 +50,7 @@ mask_values() {
     key=${line%%=*}
     value=${line#*=}
     key=$(printf '%s' "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    value=$(printf '%s' "$value" | sed 's/^[[:space:]]*"//;s/"[[:space:]]*$//')
+    value=$(printf '%s' "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/^"//;s/"$//')
     case "$key" in
       account_id | platform_dev_external_id | platform_admin_external_id)
         if [ -n "$value" ]; then

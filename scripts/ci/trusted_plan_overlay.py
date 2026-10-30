@@ -24,7 +24,7 @@ from scripts.ci import terraform_hcl_screen as screen  # noqa: E402
 
 PERSONAL = "terraform/personal"
 MERGE_REF = "refs/trusted/pr-merge"
-NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 HEX40 = re.compile(r"[0-9a-f]{40}")
 PR_RE = re.compile(r"[0-9]{1,9}")
 CONFIG_FILES = ("config/feature_flags.yaml", "config/lambda/ducklake/version.yaml")
@@ -76,7 +76,7 @@ def overlay(repo: Path, pr_number: str, head_sha: str, remote: str = "origin") -
         raise Refusal("base_not_ancestor_of_main")
     entries = _entries(repo, merge)
     for mode, kind, name in entries:
-        if not NAME_RE.match(name):
+        if not NAME_RE.fullmatch(name):
             raise Refusal("file_name")
     for mode, kind, name in entries:
         if kind == "tree" or mode == "040000":

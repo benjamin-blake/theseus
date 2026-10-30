@@ -78,7 +78,7 @@ TOP_LEVEL_BLOCKS = frozenset({"resource", "data", "locals", "variable", "output"
 _KEYWORDS = frozenset({"for", "in", "if", "else", "endif", "endfor"})
 _SHAPE_OPERATORS = frozenset({"?", "==", "!=", "<", ">", "<=", ">=", "&&", "||", "!"})
 _CONDITION_CONTEXTS = (("lifecycle", "precondition"), ("lifecycle", "postcondition"), ("variable", "validation"))
-_FILE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_FILE_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 _LITERAL_IDENTS = frozenset({"true", "false", "null"})
 
 Finding = tuple[str, str, int]  # rule, file, line
@@ -177,6 +177,14 @@ def _top_level(name: str, tokens: list[Token]) -> list[Finding]:
     return out
 
 
+def _opens_block(walked: list[tuple[Token, tuple[str, ...]]], idx: int) -> bool:
+    prev = walked[idx - 1][0] if idx else None
+    nxt = walked[idx + 1][0] if idx + 1 < len(walked) else None
+    if nxt is None or (prev is not None and prev.kind == "punct" and prev.text == "."):
+        return False
+    return nxt.kind in ("ident", "str") or (nxt.kind == "punct" and nxt.text == "{")
+
+
 def _shape_and_function_rules(name: str, walked: list[tuple[Token, tuple[str, ...]]]) -> list[Finding]:
     out: list[Finding] = []
     for idx, (tok, stack) in enumerate(walked):
@@ -190,15 +198,9 @@ def _shape_and_function_rules(name: str, walked: list[tuple[Token, tuple[str, ..
             nxt = walked[idx + 1][0] if idx + 1 < len(walked) else None
             if tok.text == "if":
                 out.append(("for_if_clause", name, tok.line))
-            elif tok.text == "dynamic" and nxt is not None and nxt.kind == "str":
-                out.append(("dynamic_block", name, tok.line))
-            elif (
-                tok.text in ("provisioner", "connection")
-                and nxt is not None
-                and nxt.kind in ("str", "punct")
-                and nxt.text != "="
-            ):
-                out.append(("provisioner_block", name, tok.line))
+            elif tok.text in ("dynamic", "provisioner", "connection") and _opens_block(walked, idx):
+                rule = "dynamic_block" if tok.text == "dynamic" else "provisioner_block"
+                out.append((rule, name, tok.line))
             elif (
                 tok.text in ("count", "for_each")
                 and nxt is not None
@@ -300,7 +302,7 @@ def read_root(root: Path) -> tuple[dict[str, str], list[Finding]]:
             if entry.name != ".terraform":
                 findings.append(("subdirectory", entry.name, 0))
             continue
-        if not _FILE_NAME_RE.match(entry.name):
+        if not _FILE_NAME_RE.fullmatch(entry.name):
             findings.append(("file_name", "invalid-name", 0))
             continue
         try:

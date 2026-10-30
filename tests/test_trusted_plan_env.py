@@ -225,3 +225,10 @@ class TestTfvarsGrammar:
         result = _run([*BASH, str(ENV_SH), "--", "true"], env, tmp_path)
         assert "::add-mask::alerts-placeholder-nonemail" in result.stderr
         assert "::add-mask::owner-placeholder-nonemail" in result.stderr
+
+
+def test_materialise_masks_unquoted_values_without_leading_space(tmp_path: Path) -> None:
+    env = _setup(tmp_path, tfvars="account_id = 12345\nplatform_dev_external_id =   spaced-id  \n")
+    result = _run([*BASH, str(MATERIALISE), "--stdout"], env, tmp_path)
+    assert "::add-mask::12345\n" in result.stderr
+    assert "::add-mask::spaced-id\n" in result.stderr

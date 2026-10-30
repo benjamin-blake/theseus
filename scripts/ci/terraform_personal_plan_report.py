@@ -40,9 +40,9 @@ FAILURE_CATEGORIES = (
 )
 REFUSAL_CATEGORIES = ("OVERLAY_REFUSED", "SCREEN_REFUSED", "ASSUME_FAILED")
 _SAFE = re.compile(r"[^A-Za-z0-9_.\-]")
-_HEX40 = re.compile(r"^[0-9a-f]{40}$")
-_HEX64 = re.compile(r"^[0-9a-f]{64}$")
-_URL = re.compile(r"^https://github\.com/[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+/actions/runs/[0-9]+(/attempts/[0-9]+)?$")
+_HEX40 = re.compile(r"[0-9a-f]{40}")
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+_URL = re.compile(r"https://github\.com/[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+/actions/runs/[0-9]+(/attempts/[0-9]+)?")
 _NAME = r"[A-Za-z0-9._-]+"
 _PATH = r"[A-Za-z0-9._/-]+"
 _OVERLAY_LINE = re.compile(rf"^OVERLAY_REFUSED ([a-z_]+)(?: ({_PATH}))?$")
@@ -125,14 +125,14 @@ def render_plan(args: argparse.Namespace, plan: dict[str, Any] | None) -> tuple[
             lines.append("Reviewer digest fit: " + fit_word(Path(args.fit_file).read_text(encoding="utf-8").strip()))
         except OSError:
             lines.append("Reviewer digest fit: UNKNOWN")
-    if args.plan_sha256 and _HEX64.match(args.plan_sha256):
+    if args.plan_sha256 and _HEX64.fullmatch(args.plan_sha256):
         lines.append(f"Saved-plan sha256: `{args.plan_sha256}`")
     lines.append(SAVED_PLAN if args.saved_plan == "yes" and state in ("CHANGES", "NO_CHANGES") else NO_SAVED_PLAN)
     return "\n".join(lines) + "\n", state
 
 
 def _head_line(head_sha: str, run_url: str) -> str:
-    if not _HEX40.match(head_sha) or not _URL.match(run_url):
+    if not _HEX40.fullmatch(head_sha) or not _URL.fullmatch(run_url):
         raise ValueError("bad head sha or run url")
     return f"PR head `{head_sha}` - [run]({run_url}) - advisory and read-only: it never applies."
 

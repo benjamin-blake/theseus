@@ -323,3 +323,21 @@ def test_backstop_refuses_provisioners_and_meta_expressions(key: str) -> None:
     plan = _good_plan()
     plan["configuration"]["root_module"]["resources"][0][key] = [{"type": "local-exec"}] if key == "provisioners" else {"x": 1}
     assert screen.backstop(plan) == "provisioner_or_meta_argument"
+
+
+@pytest.mark.parametrize(
+    ("rule", "text"),
+    [
+        ("provisioner_block", 'resource "aws_s3_bucket" "b" {\n  provisioner local-exec {\n    command = "x"\n  }\n}\n'),
+        ("provisioner_block", 'resource "aws_s3_bucket" "b" {\n  connection ssh {\n  }\n}\n'),
+        ("dynamic_block", 'resource "aws_s3_bucket" "b" {\n  dynamic x {\n    for_each = [1]\n    content {}\n  }\n}\n'),
+        ("unclassified_token", "resource aws_instance x {\n  a = 1\n}\n"),
+        ("unclassified_token", "data external e {\n  a = 1\n}\n"),
+    ],
+)
+def test_unquoted_label_forms_are_refused(rule: str, text: str) -> None:
+    assert rule in one(text)
+
+
+def test_dotted_connection_reference_is_not_a_block() -> None:
+    assert "provisioner_block" not in one("locals {\n  a = local.connection\n}\n")
