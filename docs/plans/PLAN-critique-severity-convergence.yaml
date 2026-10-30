@@ -1,0 +1,373 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "critique-severity-convergence"
+intent: >-
+  Make plan critique converge without operator cards while every round stays a full fresh read and no count caps the
+  rounds: the critic tags each finding blocking or nit, a nits-only round is applied and re-read once by a dispatched
+  fresh critic, the human is asked only on a recurring finding, a disputed blocking finding or a change to approved
+  scope, an open escalation stops the thread, and every gate round is recorded in a typed `gate_rounds` field the
+  plan-PR check holds new plans to. Removes operator load and adds measurement (joint review J-01; operator ruling
+  2026-10-29 "measure twice, cut once": no critique round is cut).
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-critique-severity-convergence.yaml
+phase: >-
+  ad_hoc_rec (soft-warn category; no tier_item claimed, so the Tier Item Freshness Gate is skipped). Workflow
+  methodology from the Project Review joint review (area A); closes no roadmap criterion. T4.29 (plan_critic persona)
+  is RELATED: its c5 flip inherits this rule unchanged, and gate_rounds stays at round grain (per-finding rows are
+  rec-4434's, T4.29 c2).
+closes_criteria: []
+scope:
+  - file: .claude/skills/planning/SKILL.md
+    action: Modify
+    purpose: >-
+      Decision Scout convergence rule rewritten finding-shaped (rec-3526, rec-2802); NO_FLAGS bullet's free-text gates
+      restatement replaced by a gate_rounds pointer (rec-3041); template gates line replaced by the gate_rounds field;
+      Step 9 convergence rule rewritten (severity, nits get ONE dispatched confirming round, escalation triggers, open
+      escalation is a stop, countable revisit, consult carrier; rec-3514, rec-3515); Step 10 mirror line. Exact text in
+      execution_steps[1]. Measured on the dry build: 43,522 -> 43,518 B (budget 44,097, Decision 127; no raise).
+  - file: .claude/skills/plan-critique/SKILL.md
+    action: Modify
+    purpose: >-
+      Finding Tags (blocking/nit beside the existing origin tag; Frame Challenge never a nit), Recommendation semantics
+      (REVISE iff a blocking finding), step 14 figures-as-hypotheses (rec-3742); funded by four compactions and the
+      rotting 600KB literal (rec-2775). Exact text in execution_steps[2]. Measured: 18,684 -> 18,629 B (budget 18,693).
+  - file: .claude/commands/plan.md
+    action: Modify
+    purpose: >-
+      Step 9 summary sentence re-pointed at the new rule (the round-4 wording goes); keeps the verbatim escalation menu
+      and the split gloss that tests/test_project_alignment_contract.py pins. S3, measured only (Decision 127).
+  - file: docs/contracts/overseer-dispatch.yaml
+    action: Modify
+    purpose: >-
+      The two trampoline_sequence lines that restate a retired 3-round cap defer to the planning skill's rules, plus
+      one amendment_log row (Decision 168 Class D). 492 -> 493 effective lines against the 500 contracts-class limit
+      (Decision 166). Never writes the retired label "Step 6a" (tests/test_project_alignment_contract.py sweep).
+  - file: scripts/roadmap/plan_document.py
+    action: Modify
+    purpose: >-
+      GateRound model and optional PlanDocument.gate_rounds: gate enum, verdict per gate, plan-critique REVISE iff
+      blocking > 0, escalation_choice only on an escalated row (the five-choice menu), rounds numbered 1..N per gate,
+      schema_version >= 5. Planner-reported counts only, never a status or approval input (Decision 87 as amended by
+      205). 450 -> 487 SLOC on the dry build (unregistered; 500 limit, Decision 128 -- decompose if it crosses).
+  - file: scripts/checks/roadmap/validate_plan_documents.py
+    action: Modify
+    purpose: >-
+      Newly-added schema_version >= 5 plans must carry a gate_rounds record ending in a plan-critique PROCEED with
+      every escalated row answered: FAIL when CI == "true" (the plan PR, opened only after PROCEED), WARN in a local
+      run (the planner runs --pre between rounds, before the record can be complete). Decision 163 structural
+      enforcement. 130 -> 150 SLOC.
+  - file: tests/roadmap/plan_document/test_gate_rounds.py
+    action: Create
+    purpose: Schema obligations for GateRound and gate_rounds.
+  - file: tests/checks/roadmap/test_validate_plan_documents.py
+    action: Modify
+    purpose: >-
+      TestGateRoundRecord (CI fail, local warn, answered escalation, existing plans exempt); the two added-plan fixtures
+      that assert a clean pass gain a complete gate_rounds record so they hold under CI=true.
+  - file: tests/test_workflow_skill_antidrift.py
+    action: Modify
+    purpose: >-
+      Pins every clause above on the skill, command and contract surfaces (rec-3517: the convergence clauses get the
+      standing assertions PR #1050 claimed), including the rec-3514 and rec-3515 node names their acceptance runs.
+bundled_recommendations:
+  - rec-3514
+  - rec-3526
+  - rec-2802
+  - rec-3742
+  - rec-3515
+  - rec-3517
+  - rec-3041
+  - rec-2775
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    plan-critique tags every finding blocking or nit beside its origin tag and anchor, a Frame Challenge answer is never
+    a nit, REVISE means at least one blocking finding, and measured figures are stated as hypotheses the reviser
+    re-measures (rec-3742); the 600KB literal is gone (rec-2775). VP step 1.
+  - >-
+    planning Step 9: every round a full fresh read with no count cap; a PROCEED listing nits gets the nits applied and
+    ONE dispatched fresh confirming round with no card; escalation only on recurrence, a disputed blocking finding or a
+    change to approved scope, tier or a cited Decision; an open escalation is a stop and its answer is recorded;
+    carriers named for both dispatch modes, including the Fable consult (rec-2802, rec-3515); both revisit conditions
+    count gate_rounds (rec-3514); the antidrift test pins all of it (rec-3517). VP step 1.
+  - >-
+    The Decision Scout gate's convergence rule is finding-shaped, anchored on the BLOCKing decision id, with no count
+    cap; "findings, not rounds" appears at least three times (rec-3526). VP step 1.
+  - >-
+    plan.md Step 9 and overseer-dispatch.yaml restate no round cap and defer to the skill; the alignment-contract sweep
+    and menu pins stay green. VP steps 1 and 3.
+  - >-
+    PlanDocument accepts a gate_rounds list with the GateRound rules in scope, and the template carries it in place of
+    the free-text gates line (rec-3041). VP step 2.
+  - >-
+    validate_plan_documents fails a newly-added v5 plan in CI whose gate_rounds lacks a final plan-critique PROCEED or
+    has an unanswered escalation, warns locally, and ignores existing plans. VP step 2.
+  - >-
+    Neither skill grows: planning <= 43,522 B and plan-critique <= 18,684 B, both under their unchanged budgets;
+    plan_document.py <= 500 SLOC. VP step 4.
+  - Every bundled rec's own acceptance command exits 0 (VP step 5), and each is closed after merge (VP step 8).
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: Clause pins on the skill, command and contract surfaces.
+    command: >-
+      bin/venv-python -m pytest -q
+      "tests/test_workflow_skill_antidrift.py::test_critique_gate_convergence_is_finding_shaped"
+      "tests/test_workflow_skill_antidrift.py::test_open_escalation_stops_the_loop_and_records_the_answer"
+      "tests/test_workflow_skill_antidrift.py::test_decision_scout_convergence_is_finding_shaped"
+      "tests/test_workflow_skill_antidrift.py::test_oscillation_revisit_condition_is_countable"
+      "tests/test_workflow_skill_antidrift.py::test_contested_residue_consult_names_its_dispatch_carrier"
+      "tests/test_workflow_skill_antidrift.py::test_plan_template_records_gate_rounds_not_a_gates_line"
+      "tests/test_workflow_skill_antidrift.py::test_plan_command_and_overseer_contract_defer_to_the_skill_rule"
+      "tests/test_workflow_skill_antidrift.py::test_critic_tags_every_finding_with_a_stable_anchor"
+      "tests/test_workflow_skill_antidrift.py::test_critic_tags_severity_and_states_figures_as_hypotheses"
+    expected: exit 0; nine tests pass. On origin/main eight of them fail (all but the stable-anchor pin).
+    fix_if: >-
+      A pin fails: the surface text differs from execution_steps[1]-[4]; restore the approved text. Never edit a pin to
+      match drifted text.
+    hermetic: true
+    expected_literals: ["9 passed"]
+    graduation: waive
+    graduation_waiver_reason: >-
+      Ordinary unit tests that run in every tier through the --pre affected set; a registry row would duplicate them.
+  - step: 2
+    phase: pre-deploy
+    action: Schema and plan-PR check behaviour, under CI=true so the fail branch is exercised.
+    command: >-
+      CI=true bin/venv-python -m pytest -q tests/roadmap/plan_document/test_gate_rounds.py
+      "tests/checks/roadmap/test_validate_plan_documents.py::TestGateRoundRecord"
+    expected: exit 0; every test passes (the dry build ran 22 passed).
+    fix_if: >-
+      A GateRound rule or the validator differs from scope; fix the code, never the assertion. A count other than 22
+      means a parametrization changed: reconcile with the dry-build diff before proceeding.
+    hermetic: true
+    expected_literals: ["22 passed"]
+    graduation: waive
+    graduation_waiver_reason: >-
+      Ordinary unit tests in every tier; the CI=true prefix only selects the fail branch the plan PR exercises.
+  - step: 3
+    phase: pre-deploy
+    action: Whole files of every suite that reads the changed surfaces, under CI=true.
+    command: >-
+      CI=true bin/venv-python -m pytest -q tests/test_workflow_skill_antidrift.py tests/test_project_alignment_contract.py
+      tests/checks/roadmap/test_validate_plan_documents.py tests/roadmap/plan_document tests/test_plan_fork_classification_contract.py
+      tests/test_implementation_retrospective_skill_contract.py tests/test_deploy_paths_admin_procedure.py
+      tests/ci_rca/test_recovery_policy_surfaces.py tests/checks/prose tests/checks/contracts tests/test_prose_context.py
+    expected: exit 0; every test passes.
+    fix_if: >-
+      A failure names a pinned literal in a changed surface: restore it or justify the change in weakening_dispositions
+      first. The alignment sweep failing on "Step 6a" or "Step 6b": reword that surface (labels are retired).
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Whole-file re-run of suites the --pre affected set already selects for these scope files.
+  - step: 4
+    phase: pre-deploy
+    action: Size governance, measured.
+    command: >-
+      bin/venv-python -c "from pathlib import Path; p=Path('.claude/skills/planning/SKILL.md').stat().st_size;
+      c=Path('.claude/skills/plan-critique/SKILL.md').stat().st_size;
+      s=sum(1 for l in Path('scripts/roadmap/plan_document.py').read_text(encoding='utf-8').splitlines() if l.strip() and not l.strip().startswith('#'));
+      print('planning-ok', p<=43522, 'critique-ok', c<=18684, 'sloc-ok', s<=500)"
+    expected: exit 0; prints all three as True (dry build 43,518 B, 18,629 B, 487 SLOC).
+    fix_if: >-
+      A skill grew: compact the same file (never raise the budget; that is a Decision-marked ask). SLOC over 500:
+      decompose plan_document.py into a facade package (Decision 128), never register a raise.
+    hermetic: true
+    expected_literals: ["planning-ok True critique-ok True sloc-ok True"]
+    graduation: waive
+    graduation_waiver_reason: >-
+      validate_prose_limits and validate_sloc_limits enforce the budgets in every tier; this step pins the stricter
+      no-growth target the operator set for this plan.
+  - step: 5
+    phase: pre-deploy
+    action: Each bundled rec's own acceptance command, verbatim.
+    command: >-
+      ! grep -q "40 cap-hitting plans" .claude/skills/planning/SKILL.md
+      && bin/venv-python -m pytest tests/test_workflow_skill_antidrift.py::test_oscillation_revisit_condition_is_countable -q
+      && ! grep -q 'Do not loop more than 3 times' .claude/skills/planning/SKILL.md
+      && test $(grep -c 'findings, not rounds' .claude/skills/planning/SKILL.md) -ge 3
+      && grep -A3 'Convergence rule' .claude/skills/planning/SKILL.md | grep -qi 'AskUserQuestion'
+      && grep -qi 'hypothes' .claude/skills/plan-critique/SKILL.md && grep -qi 're-measure' .claude/skills/plan-critique/SKILL.md
+      && grep -q "Contested-residue consult" .claude/skills/planning/SKILL.md
+      && bin/venv-python -m pytest tests/test_workflow_skill_antidrift.py::test_contested_residue_consult_names_its_dispatch_carrier -q
+      && grep -q "ONE fresh confirming round" tests/test_workflow_skill_antidrift.py
+      && bin/venv-python -m pytest tests/test_workflow_skill_antidrift.py::test_critique_gate_convergence_is_finding_shaped -q
+      && ! grep -qF 'plan-critique=<verdict> after <N> round(s)' .claude/skills/planning/SKILL.md
+      && grep -q 'gate_run_id' .claude/skills/planning/SKILL.md
+      && ! grep -q 600KB .claude/skills/plan-critique/SKILL.md && echo bundled-acceptance-ok
+    expected: exit 0; prints bundled-acceptance-ok last.
+    fix_if: >-
+      Name the failing clause's rec and fix the surface; never edit a rec's acceptance to pass (a wrong acceptance is
+      re-pointed through update_rec with the reason, Decision 84).
+    hermetic: false
+    graduation: not-applicable
+  - step: 6
+    phase: pre-deploy
+    action: Lint and format the Python scope.
+    command: >-
+      bin/venv-python -m ruff check scripts/roadmap/plan_document.py scripts/checks/roadmap/validate_plan_documents.py
+      tests/roadmap/plan_document/test_gate_rounds.py tests/checks/roadmap/test_validate_plan_documents.py
+      tests/test_workflow_skill_antidrift.py && bin/venv-python -m ruff format --check scripts/roadmap/plan_document.py
+      scripts/checks/roadmap/validate_plan_documents.py tests/roadmap/plan_document/test_gate_rounds.py
+      tests/checks/roadmap/test_validate_plan_documents.py tests/test_workflow_skill_antidrift.py
+    expected: exit 0.
+    fix_if: Run ruff format and fix lint.
+    hermetic: false
+    graduation: not-applicable
+  - step: 7
+    phase: pre-deploy
+    action: Discharge the handoff obligation with a full-tier run to completion.
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0.
+    fix_if: >-
+      A failure in scope is fixed on the branch; never skip a test, relax an assertion or add a baseline. A failure
+      outside scope becomes a rec via scripts.ops_data_portal (Decision 59, 55).
+    hermetic: false
+    graduation: not-applicable
+  - step: 8
+    phase: post-deploy
+    action: Confirm the eight bundled recs are closed (the squash-merge Resolves trailer closes them).
+    command: >-
+      bin/venv-python -c "from src.common.ducklake_reader_client import fetch_recs_by_ids, make_reader;
+      ids=['rec-3514','rec-3526','rec-2802','rec-3742','rec-3515','rec-3517','rec-3041','rec-2775'];
+      r,m=fetch_recs_by_ids(make_reader(profile='agent_platform'), ids); print(sorted((x['id'], x['status']) for x in r), m)"
+    expected: Prints all eight with status closed and an empty missing list.
+    fix_if: Any still open - read the ci.yml closure job log and close it with update_rec (Decision 84 I-4).
+    hermetic: false
+    graduation: not-applicable
+test_obligations:
+  - source: .claude/skills/planning/SKILL.md
+    behavior: Step 9 convergence clauses (severity, nits confirming round, escalation triggers, stop, carriers, revisits).
+    verification_step: 1
+    test_selector: tests/test_workflow_skill_antidrift.py::test_critique_gate_convergence_is_finding_shaped
+    red_green_expectation: red before (no severity or confirming-round clause on main), green after.
+  - source: .claude/skills/planning/SKILL.md
+    behavior: Decision Scout convergence is finding-shaped with no count cap.
+    verification_step: 1
+    test_selector: tests/test_workflow_skill_antidrift.py::test_decision_scout_convergence_is_finding_shaped
+    red_green_expectation: red before ("Do not loop more than 3 times" on main), green after.
+  - source: .claude/skills/plan-critique/SKILL.md
+    behavior: Severity tags, Frame Challenge never a nit, REVISE semantics, figures as hypotheses.
+    verification_step: 1
+    test_selector: tests/test_workflow_skill_antidrift.py::test_critic_tags_severity_and_states_figures_as_hypotheses
+    red_green_expectation: red before, green after.
+  - source: .claude/commands/plan.md
+    behavior: The command's Step 9 defers to the skill rule and restates no round cap.
+    verification_step: 1
+    test_selector: tests/test_workflow_skill_antidrift.py::test_plan_command_and_overseer_contract_defer_to_the_skill_rule
+    red_green_expectation: red before (round-4 wording on main), green after.
+  - source: docs/contracts/overseer-dispatch.yaml
+    behavior: The trampoline stages defer to the skill rules and restate no 3-round cap.
+    verification_step: 1
+    test_selector: tests/test_workflow_skill_antidrift.py::test_plan_command_and_overseer_contract_defer_to_the_skill_rule
+    red_green_expectation: red before ("3-round" twice on main), green after.
+  - source: scripts/roadmap/plan_document.py
+    behavior: GateRound verdict, blocking, escalation and numbering rules.
+    verification_step: 2
+    test_selector: tests/roadmap/plan_document/test_gate_rounds.py
+    red_green_expectation: red before (GateRound and gate_rounds absent; extra="forbid" refuses the key), green after.
+  - source: scripts/checks/roadmap/validate_plan_documents.py
+    behavior: Newly-added plans need a complete gate_rounds record in CI, a warning locally; existing plans are exempt.
+    verification_step: 2
+    test_selector: tests/checks/roadmap/test_validate_plan_documents.py::TestGateRoundRecord
+    red_green_expectation: red before (no such check on main), green after.
+weakening_dispositions:
+  - candidate: "[assertion-changed] tests/test_workflow_skill_antidrift.py::test_critique_gate_convergence_is_finding_shaped"
+    disposition: planned-change
+    cite: "acceptance_criteria[1]"
+constraints:
+  - >-
+    The skill, command and contract text in execution_steps[1]-[4] is the operator-approved text (alignment sign-off
+    2026-10-30): apply it verbatim. A change to it, beyond a compaction that keeps every pinned literal, goes back to the
+    operator before merge.
+  - >-
+    No prose budget changes in config/prose_budgets.yaml (another wave-1 plan lowers the AGENTS.md entry there); both
+    skills must end no larger than on main (Decision 127).
+  - >-
+    gate_rounds is a planner-reported, counts-only record: never read it as a status, approval or merge input, and never
+    add per-finding rows (Decision 87 as amended by 205; T4.29 c2, rec-4434).
+  - >-
+    Verdicts stay PROCEED | REVISE: docs/contracts/overseer-dispatch.yaml's trampoline parses only those. The confirming
+    round is always a dispatched fresh subagent or a GATE_REQUEST, never inline (Decision 229 cl.2).
+  - No rescue agents or workaround loops (Decision 55).
+context:
+  - "Origin: Project Review joint review area A (J-01; IAM-F01, TEL-F06, IAM-F18, TEL-F14). Operator ruling 2026-10-29: planning rigour is by design; remove operator load and add measurement, never cut critique rounds."
+  - "Fable blind consult (facts-only brief): agreed on all three forks -- nits get one fresh confirming round, never ask on count alone, structured per-round record."
+  - "Decision-scout verdict FLAGS_FOUND -- Decision 87 WARN (planner-reported verdict record; resolved: counts-only, renamed gate_rounds off the executor critique_history column); Decision 75 NOTE (Frame Challenge never a nit); Decision 229 NOTE (confirming round dispatched, never inline); Decision 163 SPIRIT (resolved: plan-PR check on newly-added plans). CITE: 73, 85, 86, 127, 128, 166, 205; roadmap T4.29 CITE, T4.30/T2.54/T4.14 RELATED. Decisions triaged: 190 of 190. Roadmap items intersected: 5; CONFLICT: 0; RELATED: 4"
+  - "No numbered Decision is drafted: skill methodology with no governing Decision (decision-entry.yaml significance routing)."
+  - "Dry build of this plan's end state on c30b8fff: 9 files, +321/-29; the new tests fail on main (19 failed) and pass after; scripts.validate --pre clean except tests/checks/verification/test_validate_differential_gate_baseline.py::TestDifferentialGateStep::test_passes_on_live_tree, which fails only in a git worktree without .venv and passes in the checkout."
+  - "Not bundled: rec-3080 (warehouse verdict recording; gate_rounds is its file-side input, stays queued); rec-2480 (moot: the restated gates line is deleted, but its acceptance needs 'round(s)' to remain); rec-3518 (acceptance already met); rec-3520 (spelling fixed here, but its acceptance demands one unspaced occurrence remain)."
+  - "Mid-flight plans from other projects: once this merges, a plan PR opened without gate_rounds fails validate_plan_documents in CI with an actionable message (add the record per the planning skill)."
+  - "This plan predates its own field: main's PlanDocument refuses gate_rounds (extra=forbid), so its gate history stays on the gates line below."
+  - "red_overlap 2026-10-30: clear (no reds)."
+  - "Alignment: Benjamin 'yes to all, write the plan' 2026-10-30T14:24Z (cmsg_017w1Kar4nqzb395d2mcyCJJUQfHgN1qdFyT1736XdRKvX), given on the presented text (thread message cmsg_017w1Kar4nqzb395d2mcyCJJChsuPZ5P5x73tD7psoa8u7)."
+  - "gates: decision-scout=FLAGS_FOUND (round 1, resolved at alignment); plan-critique=pending"
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - >-
+    Rebase onto origin/main first and re-measure both skill sizes; if either surface changed on main since c30b8fff,
+    re-anchor each replacement below on the new text without changing the approved wording.
+  - |-
+    .claude/skills/planning/SKILL.md -- apply exactly:
+    (a) Decision Scout Gate, NO_FLAGS bullet: replace the tail ` and "gates: decision-scout=<verdict>; plan-critique=<verdict> after <N> round(s))".` with `; add a `gate_rounds` row per scout round.`
+    (b) Replace the two lines `**Convergence rule:**` and `Do not loop more than 3 times. ... How would you like to proceed?"` with the single line:
+    **Convergence rule -- findings, not rounds:** re-dispatch after each pivot; escalate at once when a pivot is re-BLOCKed on the same decision id, naming whether the intent contradicts it (re-scope) or it needs revisiting (file a rec). Carrier (AskUserQuestion, chat or GATE_REQUEST) and stop as in Step 9.
+    (c) Template: delete the context item `"gates: decision-scout=<verdict>; plan-critique=<verdict> after <N> round(s)" # REQUIRED ITEM (WF-08)` and insert directly above `pre_implementation_checklist:` the two lines:
+    gate_rounds: # REQUIRED on new plans; one row per gate round (+gate_run_id if dispatched)
+      - {gate: plan-critique, round: 1, verdict: REVISE, blocking: 2, nits: 1} # +escalation_choice if escalated
+    (d) Step 9: replace everything from `**Convergence rule -- findings, not rounds:**` up to (not including) `This gate reviews the PLAN artefact` with these three paragraphs, each followed by a blank line:
+    **Convergence rule -- findings, not rounds:**
+
+    Every round is a full fresh read and no count caps them. The critic tags each finding blocking or nit (plan-critique's Finding Tags); REVISE means at least one blocking finding. Fix every finding, record one disposition each (fixed, or disputed with evidence -- re-measure a figure before applying it), and run `bin/venv-python -m scripts.validate --pre` before EVERY re-dispatch (a pre-check; Decision 73 makes `--pre` authoritative only via PR CI). REVISE -> re-dispatch. Clean PROCEED -> done. PROCEED listing nits -> apply them and dispatch ONE fresh confirming round, no card; it ends the loop unless it returns a blocking finding (its own nits are applied, not re-read). Write each round to `gate_rounds`.
+
+    **Escalate** only on: a finding recurring at a tag+anchor you recorded fixed (oscillation interrupts, not the count); a disputed blocking finding; or a fix that would change approved scope, tier or a cited Decision. Present, per finding, the finding verbatim with tags and anchor; why it did not converge; your recommendation; and, when re-escalating, a clause that starts a new series naming the predecessor rounds -- plus the five choices: accept-with-deferral / re-scope / split / abandon / one more round. Carrier: AskUserQuestion if held, else chat; dispatched, GATE_REQUEST `open_questions`. An open escalation is a stop: no round, no plan edit, until the human answers; record the answer as the row's `escalation_choice` (accept-with-deferral is human-authored only). Revisit when 20 plans carry `gate_rounds`: did a confirming round ever find a blocking finding, and were findings after round 5 real?
+
+    **Contested-residue consult:** On a disputed blocking finding only, consult `model: "fable"` per the overseer skill's Fable Advice-Consult Protocol (dispatched: request it in the same GATE_REQUEST) -- a third fresh reading of THIS plan against the repo's own Decisions, not industry practice. It recommends a disposition and decides nothing. Revisit after 10 contested escalations; demote if it changed nothing in 8 or more.
+    (e) Step 10 item 8: replace `Apply the Step 9 Convergence rule in kind: findings, not rounds -- fix mechanical findings first, escalate at once on a recurring tag+anchor, and run one autonomous confirming round once both agents converge before escalating disputed residue in the pinned shape.` with `Apply the Step 9 Convergence rule in kind: findings, not rounds -- nits get one confirming round, recurrence or dispute escalates in the pinned shape.`
+  - |-
+    .claude/skills/plan-critique/SKILL.md -- apply exactly:
+    (a) Phase 1 step 3: drop ` (ROADMAP-PLATFORM.yaml alone is >600KB)` so the sentence ends `-- do not `Read` the file in full.`
+    (b) Phase 1 step 4: replace `Do not Read the full file -- it is large (near its Decision 134 size ceiling) and the decision-scout gate already paid that cost minutes earlier in the same workflow.` with `Do not Read the full file; the decision-scout gate already paid that cost.`
+    (c) 12o Suspect not-applicable: replace ` -- this is exactly the classification-gaming shape the gate exists to catch, since `not-applicable` carries no downstream registry obligation.` with ` -- the classification-gaming shape this gate catches (`not-applicable` carries no registry obligation).`
+    (d) 12p: replace `This is the reviewer-side control that does not exist anywhere else in this gate -- Phase 2's other checks judge scope, tiers, and dispositions, never whether a drafted numbered Decision's claimed significance row actually matches its body.` with `No other check here asks whether a drafted numbered Decision's claimed significance row matches its body.`
+    (e) Phase 2b intro: replace ` See Decision 75 (Frame-Lock Anti-Pattern in Architectural Planning) for the failure mode this phase is designed to catch.` with ` Failure mode: Decision 75 (frame lock).`
+    (f) Phase 3 output: replace the `**Finding-Origin Attribution:** ...` line with:
+    **Finding Tags:** blocking (correctness, safety, scope, a Decision conflict or failed check above; when unsure) or nit (wording, citation form, ordering; never a Frame Challenge answer); mechanical (a deterministic check could catch it -- name it) / critic judgement -- tag each finding, with a stable anchor (plan field path or VP step id)
+    (g) Replace `**Recommendation:** PROCEED / REVISE [with specific suggestions if REVISE]` with `**Recommendation:** PROCEED (no blocking finding; list nits) / REVISE (any blocking finding) [with specific suggestions if REVISE]`
+    (h) Replace step 14 with: `14. If REVISE, list the changes needed before implementation. State each measured figure as a hypothesis with the command that produced it: the reviser will re-measure it and dispute, with evidence, any it cannot reproduce.`
+  - |-
+    .claude/commands/plan.md Step 9 -- replace `once every finding is addressed, round 4 runs one autonomous confirming round. Escalation (disputed residue, an oscillation interrupt, or a REVISE on the confirming round) offers` with `a PROCEED that lists nits gets them applied and ONE fresh confirming round, with no card. Escalation (an oscillation interrupt, a disputed blocking finding, or a fix that changes approved scope, tier or a cited Decision) offers`, and replace `Planning-time split. Proceed on PROCEED.` with `Planning-time split. An open escalation stops the loop until the human answers. Record every round in the plan's `gate_rounds`. Proceed on PROCEED.`
+    docs/contracts/overseer-dispatch.yaml -- in trampoline_sequence, decision-scout flow 4: `up to the existing 3-round convergence cap)` becomes `per the planning skill's Decision Scout convergence rule)`; plan-critique flow 4: `re-requests (round=2), up to the existing 3-round cap.` becomes `re-requests (round=N+1) per the planning skill's Step 9 convergence rule.`; append to amendment_log after the 2026-10-24 row:
+    - {date: "<merge date>", semantic_break: false, change_class: prose_improvement, summary: "PLAN-critique-severity-convergence: the decision-scout and plan-critique trampoline stages defer to the planning skill's Decision Scout and Step 9 convergence rules instead of restating a retired round cap."}
+  - >-
+    scripts/roadmap/plan_document.py and scripts/checks/roadmap/validate_plan_documents.py as scoped; write the tests
+    first and record their red output on main in the PR body.
+  - >-
+    Run VP steps 1-7; loop until pass; on an unrecoverable failure stop and RCA (Decision 55). Reconcile
+    weakening_dispositions keys with validate_weakening_candidates output if they differ.
+  - >-
+    Closure evidence, recorded as four SEPARATE facts (implement skill Commit Flows): GitHub readiness state; parent
+    validator evidence (VP step 7 full-tier exit 0 plus bin/venv-python -m scripts.checks.validation_result --verify-head
+    for the pushed HEAD); structured postflight evidence (scripts.session.postflight --evidence <file>); the real
+    outcome -- push, PR, CI green by event-driven wake (never polled), code review PROCEED, squash-merge, then VP step 8.
+  - >-
+    Merge: the skill, command and contract text is always-ask agent-instruction surface, already approved verbatim at
+    the alignment sign-off; merge under the project's standing build rule (code review PROCEED and CI green) only if the
+    merged text matches execution_steps[1]-[4]; any other wording asks the operator first. Squash with
+    mcp__github__merge_pull_request(merge_method="squash") and an explicit commit_message whose body ends with
+    "Resolves: rec-3514, rec-3526, rec-2802, rec-3742, rec-3515, rec-3517, rec-3041, rec-2775" directly above the
+    attribution lines (git-ops.yaml resolves_trailer); read the merge commit back to confirm the trailer landed.
+  - 'Report: what was implemented, verification results, measured sizes, the four closure facts.'
+rollback: >-
+  Revert the PR. Plans merged meanwhile keep their gate_rounds rows, which main's reverted schema would refuse
+  (extra="forbid"): a revert must also strip gate_rounds from those plans in the same PR.
