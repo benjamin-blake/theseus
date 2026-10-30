@@ -90,33 +90,32 @@ scope:
       else `PREMERGE TRAILER MISMATCH expected=[...] parsed=[...]`; (2) acceptance preview
       per bundled rec: census at ROOT with every entry routed `junit` reset to `static` (locally there is no same-run
       junit report; the preview only reports), then rec_trailer_acceptance.evaluate(entries, ROOT, HEAD sha); one line
-      per rec `PREVIEW rec-N holds|fails|unmeasurable|out_of_grammar arm=<arm>`, and `PREVIEW rec-N missing` for an id
-      the reader lacks; (3) when the sidecar exists at merge-base(origin/main, HEAD), the approved_text verify path
+      per rec `PREVIEW rec-N holds|fails|unmeasurable|out_of_grammar arm=<arm>`, `PREVIEW rec-N missing` for an id the
+      reader lacks, and `PREVIEW rec-N already-<status>` (not previewed, not fatal) for a rec already closed, declined or
+      superseded (an operator-closed rec stays bundled and in the trailer; the closure job skips a closed one); (3) when the sidecar exists at merge-base(origin/main, HEAD), the approved_text verify path
       (sidecar_state plus verify) against that base and, with --expect, digest equality; (4) after `git fetch origin
-      main`, any bound file that differs between that base and origin/main prints `PREMERGE STALE BASE <file>: rebase
-      and re-run CI` (a post-merge apply against a moved base would redden main). Exit 1 when (1), (3) or (4) fails or
+      main`, a block whose `before` no longer occurs exactly once in its file at origin/main prints `PREMERGE STALE BASE
+      <block id>: rebase and re-run CI` (the post-merge check applies the blocks to the pre-merge main; edits elsewhere
+      in a bound file are tolerated by the word-level apply). Exit 1 when (1), (3) or (4) fails or
       any rec previews fails, out_of_grammar or missing (a red line blocks the merge); unavailable and unmeasurable are
       printed, not fatal. Writes nothing anywhere.
       `readback --slug S --sha SHA`: `git fetch origin main`, read `git log -1 --format=%B SHA`, parse the trailer and
       compare with the expected set at SHA; prints `READBACK OK <sha> recs=[...]`, or `READBACK MISSING <sha>
       missing=[...]` / `READBACK UNEXPECTED <sha> extra=[...]` and exits 1. An empty expected set with no trailer prints
       `READBACK OK <sha> recs=[]`.
-      `recover --slug S --sha SHA [--junit-report PATH]`: refuses (exit 2) unless the plan's implementation_declared is true at SHA and not
+      `recover --slug S --sha SHA`: refuses (exit 2) unless the plan's implementation_declared is true at SHA and not
       at SHA^ (the same flip test _common._plan_declared_at_ref applies, so SHA is this plan's own merge) AND readback
       at SHA reports recs missing; acts only on those missing bundled recs (never a rec present in the trailer, never
       an unbundled one). In a temporary `git worktree add --detach` at SHA, with a `.venv` symlink to ROOT/.venv when
       that exists (bin/venv-python resolves the venv relative to the checkout; without one it falls back to PATH), and
       always removed (symlink first, then `git worktree remove --force`, in a finally): census(missing, rows=...,
-      repo_root=worktree) with NO junit reset, evaluate(entries, worktree, SHA), and junit_doc =
-      rec_trailer_acceptance_junit.junit_verdict(census_doc, PATH, SHA) when --junit-report names the merge commit's
-      push-run `pytest-junit` artifact, else None; rejoin(census_doc, verdict_doc, junit_doc) in the census-artifact
-      shape rec_trailer_acceptance.cmd_census writes, so without the report a junit-routed rec resolves to unmeasurable
-      (Decision 201 source_admission: its authoritative verdict is the merge run's junit report, never re-executed
-      here); then ci_rca_lifecycle.close_recs_from_trailer(missing, SHA, "merge_step recover (operator
+      repo_root=worktree) with NO junit reset, evaluate(entries, worktree, SHA), rejoin(census_doc, verdict_doc, None)
+      in the census-artifact shape rec_trailer_acceptance.cmd_census writes, so a junit-routed rec resolves to
+      unmeasurable and stays open (Decision 201 source_admission: its authoritative verdict is the merge run's junit
+      report, which recover neither re-executes nor accepts as an agent-supplied file); then ci_rca_lifecycle.close_recs_from_trailer(missing, SHA, "merge_step recover (operator
       session, no workflow run)", recs_cache, acceptance_verdicts=..., require_acceptance_verdict=True), so the
       merge-leg gate and the Decision 201 verdict gate both run and a non-holds verdict leaves the rec open. Prints
-      `RECOVER rec-N junit-routed: left open; re-run with --junit-report <the merge run's pytest-junit.xml>` per
-      junit-routed rec when no report was given. Returns that function's exit code. Under 500 SLOC (Decision 128); must not import closure_stamps_applicable.
+      `RECOVER rec-N junit-routed: left open for the operator` per junit-routed rec. Returns that function's exit code. Under 500 SLOC (Decision 128); must not import closure_stamps_applicable.
   - file: tests/test_session_merge_step.py
     action: Create
     purpose: >-
@@ -128,14 +127,22 @@ scope:
       an unbundled rec, refuses a SHA where the plan's declaration does not flip, and on a missing trailer calls
       close_recs_from_trailer with require_acceptance_verdict=True, the merge sha and only the missing recs (stubbed
       reader, evaluate and close); census receives the rows from one fetch_recs_by_ids call and repo_root=<worktree>; a
-      junit-routed entry is never in evaluate's probe payload, reaches the close as unmeasurable without
-      --junit-report and as the report's verdict with one; premerge prints its HEAD sha, a trailer mismatch exits 1, an
+      junit-routed entry is never in evaluate's probe payload and reaches the close as unmeasurable; premerge prints
+      its HEAD sha, reports an already-closed bundled rec as `already-closed` without failing, a trailer mismatch exits 1, an
       exact match passes and an undeclared plan expects no trailer; premerge runs the approved-text path when a sidecar
-      exists at the base, --expect mismatch exits 1, and a bound file moved on origin/main prints STALE BASE and exits
-      1. Unstubbed worktree test (fixture repo carrying a copy of bin/venv-python and a
+      exists at the base, --expect mismatch exits 1, a block whose `before` changed on origin/main prints STALE BASE
+      and exits 1, and an edit elsewhere in a bound file on origin/main does not. Shared fixture builders come from
+      tests/fixtures/merge_step_repos.py. Unstubbed worktree test (fixture repo carrying a copy of bin/venv-python and a
       `.venv/bin/python` link to sys.executable): inside recover's worktree, `bin/venv-python -c "print(42)"` exits 0
       and prints 42, the worktree's `.venv` resolves to the fixture's, and the worktree is gone afterwards, on success
       and on error.
+  - file: tests/fixtures/merge_step_repos.py
+    action: Create
+    purpose: >-
+      Shared fixture builders for the three new test files (Decision 128 headroom for test files that need 100% line
+      coverage of their module): a git repo with a local bare origin, commit and branch helpers, a plan writer
+      (bundled recs, implementation_declared), a sidecar writer, and a copy of bin/venv-python with a `.venv/bin/python`
+      link to sys.executable. Test-only; imports nothing from scripts.
   - file: tests/test_rec_trailer_acceptance_premerge.py
     action: Create
     purpose: >-
@@ -204,15 +211,16 @@ scope:
     purpose: >-
       Add class TestBundledRecNeverClosedBeforeMerge (rec-4592's acceptance node): a deterministic satisfied verdict
       through implement_recheck leaves update_rec and propose_or_close_rec(deterministic=True) uncalled; a superseded
-      verdict yields the close_proposed string from deterministic=False; the CLI prints one line per rec.
+      verdict yields the close_proposed string from deterministic=False; the CLI prints one line per rec and a missing
+      id prints `rec-N missing` and exits 1.
   - file: .claude/skills/implement/SKILL.md
     action: Modify
     purpose: >-
       Exactly the sidecar's six SKILL.md blocks: Step 3 becomes the one-line --implement-recheck call that never closes;
-      the Wait-for-CI all-green line points at Commit Flow step 4; the IMPLEMENTATION commit carries the Resolves
+      the Wait-for-CI all-green line points at Commit Flow step 4; a rec the operator closes stays bundled; the IMPLEMENTATION commit carries the Resolves
       trailer; PR body step 1 repeats it; step 4 runs premerge, merges with an explicit commit_message, then readback;
       step 5 names each refusal's route and recover; the all-green line applies the new step only to IMPLEMENTATION
-      PRs. Net -652 bytes (35,394 to 34,742 against the 35,402 budget).
+      PRs. Net -551 bytes (35,394 to 34,843 against the 35,402 budget).
   - file: .claude/commands/implement.md
     action: Modify
     purpose: Exactly the sidecar's one block - the Step 7 trailer and refusal-route paragraph.
@@ -252,8 +260,8 @@ acceptance_criteria:
   - approved_text verify accepts rewrapping and a filled `{{DATE}}` and rejects any added, removed or changed word
     anywhere in a bound file, an unfilled placeholder and an unparseable bound YAML file (VP step 1).
   - merge_step recover acts only on this plan's own merge, closes only through close_recs_from_trailer with
-    require_acceptance_verdict=True, only for bundled recs readback found missing, and never re-executes a
-    junit-routed acceptance; premerge and readback expect no trailer on a merge that declares no implementation (VP
+    require_acceptance_verdict=True, only for bundled recs readback found missing, and leaves a junit-routed rec open
+    without re-executing it; premerge and readback expect no trailer on a merge that declares no implementation (VP
     step 2).
   - The /implement Step 3 re-check never closes a rec (VP step 4).
   - The implement skill, the implement command and git-ops.yaml no longer name the printed close_proposed route, the
@@ -299,13 +307,12 @@ verification_plan:
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
-      Both targets are bundled recs' acceptance oracles that the Decision 201 trailer gate evaluates at closure, and
-      the full-tier pytest run keeps them as standing regressions; a registry row only replays when the row itself
-      changes, so it would add no protection.
+      Both targets are bundled recs' own acceptance oracles, which the Decision 201 trailer gate evaluates at closure,
+      and the full-tier pytest run keeps them as standing regressions.
   - step: 5
     phase: pre-deploy
     action: The approved-text binding holds on the build branch (the mechanism checking its own build).
-    command: bin/venv-python -m scripts.roadmap.approved_text verify --slug merge-step-checks --expect 858916772033ccb8b2a8075e2f46546714ec6e77a3a12f0a36ffc4974769dd07
+    command: bin/venv-python -m scripts.roadmap.approved_text verify --slug merge-step-checks --expect 3823e65e0ae9fcf906ebb4726e70503ac928a15d2ccea9686197784597cc7591
     expected: Prints APPROVED-TEXT OK and the digest the operator approved (the --expect value); exit 0.
     fix_if: >-
       MISMATCH names a file: make that file's words equal the sidecar's `after` text (only `{{DATE}}` may differ); never
@@ -332,10 +339,11 @@ verification_plan:
     phase: pre-deploy
     action: >-
       Commit Flow step, after the trailer commit and the rebase: every bundled rec's stored acceptance holds at the PR
-      head (the premerge preview, run for real).
+      head (the premerge preview, run for real) on the implementation commit's message, not a later fix-up's.
     command: >-
-      git log -1 --format=%B HEAD > /tmp/merge-step-msg.txt && bin/venv-python -m scripts.session.merge_step premerge
-      --slug merge-step-checks --message-file /tmp/merge-step-msg.txt --expect 858916772033ccb8b2a8075e2f46546714ec6e77a3a12f0a36ffc4974769dd07
+      git log -1 --grep='^Resolves: ' --format=%B origin/main..HEAD > /tmp/merge-step-msg.txt && bin/venv-python -m
+      scripts.session.merge_step premerge
+      --slug merge-step-checks --message-file /tmp/merge-step-msg.txt --expect 3823e65e0ae9fcf906ebb4726e70503ac928a15d2ccea9686197784597cc7591
     expected: >-
       The trailer parses to the seven bundled recs, every PREVIEW line says holds, the approved text verifies at the
       approved digest, no STALE BASE line; exit 0.
@@ -350,10 +358,15 @@ verification_plan:
       Commit Flow "Run the full gate locally first" item 4, after the graduation walk and the implementation_declared
       flip: the check sees this plan declared (trailer PENDING until the commit, sidecar exact).
     command: bin/venv-python -m scripts.validate --pre
-    expected: Exit 0; the validate_merge_step section prints PASS with 1 plan examined.
+    expected: >-
+      Exit 0; the validate_merge_step section prints `PENDING trailer: declaration not committed` and PASS with 1 plan
+      examined.
     fix_if: Read the validate_merge_step section; fix the branch, never the sidecar.
     hermetic: false
-    graduation: not-applicable
+    graduation: waive
+    graduation_waiver_reason: >-
+      A graduate step may not invoke scripts.validate (recursion), and this run depends on this session's uncommitted
+      declaration flip; step 3's graduated row guards the check.
   - step: 11
     phase: pre-deploy
     action: >-
@@ -413,12 +426,12 @@ test_obligations:
   - source: docs/contracts/git-ops.yaml
     behavior: The contract's new wording is exactly the approved text, and its referenced paths and trailer clauses hold.
     verification_step: 5
-    command: bin/venv-python -m scripts.roadmap.approved_text verify --slug merge-step-checks --expect 858916772033ccb8b2a8075e2f46546714ec6e77a3a12f0a36ffc4974769dd07
+    command: bin/venv-python -m scripts.roadmap.approved_text verify --slug merge-step-checks --expect 3823e65e0ae9fcf906ebb4726e70503ac928a15d2ccea9686197784597cc7591
     red_green_expectation: red before (scripts.roadmap.approved_text absent), green after; validate_git_ops_contract and validate_rec_autoclose_trailer_gate run in VP 8
   - source: docs/contracts/recommendation-relevance.yaml
     behavior: The implement_gate and venue wording is exactly the approved text and the verdict enum stays in sync.
     verification_step: 5
-    command: bin/venv-python -m scripts.roadmap.approved_text verify --slug merge-step-checks --expect 858916772033ccb8b2a8075e2f46546714ec6e77a3a12f0a36ffc4974769dd07
+    command: bin/venv-python -m scripts.roadmap.approved_text verify --slug merge-step-checks --expect 3823e65e0ae9fcf906ebb4726e70503ac928a15d2ccea9686197784597cc7591
     red_green_expectation: red before (scripts.roadmap.approved_text absent), green after; validate_rec_relevance_contract runs in VP 8
   - source: config/ci_rca_taxonomy.yaml
     behavior: validate_merge_step has a taxonomy category.
@@ -447,15 +460,18 @@ constraints:
   - Never weaken a check or an acceptance to obtain green (Decision 181; implement-scope-boundary.yaml CONTENT).
   - No CI workflow, IAM, Terraform or Lambda change. Hooks are out of scope (rec-4755 owns the merge-time gate).
   - No rescue agents or workaround loops (Decision 55).
+  - 500 SLOC per file (Decision 128). If a new module or test file would exceed it, stop and report a scope amendment
+    (sibling helper modules beside the two paths git-ops.yaml pins); never register a budget raise.
   - Stay off plan_document.py and validate_plan_documents.py (another plan owns them); read plans with yaml.safe_load.
 context:
   - "Decision-scout verdict: FLAGS_FOUND (Decisions triaged: 190 of 190; Roadmap items intersected: 6; CONFLICT: 0; RELATED: 5). CITE: 201, 55, 76, 128, 166, 215. Flags dispositioned: 186 NOTE (commands/implement.md + DECISIONS.md annotation in scope), 103 NOTE (implement venue only, T3.9 keeps auto-close), 181 NOTE (merge_step_coverage; strengthen-only route), 163 WARN (validate_merge_step enforces trailer + approved text; procedural residual owned by rec-4755)."
   - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
   - "Critique round 1 (REVISE) dispositions: F1 no standing test reads origin/main, VP 5 non-hermetic, verify defaults to status_diff_base; F7 sidecar read at the base, added/changed/deleted fails; C1 recover keeps junit routes (unmeasurable, FALLBACK); C2 Decision 186 routing left to rec-4088; F4 .venv symlink plus an unstubbed worktree test; F2 rec-4687 acceptance strengthened 2026-10-30 (original command kept, `&& ...::TestPremergePreview` appended; rec-4755 likewise); F3 line-break constraint, both greps checked on the dry run; F8/F9 VP 5 waive, VP 2 graduated; F10 VP 7/8/11 placed in the Commit Flow; F11 recover keyed to the plan's own merge; F12 one fetch, rows=, repo_root; F13 placeholders never match literally, YAML must parse; F16 a red premerge line blocks; C3 blockquote_update spelling. Frame: no Terraform squash setting (the branch commit already carries the trailer through a UI squash under COMMIT_MESSAGES), no split (F1 removed the main-red path), word engine argued in scope."
   - "Critique round 2 (REVISE) dispositions: F1 modules moved to scripts/roadmap/approved_text.py and scripts/session/merge_step.py (subpackages are outside RS-01's scripts-root allowlist; file-router.yaml sits at 497/500 effective lines); F2 premerge/readback expect the plan's set only where the plan is declared at the checked ref (HEAD, or the merge SHA read with git show), else none, and the merge-flow text applies them to IMPLEMENTATION merges only; F3 every git probe takes the injected root and fixture tests clear GITHUB_EVENT_NAME/BEFORE; F4 test_session_merge_step.py is the 100% coverage home; F5 TRANSPORT says GitHub's default; F6 expectedHeadSha from premerge's printed HEAD; F7 recover --junit-report closes a junit-routed rec from the merge run's report, else it stays open (no weak fallback); F8 re-run recover for a rec it handled; F9 digest fixed in the plan and passed as --expect; F10 Decision 186 was already over the per-entry WARN cap (7,107 B), the shortened annotation adds 308 B, WARN only; F11 recorded as a gotcha; F12/F13 reworded; residual base race closed by premerge's STALE BASE check."
+  - "Critique round 3 (REVISE) dispositions: R1 skill Step 3 says an operator-closed rec stays bundled and in the trailer and removal is a plan amendment PR; premerge reports already-closed recs as non-fatal; R2 recover takes no agent-supplied junit report: a junit-routed rec stays open for the operator, and merge_step_coverage declares that and recover's single-session credentials as residuals owned by rec-4755 (this design point moved in rounds 1-3: reset to static, then a weak fallback, then a report flag; the chosen form satisfies all three findings); R3 VP 8 waive; R4 VP 7 reads the commit carrying the Resolves block; R5 shared tests/fixtures/merge_step_repos.py plus a stop-and-report SLOC constraint; AC VP 8 expects the PENDING line; STALE BASE narrowed to a block's before at origin/main; VP 4 waiver trimmed."
   - "Related-work check: scripts.ci_rca.red_overlap verdict clear (no open reds) on 2026-10-30."
   - "Operator rulings: step 6b (2026-10-30) whole word-level change set per bound file, public-surface text content-bound; this build lands before PR #1570's build (merge-race-attestation), so it takes git-ops contract_version 9 and the amendment_log compaction."
-  - "Approved text: docs/plans/approved/merge-step-checks.yaml, 21 blocks, digest 858916772033ccb8b2a8075e2f46546714ec6e77a3a12f0a36ffc4974769dd07 (computed at plan time with the canonical form scope fixes; VP 5 and VP 7 pass it as --expect). The approving message id is in the project handoff, never in the repo."
+  - "Approved text: docs/plans/approved/merge-step-checks.yaml, 21 blocks, digest 3823e65e0ae9fcf906ebb4726e70503ac928a15d2ccea9686197784597cc7591 (computed at plan time with the canonical form scope fixes; VP 5 and VP 7 pass it as --expect). The approving message id is in the project handoff, never in the repo."
   - "Blind Fable consult (project file plan-c ADVICE) recommended the word-level scope, the sidecar-vs-message-id split, and the verdict-bound recover."
   - "Gotcha: escape-classified ci_rca recs still carry the trailer; the trailer path refuses them loud-not-red (Decision 186) and they stay open for the operator; rec-4088 owns their route."
   - "Gotcha: the Commit Flow's single implementation commit must carry the trailer; a fix-up commit need not repeat it (the check takes the union over branch commits)."
