@@ -28,8 +28,8 @@ scope:
       and it never lists a directory. Never raises on bad input; returns findings. FIELDS (fork, chosen, class,
       precedent, precedent_kind, reversible, persisted) and the enums CLASS (consistency-only, asked), PRECEDENT_KIND
       (decision, contract, answered-fork, none) and REVERSIBLE (yes, no) are module constants, and
-      template_from_record_grammar(text) extracts the quoted template from record_grammar so a caller can assert they
-      agree (Decision 169 derive-and-assert; the contract stays the one rule source, Decision 210 clause 3). The
+      template_from_record_grammar(text) returns the single-quoted string in record_grammar that begins 'fork:' (the
+      pointer forms are quoted too and are never the template) so a caller can assert they agree (Decision 169 derive-and-assert; the contract stays the one rule source, Decision 210 clause 3). The
       comparison rule: FIELDS, CLASS and REVERSIBLE equal the template's exactly; PRECEDENT_KIND minus "none" equals the
       template's precedent_kind enum; "none" is admitted only because record_grammar carries the sentence "precedent:
       none | precedent_kind: none is legal ONLY on a class: asked line", which the comparison also asserts. A context[]
@@ -48,7 +48,8 @@ scope:
       since decision-entry.yaml currency.consumer_contract lets only superseded_compacted remove an entry from a
       consumer's active set. contract pointers are "docs/contracts/<name>.yaml" or a bare "<name>.yaml" not preceded by
       "/", where <name> is one path segment matching [A-Za-z0-9_][A-Za-z0-9_.-]*, resolved under docs/contracts/, with
-      an optional "#dotted.key" anchor walked through the parsed mapping (a small local walk; Decision 104 keeps
+      an optional anchor #[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)* (so trailing ".", "," or ")" is never part of it) walked
+      through the parsed mapping (a small local walk; Decision 104 keeps
       check-domain helpers out of scripts/roadmap). answered-fork pointers are "PLAN-<slug> fork <n>" with <slug>
       matching [a-z0-9][a-z0-9-]*: the plan must not be the one being judged, docs/plans/PLAN-<slug>.yaml must exist and
       parse, and its n-th context[] entry starting "fork:" (1-based) must contain "| class: asked" as a word. Findings
@@ -70,8 +71,10 @@ scope:
       and skipped (validate_plan_documents owns that failure). registry.examined(n, unit="fork_lines") with n the lines
       judged, examined(0) on a diff with none (Decision 170). Failures print path, fork ordinal and the engine message,
       then append "Plan fork-line validation". Seams root/base/changed/read_base/read_head as in
-      validate_test_skip_citations.run_check; the engine's read is bound to read_head (the working tree, or `git show
-      <head>:<rel>` under the CLI's `--base REF --head REF` replay, so pointers resolve at REF). Reads, bounded: the
+      validate_test_skip_citations.run_check; the engine's read is bound to read_head. The registered entrypoint
+      validate_plan_fork_lines(failed, root) takes changed only from _common.get_status_aware_diff and binds read_base to
+      `git show <base>:<rel>` through _common.run and read_head to a module-level _read_worktree(root, rel); the CLI's
+      `--base REF --head REF` replay binds read_head to `git show REF:<rel>` instead, so pointers resolve at REF. Reads, bounded: the
       diff's plan paths (base and head), docs/contracts/overseer-dispatch.yaml, and the engine's own requests. run_check
       and the engine make no git call and open no file except through the seams, and never glob or list docs/plans; the
       registered entrypoint's only enumeration is _common.get_status_aware_diff. A missing record_grammar, or one with
@@ -86,7 +89,9 @@ scope:
       full_segment="full_after_lint" (the validate_plan_documents shape; Decision 187: the globs name the defining module).
   - file: config/ci_rca_taxonomy.yaml
     action: Modify
-    purpose: "function_to_category row `validate_plan_fork_lines: schema_drift`, beside validate_plan_documents."
+    purpose: >-
+      function_to_category row `validate_plan_fork_lines: schema_drift`, beside validate_plan_documents (496 of 500
+      effective lines on main c7dca7bd, 497 after; past 500 -> STOP, never raise).
   - file: tests/test_plan_fork_lines.py
     action: Create
     purpose: >-
@@ -109,10 +114,15 @@ scope:
       index, each cited contract and the one referenced plan; and with every module imported first and then
       builtins.open, io.open, pathlib.Path.open, Path.read_text, Path.read_bytes, Path.glob, Path.rglob, Path.iterdir,
       os.listdir, os.scandir, glob.glob, subprocess.run, subprocess.Popen and scripts.checks._common.run all patched to
-      raise for the whole call, run_check and the engine still complete. TestContractDrift: a record_grammar whose
+      raise for the whole call, run_check and the engine still complete. The same class drives the registered
+      entrypoint over that tree: _common.status_diff_base patched to "BASE", _common.get_status_aware_diff to the
+      fixture list, _common.run to a recorder that accepts only `git show BASE:<rel>` for a diff plan path, the listing
+      calls patched to raise and _read_worktree spied; the union of paths read equals the same expected set and neither
+      unreferenced plan is read. TestContractDrift: a record_grammar whose
       template disagrees with the engine constants appends a failure naming the field; a missing record_grammar, or one
       with no extractable template, fails and is never skipped. TestAccounting: base None ->
-      skipped; no plan in the diff -> examined(0).
+      skipped; no plan in the diff -> examined(0); an unparseable head plan -> WARN and skipped; main() with --base and
+      --head replays through git show and exits non-zero on a failure.
   - file: docs/contracts/overseer-dispatch.yaml
     action: Modify
     purpose: >-
@@ -224,19 +234,27 @@ verification_plan:
     graduation_check_id: plan-fork-line-contract-drift-fails
   - step: 7
     phase: pre-deploy
-    action: Accounting and skip paths, and the engine CLI's exit codes.
-    command: >-
-      bin/venv-python -m pytest tests/checks/roadmap/test_validate_plan_fork_lines.py::TestAccounting
-      tests/test_plan_fork_lines.py::TestCli -q
-    expected: Exit 0, every node passes.
+    action: >-
+      Accounting and skip paths: base None -> skipped, no plan in the diff -> examined(0), an unparseable head plan ->
+      WARN and skipped, and main()'s --base/--head replay reads through git show.
+    command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_plan_fork_lines.py::TestAccounting -q
+    expected: Exit 0, every node passes. Red before because the file does not exist.
     expected_literals: []
-    fix_if: A silent green on an unreachable base -> call registry.skipped; a wrong CLI exit -> fix main().
+    fix_if: A silent green on an unreachable base -> call registry.skipped on that exit path; never drop the node.
     hermetic: true
-    graduation: waive
-    graduation_waiver_reason: >-
-      validate_check_accounting already fails any registered check that declares neither examined nor skipped, and the
-      CLI is a thin wrapper over the engine path steps 1 and 2 graduate; step 10 exercises it on real plans.
+    graduation: graduate
+    graduation_check_id: plan-fork-line-accounting
   - step: 8
+    phase: pre-deploy
+    action: The engine CLI exits 1 with a named finding on a bad fixture plan and 0 on a good one.
+    command: bin/venv-python -m pytest tests/test_plan_fork_lines.py::TestCli -q
+    expected: Exit 0, every node passes. Red before because the file does not exist.
+    expected_literals: []
+    fix_if: A wrong exit code or an unnamed finding -> fix main().
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: plan-fork-line-cli
+  - step: 9
     phase: pre-deploy
     action: The contract's new coverage rows and record_grammar pointer rules are pinned, and the check runs in both tiers.
     command: bin/venv-python -m pytest tests/test_plan_fork_classification_contract.py::TestForkLineCheckCoverage -q
@@ -246,7 +264,7 @@ verification_plan:
     hermetic: true
     graduation: graduate
     graduation_check_id: plan-fork-classification-coverage-rows
-  - step: 9
+  - step: 10
     phase: pre-deploy
     action: The existing contract-shape and project-alignment tests still pass on the amended contract.
     command: bin/venv-python -m pytest tests/test_plan_fork_classification_contract.py tests/test_project_alignment_contract.py -q
@@ -256,7 +274,7 @@ verification_plan:
     hermetic: false
     graduation: waive
     graduation_waiver_reason: Whole-file re-run of files this plan modifies; they already run in every --pre that touches them.
-  - step: 10
+  - step: 11
     phase: pre-deploy
     action: Real-data discrimination and dogfood.
     command: >-
@@ -273,30 +291,38 @@ verification_plan:
       its context fork lines only if the failure is a typo against the approved text, else STOP and escalate.
     hermetic: false
     graduation: waive
-    graduation_waiver_reason: Pins one historical plan's text as a one-time real-data proof; the standing guards are steps 1-6.
-  - step: 11
+    graduation_waiver_reason: Pins one historical plan's text as a one-time real-data proof; the standing guards are steps 1-9.
+  - step: 12
     phase: pre-deploy
-    action: The branch's own diff passes the new check, and the contract stays under its size cap.
+    action: >-
+      The branch's own diff passes the new check, the contract stays under its size cap, and the contract diff is exactly
+      APPROVED_CONTRACT's size (25 lines added, 28 removed, measured by applying it to main c7dca7bd).
     command: >-
       bin/venv-python -m scripts.checks.roadmap.validate_plan_fork_lines && bin/venv-python -c "from
       scripts.checks.structural.size_limits import validate_structural_size_limits as v; f=[]; v(f); assert not f, f"
-    expected: Exit 0 from both, no FAIL line.
+      && test "$(git diff --numstat "$(git merge-base origin/main HEAD)" -- docs/contracts/overseer-dispatch.yaml | cut
+      -f1,2)" = "$(printf '25\t28')"
+    expected: Exit 0 from all three, no FAIL line.
     expected_literals: []
-    fix_if: The contract is over 500 effective lines -> it differs from APPROVED_CONTRACT; never raise the budget.
+    fix_if: >-
+      Over 500 effective lines, or another numstat -> the contract differs from APPROVED_CONTRACT (an extra or missing
+      line); restore the approved text, never raise the budget.
     hermetic: false
     graduation: waive
-    graduation_waiver_reason: Depends on this branch's diff; both registered checks run on every PR.
-  - step: 12
+    graduation_waiver_reason: Depends on this branch's diff; both registered checks run on every PR, and VP 9 pins the contract tokens.
+  - step: 13
     phase: pre-deploy
-    action: Full validation before handoff.
-    command: bin/venv-python -m scripts.validate
-    expected: Exit 0.
+    action: Full validation before handoff, attested for the pushed HEAD.
+    command: bin/venv-python -m scripts.validate && bin/venv-python -m scripts.checks.validation_result --verify-head
+    expected: Exit 0; --verify-head attests HEAD.
     expected_literals: []
-    fix_if: Any failure -> fix on the branch and rerun from the start.
+    fix_if: >-
+      Any failure in scope -> fix on the branch and rerun from the start; never skip a test or relax an assertion. A
+      failure outside scope becomes a rec via scripts.ops_data_portal (Decision 59, 55).
     hermetic: false
     graduation: waive
     graduation_waiver_reason: Invokes scripts.validate (recursion refusal); it is the handoff gate itself.
-  - step: 13
+  - step: 14
     phase: post-deploy
     action: rec-3530 superseded by rec-4786; rec-4786 open.
     command: >-
@@ -326,26 +352,37 @@ test_obligations:
     red_green_expectation: red before (file absent), green after
   - source: scripts/checks/roadmap/validate_plan_fork_lines.py
     behavior: >-
-      The check reads only the diff plans, the contract, the index, cited contracts and one plan per answered-fork
-      pointer, through the seams only, with no listing, git call or direct file open.
+      run_check, the engine and the registered entrypoint read only the diff plans, the contract, the index, cited
+      contracts and one plan per answered-fork pointer, with no listing, and the entrypoint enumerates only through
+      get_status_aware_diff.
     verification_step: 5
     test_selector: tests/checks/roadmap/test_validate_plan_fork_lines.py::TestBoundedReads
     red_green_expectation: red before (file absent), green after
+  - source: scripts/checks/roadmap/validate_plan_fork_lines.py
+    behavior: An unreachable base is a loud skip, an empty diff is examined(0), and an unparseable head plan is a WARN.
+    verification_step: 7
+    test_selector: tests/checks/roadmap/test_validate_plan_fork_lines.py::TestAccounting
+    red_green_expectation: red before (file absent), green after
+  - source: scripts/roadmap/plan_fork_lines.py
+    behavior: The CLI exits 1 with a named finding on a bad plan and 0 on a good one.
+    verification_step: 8
+    test_selector: tests/test_plan_fork_lines.py::TestCli
+    red_green_expectation: red before (file absent), green after
   - source: docs/contracts/overseer-dispatch.yaml
     behavior: The coverage rows name a registered check and the successor owner, and record_grammar carries the pointer rules.
-    verification_step: 8
+    verification_step: 9
     test_selector: tests/test_plan_fork_classification_contract.py::TestForkLineCheckCoverage
     red_green_expectation: red before (class absent), green after
   - source: scripts/checks/roadmap/_manifest.py
     behavior: The new Entry places validate_plan_fork_lines in both pre_sequence() and full_sequence().
-    verification_step: 8
+    verification_step: 9
     test_selector: tests/test_plan_fork_classification_contract.py::TestForkLineCheckCoverage
     red_green_expectation: red before (the name is in neither sequence), green after
   - source: config/ci_rca_taxonomy.yaml
     behavior: The new check maps to a failure category.
-    verification_step: 12
+    verification_step: 13
     command: bin/venv-python -m scripts.validate
-    waiver_reason: validate_ci_rca_taxonomy fails on a registered check with no taxonomy row; step 12 runs it.
+    waiver_reason: validate_ci_rca_taxonomy fails on a registered check with no taxonomy row; step 13 runs it.
 constraints:
   - >-
     Every scope file stays under 500 SLOC (Decision 128); a Create file that would exceed it is not split into an
@@ -386,11 +423,12 @@ context:
   - "fork: where the code lives | chosen: pure engine in scripts/roadmap/plan_fork_lines.py, thin registered check in scripts/checks/roadmap/validate_plan_fork_lines.py | class: consistency-only | precedent: Decision 104 (domain helpers stay in their domain; the journal writer is not a check) | precedent_kind: decision | reversible: yes | persisted: plan scope"
   - "fork: rule source for the field names and enums | chosen: record_grammar stays the source; the check asserts the engine constants equal its template on every run | class: consistency-only | precedent: Decision 169 (derive-and-assert) | precedent_kind: decision | reversible: yes | persisted: the check"
   - "fork: whether to file a numbered Decision | chosen: no; the coverage rows are contract content | class: consistency-only | precedent: docs/contracts/decision-entry.yaml#significance.routing_rule | precedent_kind: contract | reversible: yes | persisted: plan context"
-  - "fork: what counts as a superseded Decision | chosen: currency superseded_compacted, or a retired row whose status starts Superseded, fails naming its successor; currency superseded_pointer (Decision 80 today) only warns | class: consistency-only | precedent: docs/contracts/decision-entry.yaml#currency.consumer_contract (only superseded_compacted may remove an entry from a consumer's active set) | precedent_kind: contract | reversible: yes | persisted: the engine"
+  - "fork: what counts as a superseded Decision | chosen: currency superseded_compacted, or a retired row whose status starts Superseded, fails naming its successor; currency superseded_pointer (Decision 80 today) only warns | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: the engine"
 gate_rounds:
   - {gate: decision-scout, round: 1, verdict: FLAGS_FOUND}
   - {gate: plan-critique, round: 1, verdict: REVISE, blocking: 8, nits: 2}
   - {gate: plan-critique, round: 2, verdict: REVISE, blocking: 3, nits: 6}
+  - {gate: plan-critique, round: 3, verdict: REVISE, blocking: 4, nits: 6}
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -400,18 +438,21 @@ pre_implementation_checklist:
 execution_steps:
   - >-
     Confirm the checklist. STOP if docs/contracts/overseer-dispatch.yaml's residual row or record_grammar differs from
-    the OLD text quoted in APPROVED_CONTRACT (main b91b6b0f), or if rec-4786 is not open.
-  - Write the red tests first (steps 1-6 and 8 nodes) and confirm each fails for the stated reason.
+    the OLD text quoted in APPROVED_CONTRACT (main c7dca7bd), or if rec-4786 is not open.
+  - Write the red tests first (steps 1-9 nodes) and confirm each fails for the stated reason.
   - scripts/roadmap/plan_fork_lines.py, then scripts/checks/roadmap/validate_plan_fork_lines.py, as scoped.
-  - Manifest Entry, taxonomy row, and the seven graduated registry shards (steps 1-6 and 8) per the Verification Graduation walk.
+  - Manifest Entry, taxonomy row, and the nine graduated registry shards (steps 1-9) per the Verification Graduation walk.
   - Land APPROVED_CONTRACT verbatim (the date only may vary) and add TestForkLineCheckCoverage.
-  - Execute VP steps 1-12; loop until pass; never weaken an assertion.
-  - Code review via a fresh code-review subagent; fix blocking findings and rerun steps 1-12.
+  - Execute VP steps 1-13; loop until pass; never weaken an assertion.
+  - Code review via a fresh code-review subagent; fix blocking findings and rerun steps 1-13.
   - >-
-    Closure per the implement skill and docs/contracts/git-ops.yaml: implementation_declared true, rebase, step 12 on
-    the committed clean tree, PR, subscribe; squash-merge on code review PROCEED and green CI with no Resolves trailer
-    for rec-3530 (its acceptance grep stays non-zero by design).
-  - 'After merge, run APPROVED_REC_UPDATE (variance: PR number and merge sha only), then VP step 13.'
+    Closure evidence, recorded as four SEPARATE facts (implement skill Commit Flows; docs/contracts/git-ops.yaml):
+    GitHub readiness state (bin/venv-python -m scripts.session.github_readiness; unknown is never PASS); parent
+    validator evidence (VP step 13 on the committed, rebased, clean tree, its --verify-head attesting the pushed HEAD);
+    structured postflight evidence (bin/venv-python -m scripts.session.postflight --evidence <file>); the real outcome --
+    push, PR, subscribe, CI green by event-driven wake (never polled), code review PROCEED, squash-merge with no
+    Resolves trailer for rec-3530 (its acceptance grep stays non-zero by design).
+  - 'After merge, run APPROVED_REC_UPDATE (variance: PR number and merge sha only), then VP step 14.'
   - |-
     APPROVED_CONTRACT (approved by Benjamin 2026-10-30; land verbatim in docs/contracts/overseer-dispatch.yaml; allowed
     variance: <landing date> becomes the merge-day date. Each OLD block must match exactly once, else STOP).
@@ -485,7 +526,8 @@ execution_steps:
               Narrowed from rec-3530: judgement, so no check closes it. The alignment sign-off is where it is caught today,
               since the human sees every decided-with-notice line before confirming; plan-critique has no
               fork-classification item and /implement's deviation trigger does not read fork lines.
-    No other line changes. Result: 495 effective lines on main b91b6b0f, counted by
+    No other line changes (VP step 12 pins 25 added and 28 removed). Result: 495 effective lines on main c7dca7bd,
+    counted by
     scripts.checks.structural._classify.effective_lines. If main has moved the file past 500 after the change, STOP
     and report; never raise the budget.
   - |-
