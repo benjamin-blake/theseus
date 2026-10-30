@@ -22,13 +22,13 @@ scope:
   purpose: 'On main, block Edit/Write/MultiEdit/NotebookEdit only when the target (tool_input file_path, or notebook_path) resolves
     via os.path.realpath inside the repo top-level (git rev-parse --show-toplevel, realpath''d, run in the hook''s cwd). Keep blocking
     when the target key is missing or the top-level cannot be determined. Bash git commit/push handling and the fail-open-on-malformed-JSON
-    branch are unchanged; the module docstring states the path scope, and its three em dashes become ASCII hyphens (AGENTS.md code
-    style). Only computes the path when the branch is main. Deny message: the first line and the ''verify with: git branch --show-current''
-    and ''See docs/contracts/git-ops.yaml ...'' lines stay; the line naming ''a harness-assigned claude/ session branch'' becomes
-    ''the harness-assigned session branch'' (rec-4267''s hook site); the two lines ''If the result is still main, create a new
-    branch before retrying: git checkout -b claude/your-slug'' become one line telling the agent to stop and tell the operator,
-    since agents never create their own branch (AGENTS.md Branching). The file must keep the literal git-ops.yaml and must not
-    contain the literal AGENTS.md (graduated registry check hooks-name-git-ops-contract).'
+    branch are unchanged; the module docstring states the path scope, and the file''s three em dashes (two in the docstring, one
+    in a comment) become ASCII hyphens (AGENTS.md code style). Only computes the path when the branch is main. Deny message: the
+    first line and the ''verify with: git branch --show-current'' and ''See docs/contracts/git-ops.yaml ...'' lines stay; the line
+    naming ''a harness-assigned claude/ session branch'' becomes ''the harness-assigned session branch'' (rec-4267''s hook site);
+    the two lines ''If the result is still main, create a new branch before retrying: git checkout -b claude/your-slug'' become
+    one line telling the agent to stop and tell the operator, since agents never create their own branch (AGENTS.md Branching).
+    The file must keep the literal git-ops.yaml and must not contain the literal AGENTS.md (graduated registry check hooks-name-git-ops-contract).'
 - file: tests/hooks/test_never_on_main.py
   action: Create
   purpose: 'Subprocess tests of the hook with CLAUDE_HOOK_BRANCH_OVERRIDE: on main, Write/Edit/MultiEdit/NotebookEdit to a tmp_path
@@ -104,12 +104,15 @@ verification_plan:
   action: Approved text landed verbatim.
   command: bin/venv-python -c "import yaml,pathlib; p=yaml.safe_load(open('docs/plans/PLAN-agent-instruction-rules.yaml')); a=pathlib.Path('AGENTS.md').read_text(encoding='utf-8');
     b=[s.split(chr(10),1)[1].rstrip(chr(10)) for s in p['execution_steps'] if s.startswith('AGENTS.md verbatim block')]; miss=[i+1
-    for i,x in enumerate(b) if x not in a]; assert len(b)==9 and not miss, miss; assert '**Branch rule**' not in a; print('VERBATIM_OK',
-    len(b))"
+    for i,x in enumerate(b) if x not in a]; old=['**Branch rule**','Other Bash commands (e.g.','surfaces eligible work, CI-RCA
+    triage','Source-of-truth by table','CC-web commits ARE SSH-signed','Lambda-packaged','Do **not** write to the auto-memory system','deliberately
+    not installed in either container']; left=[o for o in old if o in a]; assert len(b)==9 and not miss, miss; assert not left,
+    left; print('VERBATIM_OK', len(b))"
   expected: Prints VERBATIM_OK 9.
   expected_literals:
   - VERBATIM_OK 9
-  fix_if: A block is missing or differs -- copy it again from execution_steps; never reword approved text.
+  fix_if: A block is missing or differs, or an old-text sentinel is left -- copy the block again from execution_steps and remove
+    the replaced text; never reword approved text yourself (constraint 1's amendment path).
   hermetic: true
   graduation: waive
   graduation_waiver_reason: Bound to this plan's own execution_steps; once merged, step 2's guard, the AGENTS.md-reading tests
@@ -218,8 +221,10 @@ test_obligations:
     and after; step 4 records the ratchet.
 constraints:
 - 'AGENTS.md text is operator-approved verbatim (public surface, always-ask): apply the blocks exactly. A wording amendment that
-  keeps the meaning is pre-approved (context: standing ruling) but must be listed in the PR body; a change of meaning needs Benjamin''s
-  word again.'
+  keeps the meaning is pre-approved (context: standing ruling); it is made by updating the matching execution_steps block (so VP
+  3 stays the oracle), applying that block, and listing the amendment in the PR body and to Benjamin. The implementer never rewords
+  on its own judgement: on a failing pin it stops and reports, and the lead session decides whether a meaning-preserving amendment
+  fixes it. A change of meaning needs Benjamin''s word again.'
 - 'Prose budget: decrease only; no raise marker (Decision 128/165 discipline).'
 - Root CLAUDE.md stays exactly '@AGENTS.md' (Decision 139, validate_claude_md_pointer_invariant).
 - Do not edit Decision 76's body for the gh correction (Decision 177 append-only).
@@ -251,7 +256,9 @@ context:
   he rules: block 8 stands, rec-3039 (overseer-dispatch.yaml) owns reconciling the overseer contract, rec-2960 the implement skill.
   Both carry a dated note saying so (update_rec 2026-10-30, read back): rec-3039''s ''full validate finishes inside the 600s cap''
   holds for --pre only, and its fix must not add a subagent-side full-tier background run unless the narrowing option is picked.
-  Plan A edits overseer-dispatch.yaml this wave but bundles neither rec. A different ruling changes block 8 before this plan merges.'
+  Plan A edits overseer-dispatch.yaml this wave but bundles neither rec. Dispositions: option 0 (keep) - nothing changes and this
+  line records the ruling; option 1 (narrow) - the planner updates execution_steps block 8 and re-runs VP 3 before this plan merges;
+  option 2 (overseer carve-out) - back to /plan and re-critique, since it grows scope into overseer-dispatch.yaml.'
 - Block 3 names memory among outside-repo writes on purpose (IAM-F04 was a refused project-memory write); block 5's ban is the
   ~/.claude auto-memory store only.
 - 'Measured on the planning draft at 87e0a790: AGENTS.md 18891 -> 16944 B (S1 total 18902 -> 16955, budget 18935 -> 17255); all
