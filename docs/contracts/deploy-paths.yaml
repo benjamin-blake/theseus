@@ -328,12 +328,12 @@ admin_out_of_band:
       LOGINS) and invoke ducklake_maintenance's provision_telemetry_login only under explicit human direction
       (never self-directed), presenting each mutation and executing it only after the human accepts.
       The password is never displayed, logged or written to disk; no step prints a host, DSN or
-      password. This is the one home for the procedure (agent-led procedures are procedure blocks in the
+      password. Until secrets-to-ssm-retire, mutation 1 writes the SSM parameter and then the same value to the old secret (so a revert stays valid); a failed second write is a STOP: re-run mutation 1 whole before mutation 2. This is the one home for the procedure (agent-led procedures are procedure blocks in the
       owning contract); ducklake_maintenance.yaml's verb entry points here. No container has TCP/5432
       egress, so the migration, the password set and the reach check all run inside the maintenance Lambda.
     procedure:
       mutation_1_write_secret: |-
-        AWS_DEFAULT_REGION=eu-west-2 LOGIN=$LOGIN bin/venv-python -c "import json,os,secrets,boto3;from src.common import ducklake_runtime as rt;from src.lambdas.ducklake_maintenance import catalog_logins as cl;o=rt.fetch_dsn(profile='agent_platform_admin');L=os.environ['LOGIN'];v={'host':o['host'],'dbname':o['dbname'],'sslmode':'require','username':L};v['pass'+'word']=secrets.token_urlsafe(32);boto3.Session(profile_name='agent_platform_admin',region_name='eu-west-2').client('ssm').put_parameter(Name=cl.LOGINS[L].parameter_name,Value=json.dumps(v),Type='SecureString',Overwrite=True);print('PARAMETER_WRITTEN',L)"
+        AWS_DEFAULT_REGION=eu-west-2 LOGIN=$LOGIN bin/venv-python -c "import json,os,secrets,boto3;from src.common import ducklake_runtime as rt;from src.lambdas.ducklake_maintenance import catalog_logins as cl;o=rt.fetch_dsn(profile='agent_platform_admin');L=os.environ['LOGIN'];v={'host':o['host'],'dbname':o['dbname'],'sslmode':'require','username':L};v['pass'+'word']=secrets.token_urlsafe(32);S=boto3.Session(profile_name='agent_platform_admin',region_name='eu-west-2');N=cl.LOGINS[L].parameter_name;S.client('ssm').put_parameter(Name=N,Value=json.dumps(v),Type='SecureString',Overwrite=True);S.client('secretsmanager').put_secret_value(SecretId=N.removeprefix('/secret/'),SecretString=json.dumps(v));print('SECRET_WRITTEN',L)"
       mutation_2_invoke: |-
         P="${TMPDIR:-/tmp}/provision.json" && AWS_MAX_ATTEMPTS=1 aws lambda invoke --profile agent_platform_admin --region eu-west-2 --cli-read-timeout 300 --function-name agent-platform-ducklake-maintenance --cli-binary-format raw-in-base64-out --payload '{"action":"provision_telemetry_login","confirm":"'$LOGIN'"}' "$P" > /dev/null
       check_result: |-

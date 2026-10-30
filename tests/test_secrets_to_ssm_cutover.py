@@ -147,10 +147,12 @@ class TestSecretsToSsmCutover:
         assert "/secret/neon-api-key" in neon
         assert "/secret/agent-platform-terraform-personal-tfvars" in tfvars
 
-    def test_deploy_paths_login_procedure_writes_the_parameter(self) -> None:
+    def test_deploy_paths_login_procedure_writes_the_parameter_then_the_old_secret(self) -> None:
         doc = yaml.safe_load(_text("docs/contracts/deploy-paths.yaml"))
         step = doc["admin_out_of_band"]["scoped_login_provisioning"]["procedure"]["mutation_1_write_secret"]
-        assert "put_parameter" in step and "SecureString" in step and "put_secret_value" not in step
+        assert "put_parameter" in step and "SecureString" in step
+        assert step.index("put_parameter") < step.index("put_secret_value") < step.index("SECRET_WRITTEN")
+        assert "removeprefix('/secret/')" in step
 
 
 class TestRedCases:
