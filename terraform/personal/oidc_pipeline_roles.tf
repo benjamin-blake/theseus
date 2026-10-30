@@ -170,8 +170,9 @@ data "aws_iam_policy_document" "github_ci_planner" {
     effect  = "Allow"
     actions = ["lambda:InvokeFunctionUrl", "lambda:GetFunctionUrlConfig"]
     resources = [
-      aws_lambda_function.ducklake_writer.arn,
-      "${aws_lambda_function.ducklake_writer.arn}:*",
+      # rec-4685: name Lambdas by built ARN, not resource reference; a reference defers this document read to apply whenever the Lambda changes.
+      "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:${local.ducklake_writer_function}",
+      "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:${local.ducklake_writer_function}:*",
     ]
   }
 
@@ -182,8 +183,8 @@ data "aws_iam_policy_document" "github_ci_planner" {
     effect  = "Allow"
     actions = ["lambda:InvokeFunction"]
     resources = [
-      aws_lambda_function.ducklake_writer.arn,
-      "${aws_lambda_function.ducklake_writer.arn}:*",
+      "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:${local.ducklake_writer_function}",
+      "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:${local.ducklake_writer_function}:*",
     ]
     condition {
       test     = "Bool"
