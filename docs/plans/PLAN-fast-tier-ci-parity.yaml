@@ -40,9 +40,11 @@ scope:
       VIRTUAL_ENV removed; every AWS_* variable removed except AWS_REGION and AWS_DEFAULT_REGION (CI's pr-validate
       exports both via .github/actions/aws-region; F5), and AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE pointed at
       os.devnull (CI's pr-validate job has no credentials; Benjamin 2026-10-30). CI is never set. (3)
-      reexec_pre_if_needed(argv, environ) returns without action when "--pre" is not in argv, "--full-env" is in argv,
-      CI == "true", PYTEST_CURRENT_TEST is set, _VALIDATE_DEPTH >= 1, or OTL_FAST_TIER_ENV already equals the current
-      fp; otherwise prints one banner line ("CI-parity: running --pre in the CI-shaped fast-tier environment <path>; it
+      reexec_pre_if_needed(argv, environ) returns without action when "--pre" is not in argv, "--full-env" or
+      "--ignore-budget" is in argv (the bypass is an emergency escape whose audit rec must still reach the portal, which
+      the credential-free child cannot do -- critique round 3 F1; validate.py prints FULL_ENV_BANNER for it too), CI ==
+      "true", PYTEST_CURRENT_TEST is set, _VALIDATE_DEPTH >= 1, or OTL_FAST_TIER_ENV is set to any value (a presence
+      test, so a run crossing 00:00 UTC never re-execs a second time -- round 3 F3); otherwise prints one banner line ("CI-parity: running --pre in the CI-shaped fast-tier environment <path>; it
       predicts PR CI's fast tier only, not the full tier"; <path> is the env python), flushes sys.stdout and sys.stderr (execve discards
       block-buffered output on a pipe; F8), chdirs to the repo root (PYTHONPATH is scrubbed, so `-m scripts.validate`
       needs cwd at the root; F9) and os.execve's [env python, "-m", "scripts.validate", *argv[1:]] -- on os.name == "nt", where exec does not
@@ -58,7 +60,8 @@ scope:
     action: Create
     purpose: >-
       Unit tests (no network, no real install; the builder's subprocess runner and os.execve are injected/monkeypatched):
-      TestReexecDecision (every no-op condition; the execve argv is argv[1:]-based for both `validate` and
+      TestReexecDecision (every no-op condition, including --ignore-budget and an OTL_FAST_TIER_ENV value from a
+      previous UTC date; the execve argv is argv[1:]-based for both `validate` and
       `scripts/validate.py` argv[0]; cwd is the repo root; the banner text; the FastTierEnvError and HarnessError exit-1
       path naming --full-env), TestBannerSurvivesExec (a real subprocess whose stdout is a pipe runs a tiny script that
       prints a line and calls the module's flush-then-execve helper into `python -c pass`; the parent reads the line --
@@ -80,9 +83,12 @@ scope:
       (tests/validate/test_budget.py and siblings, tests/checks/registry/test_resolution.py) drive main() with --pre
       while stripping every environment guard, and would otherwise build an env and execve the pytest worker away
       (critique F1). argparse gains `--full-env` (help: run --pre in the current interpreter instead of the CI-shaped
-      environment; the result does not predict PR CI), and when args.pre and args.full_env main() prints
-      fast_tier_env.FULL_ENV_BANNER. No other behaviour change; --pre's help text says a run outside GitHub Actions
-      re-executes in the CI-shaped environment. Net additions stay under 15 lines (SLOC 468 today, cap 500; Decision
+      environment; the result does not predict PR CI), and when args.pre and (args.full_env or args.ignore_budget)
+      main() prints fast_tier_env.FULL_ENV_BANNER. The ArgumentParser gets allow_abbrev=False, so an abbreviated
+      "--pr" or "--full-e" cannot slip past the hook's literal argv match (round 3 F5). --pre's help text says a run
+      outside GitHub Actions re-executes in the CI-shaped environment. Other behaviour change, disclosed: inside the
+      credential-free child (which also lacks radon) a budget-breach rec is not filed -- the portal write fails into its
+      existing caught warning; CI's breach record in the uploaded selection manifest is unaffected (Benjamin's fork 1). Net additions stay under 15 lines (SLOC 468 today, cap 500; Decision
       128); added lines covered by tests/validate/test_ci_parity_flag.py (config/coverage_baseline.yaml entry 73.0 must
       not drop).
   - file: tests/validate/test_ci_parity_flag.py
@@ -91,12 +97,14 @@ scope:
       TestEntrypoint (_entrypoint calls reexec_pre_if_needed with sys.argv and os.environ, then main, in that order --
       both patched), TestMainNeverReexecs (main() under argv ["validate", "--pre"] with _VALIDATE_DEPTH=0 and
       PYTEST_CURRENT_TEST/CI removed, using test_budget.py's stub pattern, never calls reexec_pre_if_needed),
-      TestFullEnvBanner (main() under ["validate", "--pre", "--full-env"] prints FULL_ENV_BANNER; under ["validate",
-      "--pre"] it does not).
+      TestFullEnvBanner (main() under ["validate", "--pre", "--full-env"] and under ["validate", "--pre",
+      "--ignore-budget"] prints FULL_ENV_BANNER; under ["validate", "--pre"] it does not; an abbreviated "--pr" is
+      rejected by argparse).
   - file: bin/venv-python
     action: Modify
     purpose: >-
-      Honour OTL_VENV_PYTHON first: when set, exec it if it is an executable file, else print "ERROR: OTL_VENV_PYTHON
+      Honour OTL_VENV_PYTHON right after the existing missing-script guard (so a missing hook script still exits 1, never
+      Python's 2, which Claude Code reads as a hook block -- round 3 F4) and before the .venv probe: when set, exec it if it is an executable file, else print "ERROR: OTL_VENV_PYTHON
       is set but not executable: <path>" and exit 1 (fail loud; never fall through to .venv or the PATH fallback). Unset
       leaves today's .venv-then-fallback logic byte-for-byte unchanged. Header comment gains one paragraph naming the
       CI-parity re-exec as the only setter.
@@ -104,7 +112,7 @@ scope:
     action: Modify
     purpose: >-
       New class TestVenvPythonOverride: override wins over a present .venv; a non-executable override exits 1 with the
-      error text and does not run .venv; unset override keeps .venv resolution (regression). A module-level autouse
+      error text and does not run .venv; unset override keeps .venv resolution (regression); a missing .py script under the override still exits 1. A module-level autouse
       fixture delenvs OTL_VENV_PYTHON and OTL_FAST_TIER_ENV for every test (covering tests that pass no env= and inherit
       os.environ implicitly, and helpers that copy it), so the existing fallback and fail-loud tests stay meaningful when
       they run inside the CI-parity child (round 1 F16, completed in round 2 F4); TestVenvPythonOverride sets the
@@ -390,16 +398,38 @@ verification_plan:
     expected_literals: ["passed"]
     graduation: graduate
     graduation_check_id: validate-main-never-reexecs
+  - step: 13
+    phase: pre-deploy
+    action: Run TestFullEnvBanner (the test file does not exist today, pytest exit 4).
+    command: bin/venv-python -m pytest tests/validate/test_ci_parity_flag.py::TestFullEnvBanner -q
+    expected: exit 0, the class passes.
+    fix_if: A banner missing or an abbreviation accepted -- fix validate.py's argparse and banner branch.
+    hermetic: true
+    expected_literals: ["passed"]
+    graduation: waive
+    graduation_waiver_reason: >-
+      A banner string and an argparse flag; step 12's graduated row already guards the same test module's entry-point
+      contract, and a second row for user-facing text would add churn without guarding a regression class.
 test_obligations:
   - source: scripts/checks/deps/fast_tier_env.py
-    behavior: Agent-container --pre re-executes in a CI-shaped env exactly when it should, fails loud when the env cannot be built, and installs the same file sequence as CI.
+    behavior: Agent-container --pre re-executes in a CI-shaped env exactly when it should and fails loud when the env cannot be built.
     verification_step: 1
     test_selector: tests/checks/deps/test_fast_tier_env.py::TestReexecDecision
     red_green_expectation: red before (module and test absent, exit 4), green after.
   - source: scripts/validate.py
-    behavior: Only the module entry point re-execs (main() never does), and --full-env prints the not-CI-predictive banner.
+    behavior: Only the module entry point re-execs; main() never does.
     verification_step: 12
     test_selector: tests/validate/test_ci_parity_flag.py::TestMainNeverReexecs
+    red_green_expectation: red before (test file absent, exit 4), green after.
+  - source: scripts/checks/deps/fast_tier_env.py
+    behavior: The env builder installs the same requirements files, in the same order, as ci.yml's pr-validate job.
+    verification_step: 2
+    test_selector: tests/checks/deps/test_fast_tier_env.py::TestInstallSequenceMatchesCi
+    red_green_expectation: red before (module and test absent, exit 4), green after.
+  - source: scripts/validate.py
+    behavior: --full-env and --ignore-budget print the not-CI-predictive banner; abbreviations are rejected.
+    verification_step: 13
+    test_selector: tests/validate/test_ci_parity_flag.py::TestFullEnvBanner
     red_green_expectation: red before (test file absent, exit 4), green after.
   - source: config/ci_rca_taxonomy.yaml
     behavior: The new check has its category row.
@@ -479,6 +509,7 @@ context:
   - Gotcha - graduation worktrees symlink .venv; the OTL_VENV_PYTHON override is what keeps their subprocesses CI-shaped.
   - Fargate (future agent containers) - parity triggers on CI unset; the first build needs package-index access or a uv cache baked into the image (warm build 3 s).
   - Gotcha - config/ci_rca_taxonomy.yaml is a shared append with plan C; rebase keeps both rows.
+  - Decision 148 point 2's resolution order gains OTL_VENV_PYTHON ahead of .venv (fail-loud tail kept); a dated amendment note on 148 is left for a Decision-text pass with Benjamin (round 3 F6, informational; DECISIONS.md is always-ask).
   - --full-env is not a third tier (Decision 153 point 4) - same pre sequence, scope, budget and advisory role; only the interpreter differs.
   - The audit harness keeps its own ensure_fast_environment (combined install, audit-corpus semantics); unifying it is out of scope (critique F12, informational).
   - "fork: run --pre CI-shaped by default in the agent container (CI unset) vs an opt-in flag | chosen: default | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: this plan (Benjamin, write the plan, 2026-10-30)"
