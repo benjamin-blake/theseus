@@ -28,13 +28,16 @@ scope:
       module constant INSTALL_REQUIREMENTS =
       ("requirements-fast.txt", "requirements-dev.txt"), installed as two sequential installs in that order, as ci.yml's
       pr-validate step does; uv (`uv venv --python sys.executable`, `uv pip install --python <env python> -r <file>`)
-      when `uv` is on PATH, else `sys.executable -m venv` + `<env python> -m pip install -r <file>`. Build in a staging
-      dir beside the target and rename atomically; when the rename raises OSError with errno EEXIST or ENOTEMPTY (Linux
-      raises ENOTEMPTY, not FileExistsError, for a non-empty target -- critique round 2 F2) a concurrent builder won:
-      remove the staging dir and reuse the target when its .ready matches the fingerprint. On success prune only sibling
-      fingerprint dirs whose .ready file is more than 24 hours old, so an env another worktree or session is running
-      from today is never deleted (F11; disk is a fixed per-session allowance), and staging dirs older than 24 hours by
-      mtime (left by killed builds). Raises FastTierEnvError naming the
+      when `uv` is on PATH, else `sys.executable -m venv` + `<env python> -m pip install -r <file>`. Build IN PLACE
+      at the fingerprint path, never in a staging dir that is renamed: uv and pip write console scripts (lint-imports,
+      pytest, mypy, pre-commit) with an absolute shebang naming the install-time interpreter, so a renamed env's scripts
+      exit 127 and validate_import_contracts (scripts/import_governance.py runs <env>/bin/lint-imports) would fail every
+      parity run (critique round 4 J1, reproduced). Concurrency: hold an exclusive lock file <cache>/<fp>.lock
+      (fcntl.flock; msvcrt.locking on Windows) for the whole check-build-stamp sequence; .ready is written last; a dir
+      whose .ready does not match the fingerprint is incomplete (a killed build) and is removed and rebuilt under the
+      lock; a waiter that acquires the lock after a winner finished sees a matching .ready and reuses it. On success
+      prune only sibling fingerprint dirs whose .ready is more than 24 hours old and whose lock is not held, so an env
+      another worktree or session is running from today is never deleted (F11; disk is a fixed per-session allowance). Raises FastTierEnvError naming the
       failed command and its output. (2) child_env(environ, env_python) returns the re-exec environment: PATH prefixed
       with the env's bin dir; OTL_VENV_PYTHON=<env python>; OTL_FAST_TIER_ENV=<fp>; PYTHONPATH, PYTHONHOME and
       VIRTUAL_ENV removed; every AWS_* variable removed except AWS_REGION and AWS_DEFAULT_REGION (CI's pr-validate
@@ -68,8 +71,11 @@ scope:
       proves the flush, which monkeypatched execve cannot), TestChildEnv (PATH prefix, override var, marker, scrubbed
       vars, credential stripping with AWS_REGION and AWS_DEFAULT_REGION kept), TestEnvBuild (uv path, pip fallback path,
       two sequential installs in INSTALL_REQUIREMENTS order, staging rename, cache reuse on matching .ready, date-bucketed
-      fingerprint, prune only siblings older than 24 hours and stale staging dirs, a concurrent winner (rename raises
-      ENOTEMPTY; the loser reuses the target), failure leaves no target dir), TestWindowsReexec (os.name patched to "nt":
+      fingerprint, prune only unlocked siblings older than 24 hours, lock contention (a second builder blocks, then
+      reuses the winner's env), an incomplete dir without a matching .ready is rebuilt, failure leaves no .ready), TestConsoleScriptsRunFromFinalPath
+      (a real uv-built or venv-built env in tmp_path with one small console-script package installed from the local uv/pip
+      cache or skipped with a loud reason when no installer is available: <env>/bin/<script> --help exits 0 from the
+      final path), TestWindowsReexec (os.name patched to "nt":
       subprocess.run is called with the child env and cwd, and the exit code propagates; execve is never called), TestInstallSequenceMatchesCi (parses
       .github/workflows/ci.yml with yaml.safe_load, takes the pr-validate job's step named "Install fast-tier
       dependencies only", extracts the ordered `-r <file>` arguments of its pip install lines, and asserts they equal
@@ -143,7 +149,8 @@ scope:
     action: Create
     purpose: >-
       Mirror test (Decision 131 name). Fixture repos under tmp_path: TestFlagsGuardedTarget (module-level importorskip,
-      bare importorskip, module-level import, conftest-level guard -- each flagged with the message fields),
+      bare importorskip, module-level import, conftest-level guard, and a file::Class::test node selector on a guarded file
+      -- each flagged with the message fields),
       TestPassesUnguardedTarget (function-scope importorskip, guard on a name present in CI such as boto3, hermetic false
       step, post-deploy step, non-pytest command, selector file absent, implementation_declared true plan, a MODIFIED
       (not added) legacy plan whose step targets a guarded file, a chained command whose non-pytest segment names a guarded
@@ -192,6 +199,12 @@ scope:
   - file: config/agent/verification_registry/entries/validate-main-never-reexecs.yaml
     action: Create
     purpose: Graduation row for VP step 12 (test_selector, node tests/validate/test_ci_parity_flag.py::TestMainNeverReexecs, guard_target scripts/validate.py).
+  - file: config/agent/verification_registry/entries/validate-full-env-banner.yaml
+    action: Create
+    purpose: Graduation row for VP step 13 (test_selector, node tests/validate/test_ci_parity_flag.py::TestFullEnvBanner, guard_target scripts/validate.py).
+  - file: config/agent/verification_registry/entries/fast-tier-env-child-env.yaml
+    action: Create
+    purpose: Graduation row for VP step 14 (test_selector, node tests/checks/deps/test_fast_tier_env.py::TestChildEnv, guard_target scripts/checks/deps/fast_tier_env.py).
   - file: docs/plans/PLAN-fast-tier-ci-parity.yaml
     action: Modify
     purpose: Implementing-plan bookkeeping only (implementation_declared true at handoff).
@@ -294,6 +307,7 @@ verification_plan:
       test "$(OTL_VENV_PYTHON="$P" bin/venv-python -c 'import sys; print(sys.executable)')" = "$P" &&
       { "$P" -m pytest tests/telemetry/test_append.py -q; test $? -eq 5; } &&
       bin/venv-python -m pytest tests/telemetry/test_append.py -q &&
+      "$(dirname "$P")/lint-imports" --help >/dev/null &&
       du -sh "$(dirname "$(dirname "$P")")"
     expected: >-
       exit 0 overall; the parity run reports 1 skipped and 0 collected, the full-venv run passes; the env's disk size is
@@ -352,14 +366,14 @@ verification_plan:
     phase: post-deploy
     action: >-
       After the squash merge (Resolves trailer for rec-2809), record rec-2779 as superseded by the merged mechanism
-      (Benjamin 2026-10-30), then confirm rec-2809 closed and rec-2779 superseded. If the portal raises
-      ClosureArtifactRequired, pass closure_artifact naming the graduated check fast-tier-env-reexec-decision.
+      (Benjamin 2026-10-30), then confirm rec-2809 closed and rec-2779 superseded. rec-2779 carries no context_v2_json, so
+      no closure_* kwarg is passed (update_rec would refuse it); the merge sha lives in the resolution text (round 4 M1).
     command: >-
       bin/venv-python -c "from scripts.ops_data_portal import update_rec as u; import subprocess;
       sha = subprocess.check_output(['git', 'rev-parse', 'origin/main'], text=True).strip();
       u('rec-2779', {'status': 'superseded', 'resolution': 'Superseded by PLAN-fast-tier-ci-parity at ' + sha + ': the
       agent-container --pre runs CI-shaped, so a copied importorskip guard that hides a test from CI fails locally before
-      push; no skill prose (Benjamin 2026-10-30).'}, closure_fix_sha=sha)" &&
+      push; no skill prose (Benjamin 2026-10-30).'})" &&
       bin/venv-python -c "from src.common.ducklake_reader_client import fetch_recs_by_ids, make_reader;
       rows, _ = fetch_recs_by_ids(make_reader(), ['rec-2809','rec-2779']); print({r['id']: r['status'] for r in rows})"
     expected: rec-2809 closed, rec-2779 superseded.
@@ -406,10 +420,20 @@ verification_plan:
     fix_if: A banner missing or an abbreviation accepted -- fix validate.py's argparse and banner branch.
     hermetic: true
     expected_literals: ["passed"]
-    graduation: waive
-    graduation_waiver_reason: >-
-      A banner string and an argparse flag; step 12's graduated row already guards the same test module's entry-point
-      contract, and a second row for user-facing text would add churn without guarding a regression class.
+    graduation: graduate
+    graduation_check_id: validate-full-env-banner
+  - step: 14
+    phase: pre-deploy
+    action: >-
+      Run TestChildEnv: the re-exec environment strips AWS credentials (Benjamin's fork) while keeping AWS_REGION and
+      AWS_DEFAULT_REGION, scrubs PYTHONPATH/PYTHONHOME/VIRTUAL_ENV, and sets the override and marker.
+    command: bin/venv-python -m pytest tests/checks/deps/test_fast_tier_env.py::TestChildEnv -q
+    expected: exit 0, the class passes.
+    fix_if: A credential variable survives into the child -- fix child_env; never relax the assertion.
+    hermetic: true
+    expected_literals: ["passed"]
+    graduation: graduate
+    graduation_check_id: fast-tier-env-child-env
 test_obligations:
   - source: scripts/checks/deps/fast_tier_env.py
     behavior: Agent-container --pre re-executes in a CI-shaped env exactly when it should and fails loud when the env cannot be built.
@@ -431,6 +455,11 @@ test_obligations:
     verification_step: 13
     test_selector: tests/validate/test_ci_parity_flag.py::TestFullEnvBanner
     red_green_expectation: red before (test file absent, exit 4), green after.
+  - source: scripts/checks/deps/fast_tier_env.py
+    behavior: The CI-shaped run carries no AWS credentials, keeps the region, and scrubs leaking interpreter variables.
+    verification_step: 14
+    test_selector: tests/checks/deps/test_fast_tier_env.py::TestChildEnv
+    red_green_expectation: red before (module and test absent, exit 4), green after.
   - source: config/ci_rca_taxonomy.yaml
     behavior: The new check has its category row.
     verification_step: 9
@@ -493,6 +522,20 @@ test_obligations:
     waiver_reason: >-
       A registry row is itself an executable check; validate_verification_registry and validate_graduation_completeness
       run it in every tier and fail on a missing or non-resolving shard, which is the red-green proof.
+  - source: config/agent/verification_registry/entries/validate-full-env-banner.yaml
+    behavior: Records a VP step's graduation.
+    verification_step: 9
+    command: bin/venv-python -m scripts.validate
+    waiver_reason: >-
+      A registry row is itself an executable check; validate_verification_registry and validate_graduation_completeness
+      run it in every tier and fail on a missing or non-resolving shard, which is the red-green proof.
+  - source: config/agent/verification_registry/entries/fast-tier-env-child-env.yaml
+    behavior: Records a VP step's graduation.
+    verification_step: 9
+    command: bin/venv-python -m scripts.validate
+    waiver_reason: >-
+      A registry row is itself an executable check; validate_verification_registry and validate_graduation_completeness
+      run it in every tier and fail on a missing or non-resolving shard, which is the red-green proof.
 constraints:
   - >-
     PR CI's fast tier is unchanged: no package added to requirements-fast.txt, no ci.yml edit, no budget raise (Benjamin, 18 Oct; BUILD-SEAMS F).
@@ -532,7 +575,7 @@ execution_steps:
   - Modify scripts/validate.py (hook and --full-env).
   - Create the collectability check, its mirror test, the manifest Entry and the taxonomy row (step 4).
   - Modify docs/contracts/vp-red-before.yaml carve-out (iii) pointer and changelog.
-  - Create tests/validate/test_ci_parity_flag.py (step 12) and the five graduation rows.
+  - Create tests/validate/test_ci_parity_flag.py (steps 12, 13) and the seven graduation rows.
   - Execute Verification Plan -- run each step; loop until pass; on an unrecoverable failure stop and RCA (Decision 55).
   - >-
     Independent code review: dispatch the code-review skill in a fresh-context subagent over the branch diff; address
@@ -544,7 +587,9 @@ execution_steps:
     the scratchpad, then bin/venv-python -m scripts.session.postflight --evidence <file>); the real outcome -- push, PR,
     CI green by event-driven wake (never polled), code review PROCEED, squash-merge, then VP step 10.
   - >-
-    Merge under the project's standing rule (code review PROCEED and CI green). Squash with
+    Run VP step 8 (re-point rec-2809's acceptance) immediately before the merge call, never earlier, so an abandoned PR
+    never leaves the warehouse row pointing at a branch-only test (round 4 J5). Merge under the project's standing rule
+    (code review PROCEED and CI green). Squash with
     mcp__github__merge_pull_request(merge_method="squash") and an explicit commit_message whose body ends with the line
     "Resolves: rec-2809" directly above the Co-Authored-By and Claude-Session trailers; then read the merge
     commit back and confirm the trailer is present before reporting the merge.
