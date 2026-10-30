@@ -53,10 +53,13 @@
 #     role_arn = arn:aws:iam::<ACCOUNT_ID>:role/PlatformAdmin
 #     source_profile = agent_static
 #     external_id = <PLACEHOLDER>
-#     duration_seconds = 36000
+#     duration_seconds = 1800
 #     region = eu-west-2
 #     sts_regional_endpoints = regional
 #     output = json
+#
+# PlatformAdmin's max_session_duration is 3600 (terraform/bootstrap/platform_roles.tf), so its profile must not ask
+# for more: 36000 here makes every PlatformAdmin AssumeRole fail. PlatformDev allows 36000.
 #
 # and set this in the (non-secret) env-var field:
 #     AWS_PROFILE=agent_platform_admin

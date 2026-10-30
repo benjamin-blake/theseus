@@ -256,3 +256,20 @@ def test_admin_template_sets_install_terraform_inline() -> None:
     assert "BEFORE or AFTER" in admin
     dev = "\n".join(_header_block(script, "# DEV environment", "# boto3 then resolves"))
     assert "INSTALL_TERRAFORM" not in dev
+
+
+def _role_max_session(resource: str) -> int:
+    tf = Path("terraform/bootstrap/platform_roles.tf").read_text(encoding="utf-8")
+    match = re.search(r'resource "aws_iam_role" "' + resource + r'" \{.*?max_session_duration\s*=\s*(\d+)', tf, re.DOTALL)
+    assert match is not None
+    return int(match.group(1))
+
+
+def test_template_duration_seconds_fit_each_roles_max_session_duration() -> None:
+    script = SETUP_SCRIPT.read_text(encoding="utf-8")
+    dev = "\n".join(_header_block(script, "# DEV environment", "# boto3 then resolves"))
+    admin = "\n".join(_header_block(script, "# ADMIN environment", "# and set this"))
+    dev_seconds = int(re.search(r"duration_seconds = (\d+)", dev).group(1))
+    admin_seconds = int(re.search(r"duration_seconds = (\d+)", admin).group(1))
+    assert dev_seconds <= _role_max_session("platform_dev")
+    assert admin_seconds <= _role_max_session("platform_admin")
