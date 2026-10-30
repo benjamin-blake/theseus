@@ -46,39 +46,14 @@ If `main_freshness.status != "ok"`, this check cannot run -- surface the fetch f
 
 ## Bundled Recommendation Relevance Re-check (Workflow Step 3 -- fires after plan load)
 
-Before writing any code, re-check every rec in the plan's `bundled_recommendations` field.
-A rec can become stale between `/plan` and `/implement` (target file deleted, decision
-ratified, a sibling plan already satisfied it). Implementing stale work wastes the session.
-
-### Protocol
-For each rec id in `bundled_recommendations`:
-```bash
-bin/venv-python -c "
-from scripts.rec_relevance import evaluate_rec_relevance
-from scripts.ops_data_portal import propose_or_close_rec
-from src.common.ducklake_reader_client import fetch_recs_by_ids, make_reader
-rows, _ = fetch_recs_by_ids(make_reader(), ['rec-NNNN'])
-rec = rows[0] if rows else None
-verdict, evidence = evaluate_rec_relevance(rec, run_acceptance_probe=True)
-det = (verdict == 'satisfied' and evidence.startswith('acceptance probe passed:'))
-proposal = propose_or_close_rec('rec-NNNN', verdict, evidence, deterministic=det)
-print(f'verdict={verdict} det={det}')
-if proposal: print('proposal:', proposal)
-"
-```
-
-**Verdict handling:**
-- **`relevant` or `unknown`** -- proceed; implement as planned.
-- **`satisfied` (deterministic -- acceptance probe passed)** -- `propose_or_close_rec` auto-closes
-  the rec via the portal. Remove it from the effective bundled list, skip its implementation step,
-  and record in chat: "rec-NNNN auto-closed as satisfied ([evidence]); skipping implementation."
-- **`satisfied` (semantic)** -- present the proposal command; wait for operator confirmation.
-  Do NOT skip implementation until operator explicitly confirms closure.
-- **`superseded`, `duplicate`, `contradicted`, `stale_target`, `blocked_by_decision`** -- present
-  the proposal command and wait for operator decision before removing from the implementation list.
-
-**Decision 55 compliance:** auto-closure fires ONLY for deterministic `satisfied`. All semantic
-verdicts route to the operator -- the agent never auto-acts on semantic judgment.
+Before writing code, re-check the plan's `bundled_recommendations` (a rec can go stale after /plan):
+`bin/venv-python -m scripts.rec_relevance --implement-recheck rec-NNNN[,rec-MMMM]`. It never closes a rec
+(`docs/contracts/recommendation-relevance.yaml#implement_gate`); the merged trailer does.
+- **`relevant` or `unknown`** -- implement as planned.
+- **`satisfied`** -- the acceptance already passes on this tree; say so in chat. The rec stays bundled.
+- **Any other verdict** -- present the printed proposal command and wait for the operator. A rec the operator closes
+  stays bundled and in the trailer (the closure job skips it); one the operator supersedes or declines leaves
+  `bundled_recommendations` only by a plan amendment PR, never a build edit.
 
 ## Live Verification Protocol (Workflow Step 4 -- MANDATORY)
 After code changes are complete and unit tests pass, the implementing agent MUST execute the Verification Plan from PLAN-{slug}.yaml before proceeding to code review.
@@ -358,7 +333,7 @@ Report readiness, validator verdicts, evidence, review, and real push/PR outcome
 Wait for the PR-tier CI (fast `--pre` tier; Decision 73) via subscription, never polling -- the wake mechanism is canonical in `docs/contracts/git-ops.yaml` steps 3-5, not restated here.
 
 **On wake**, always confirm check runs via `mcp__github__pull_request_read` (`get_status` / `get_check_runs`) BEFORE merging, then branch on status:
-   - **All green** -> `mcp__github__merge_pull_request(owner, repo, pullNumber, merge_method="squash")`, then `mcp__github__unsubscribe_pr_activity(...)`. Report the merge. **Carve-out:** for a PR touching `terraform/personal/**`, do NOT unsubscribe here -- defer to the "Hold subscription through apply" section below (the real outcome is the post-merge apply, not the merge).
+   - **All green** -> for an IMPLEMENTATION PR, Commit Flow step 4 (premerge, squash-merge, readback); otherwise `mcp__github__merge_pull_request(owner, repo, pullNumber, merge_method="squash")`. Then `mcp__github__unsubscribe_pr_activity(...)`. Report the merge with its sha. **Carve-out:** for a PR touching `terraform/personal/**`, do NOT unsubscribe here -- defer to the "Hold subscription through apply" section below (the real outcome is the post-merge apply, not the merge).
    - **Any red** -> diagnose, fix, re-run the Commit Flow (re-triggers PR CI). Stay subscribed and end the turn. Per `docs/contracts/ci-rca-lifecycle.yaml` trigger_scope, this failure is uncovered by ci-rca by construction -- no rec is filed, nothing gates; the existing 3-fix-attempt STOP and VF-08 rules above govern the loop (Decision 55). Never weaken a check to obtain green -- `docs/contracts/implement-scope-boundary.yaml`'s CONTENT invariant is canonical; cited here, not restated. `executor-rca` is out of scope here -- Step 8's RCA-First Protocol is separate, session-end friction capture.
    - **Still running** -> end the turn; a later event wakes you.
 
@@ -393,7 +368,7 @@ commit, before the full tier; once pushed, use `--force-with-lease` (never `--fo
 ### IMPLEMENTATION Commit Flow
 ```bash
 git add -A
-git commit -m "feat({slug}): implement {brief-description}"
+git commit -m "feat({slug}): implement {brief-description}" -m "Resolves: rec-NNNN[, rec-MMMM]"   # omit -m when nothing is bundled
 git fetch origin main
 git rebase origin/main   # STOP on conflict
 bin/venv-python -m scripts.validate
@@ -401,16 +376,22 @@ bin/venv-python -m scripts.checks.validation_result --verify-head
 git push -u origin HEAD   # its own tool call
 ```
 Then via GitHub MCP (owner/repo from `git remote get-url origin`):
-1. Build the PR body. If the plan `bundled_recommendations` list is non-empty, add the `Resolves: rec-NNNN[, rec-MMMM]` trailer in the PR body, which the squash-merge commit body inherits -- per `docs/contracts/git-ops.yaml` (`ci.yml`'s trailer-closure job closes each named rec after merge). If empty, omit it. Under a clear heading (e.g. `## VP Compliance`), append the VP compliance table to the PR body -- the same bounded table produced by the VP Compliance Gate, including the Attempts column and any NONDETERMINISTIC markers -- so the executed proof lands in the PR/merge record instead of vanishing chat (Decision 115: this PR-body table is PR-scoped ephemeral evidence, not the durable record -- the durable record is the tier_item criterion closure in the roadmap, staged by the bookkeeping walk below).
+1. Build the PR body, repeating the commit's `Resolves:` trailer block (`docs/contracts/git-ops.yaml#resolves_trailer`; `ci.yml`'s trailer jobs close each named rec after merge). Under a clear heading (e.g. `## VP Compliance`), append the VP compliance table to the PR body -- the same bounded table produced by the VP Compliance Gate, including the Attempts column and any NONDETERMINISTIC markers -- so the executed proof lands in the PR/merge record instead of vanishing chat (Decision 115: this PR-body table is PR-scoped ephemeral evidence, not the durable record -- the durable record is the tier_item criterion closure in the roadmap, staged by the bookkeeping walk below).
 2. `mcp__github__create_pull_request(owner, repo, head=<this branch>, base="main", title="feat({slug}): {brief-description}", body=<body from step 1>)`
 3. `mcp__github__subscribe_pr_activity(...)`; end the turn (see "Wait-for-CI").
-4. On green wake: `mcp__github__merge_pull_request(..., merge_method="squash")` + `mcp__github__unsubscribe_pr_activity(...)`.
+4. On green wake: write the squash commit message (the implementation commit's body, trailer included) to a file and
+   run `bin/venv-python -m scripts.session.merge_step premerge --slug {slug} --message-file <file>` (add
+   `--expect <digest>` when the operator approved text); fix any red line before merging. Then
+   `mcp__github__merge_pull_request(..., merge_method="squash", commit_message=<that message>,
+   expectedHeadSha=<the HEAD premerge printed>)`, `bin/venv-python -m scripts.session.merge_step readback --slug
+   {slug} --sha <merge sha>`, and unsubscribe.
 5. **Post-merge closeout fallback (Decision 201, conditional).** WAIT for the
    `trailer-closure` job (`mcp__github__actions_list` by merge sha -> `get_job_logs`, never
    `$GITHUB_STEP_SUMMARY`) to CONCLUDE, then follow the conditional fallback in
-   `docs/contracts/git-ops.yaml::resolves_trailer`: a refusal marker naming the rec forbids the
-   fallback (use its `close_proposed` command); a non-refusal per-rec log line permits it;
-   anything else waits.
+   `docs/contracts/git-ops.yaml::resolves_trailer`: an acceptance-verdict refusal takes that clause's
+   route, a Decision 186 refusal stays open and is reported, a merge-leg refusal or a non-refusal
+   per-rec log line permits the fallback, a trailer readback found missing goes to `merge_step
+   recover` (never the fallback); anything else waits.
 
 ### STRATEGIC Commit Flow
 STRATEGIC plans are suspended (Decision 67). When restored, use the same MCP PR/subscribe/merge pattern, committing `docs/plans/briefings/` with a `scope({slug}): ...` message.
