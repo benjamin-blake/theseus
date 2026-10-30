@@ -25,8 +25,9 @@ scope:
       PLAN-*.yaml files ADDED in this diff (status A or ?? from _common.get_status_aware_diff matching
       _common.PLAN_PATH_RE; merely-modified plans are deliberately outside it, as for rg_portability_lint, because 387
       legacy plans read implementation_declared falsy and three merged ones would redden unrelated PRs) whose
-      implementation_declared is falsy, read as plain YAML (a schema-invalid plan is skipped with a note; schema validity
-      is validate_plan_documents' concern). For each verification_plan step with phase pre-deploy, hermetic true and a
+      implementation_declared is falsy, read as plain YAML (a file that does not parse as YAML is a reported finding; a
+      parseable but schema-invalid plan is skipped with a note, since schema validity is validate_plan_documents'
+      concern). For each verification_plan step with phase pre-deploy, hermetic true and a
       pytest invocation (shlex-split; `-m pytest` or a `pytest` argv token), each positional selector argument under
       tests/ is examined only when its file part (taken before any "::" node suffix) satisfies Path.is_file(); a
       directory selector or a missing path is skipped and counted in the skipped note, never reported as an unreadable
@@ -38,7 +39,9 @@ scope:
       are never attributed to the pytest step: the test file and every conftest.py from its directory up to tests/ are AST-parsed for a
       module-level `pytest.importorskip("<name>")` (assigned or bare) or a module-level `import <name>` / `from <name>
       import` outside try. A hit on a name in the CI-absent set fails with: plan path, step id, selector, the guarding
-      file and name, and the fix ("set hermetic: false -- vp-red-before.yaml hermetic_authoring carve-out (iii)"). The
+      file and name, and the fix ("set hermetic: false, or move the guarded selector into its own hermetic: false step --
+      vp-red-before.yaml hermetic_authoring carve-out (iii)"). A guarded whole-file selector mixed with unguarded ones is
+      flagged too: replay then passes with the guarded file skipped, a hollow green (critique series 2 round 2 F2). The
       CI-absent set is derived, never hard-coded (Decision 99): import names of requirements.in dists minus
       requirements-fast.txt dists minus requirements-dev.txt dists, reusing _parse_requirement_dist_names and
       _dist_to_import_name from scripts/checks/_pytest_diff.py (today: duckdb, psycopg2, pytz, radon). Declares
@@ -49,8 +52,8 @@ scope:
     action: Create
     purpose: >-
       Mirror test (Decision 131 name). Fixture repos under tmp_path: TestFlagsGuardedTarget (module-level importorskip,
-      bare importorskip, module-level import, conftest-level guard, and a file::Class::test node selector on a guarded
-      file -- each flagged with the message fields), TestPassesUnguardedTarget (function-scope importorskip, guard on a
+      bare importorskip, module-level import, conftest-level guard, a file::Class::test node selector on a guarded
+      file, and a guarded whole file mixed with an unguarded file in one step -- each flagged with the message fields), TestPassesUnguardedTarget (function-scope importorskip, guard on a
       name present in CI such as boto3, hermetic false step, post-deploy step, non-pytest command, selector file absent,
       implementation_declared true plan, a MODIFIED (not added) legacy plan whose step targets a guarded file, a chained
       command whose non-pytest segment names a guarded file, a directory selector `tests/<dir>/` whose directory holds a
@@ -78,14 +81,14 @@ scope:
       "an interim workaround for an environment mismatch, owned by rec-2809 for its enforcement gap and root-cause fix"
       with: enforced at plan-PR time by validate_hermetic_fast_tier_collectability for target files that exist, covering
       direct module-level guards or imports in the target file and its conftest chain (transitive first-party imports are
-      not examined, nor is a later edit to an already-merged unbuilt plan -- both residuals owned by rec-4763) (added by
-      rec-2809); a target the implementation creates is caught before push by the CI-parity
+      not examined, nor are an already-merged unbuilt plan's existing steps or a later edit to one -- residuals owned by
+      rec-4763, with the one live instance today owned by rec-4765) (added by rec-2809); a target the implementation creates is caught before push by the CI-parity
       agent-container --pre (scripts/checks/deps/fast_tier_env.py, delivered by PLAN-fast-tier-ci-parity), and its
       remaining plan-amendment cost is owned by rec-4757; the root-cause alternative (a replay environment carrying
       these packages) is closed by the keep-PR-CI-light ruling (Benjamin, 2026-10-18). It keeps the
       requirements-fast.txt, rec-2809, replay_bound and pytest_diff literals that registry row
-      vp-hermetic-authoring-single-rule pins. contract_version bumped by one with a changelog entry (semantic_break
-      false, change_class field_add), per the file's convention. green_leg_labels.hints module_level_skip text is
+      vp-hermetic-authoring-single-rule pins. contract_version bumped by one (6 to 7) with an amendment_log entry
+      (semantic_break false, change_class field_add), per the file's convention. green_leg_labels.hints module_level_skip text is
       unchanged.
   - file: config/agent/verification_registry/entries/hermetic-fast-tier-collectability.yaml
     action: Create
@@ -110,6 +113,7 @@ bundled_recommendations:
 followon_recs:
   - rec-4757
   - rec-4763
+  - rec-4765
 infrastructure_dependencies: []
 acceptance_criteria:
   - >-
@@ -263,7 +267,8 @@ context:
   - Evidence of the class - TEL-F05 (7 CI-red rounds, digests 65, 77, 83, 88, 95, 112, 141); joint review J-13.
   - Reuse - _pytest_diff._parse_requirement_dist_names / _dist_to_import_name. _pytest_diff._excluded_heavy_import_names is a different set (requirements.in minus fast, dev not subtracted); this check needs the dev-subtracted set (critique I1, informational).
   - Gotcha - config/ci_rca_taxonomy.yaml is a shared append with plan C; rebase keeps both rows.
-  - Residuals (Decision 181 point 2) - transitive first-party imports (measured zero guarded src/ or scripts/ modules 2026-10-30) and edits to merged unbuilt plans are owned by rec-4763; targets the implementation creates by rec-4757.
+  - Residuals (Decision 181 point 2) - transitive first-party imports (measured zero guarded src/ or scripts/ modules 2026-10-30), existing steps of merged unbuilt plans and later edits to them are owned by rec-4763; targets the implementation creates by rec-4757.
+  - Live instance outside the population (critique series 2 round 2 F1) - PLAN-telemetry-claude-p-capture-adapter.yaml (merged, unbuilt) step 7 node-selects tests/common/test_ducklake_event_verification_verbs.py (importorskip duckdb at line 16; replay exits 4), and steps 5 and 6 include test_derived_layer_reconciliation.py and test_append.py (hollow green). Owned by rec-4765, to amend before that plan is built; the other two merged plans with guarded steps are already built.
   - The absent set does not subtract the transitive closure of fast-tier packages; today it equals duckdb, psycopg2, pytz, radon (critique series 2 round 1 I3, informational).
   - Gotcha - plan C owns scripts/checks/verification/_manifest.py this wave, hence the deps domain.
   - "fork: plan-time check (rec-2809 option a) vs a replay environment carrying the heavy packages (option b) | chosen: option a | class: consistency-only | precedent: keep-PR-CI-light ruling 2026-10-18 | precedent_kind: answered-fork | reversible: yes | persisted: this plan + vp-red-before.yaml carve-out (iii)"
