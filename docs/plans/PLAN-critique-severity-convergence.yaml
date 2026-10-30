@@ -65,11 +65,12 @@ scope:
   - file: scripts/checks/roadmap/validate_plan_documents.py
     action: Modify
     purpose: >-
-      Newly-added schema_version >= 5 plans must carry a gate_rounds record whose last plan-critique row is a PROCEED
+      Newly-added schema_version >= 5 plans must carry a gate_rounds record with a decision-scout row, whose last
+      plan-critique row is a PROCEED that ends Step 9 (no nits, or the confirming round after a PROCEED listing nits)
       or an escalation answered accept-with-deferral, with every escalated row answered: FAIL only on the plan PR (GITHUB_EVENT_NAME == "pull_request"; the PR opens
       only after PROCEED), WARN elsewhere -- in a local run (the planner runs --pre between rounds, before the record can
       be complete) and on the push to main (a plan PR that went green before this check existed must not turn main red;
-      push runs diff the merge, so the plan counts as added there). Decision 163 structural enforcement. 130 -> 154 SLOC.
+      push runs diff the merge, so the plan counts as added there). Decision 163 structural enforcement. 130 -> 162 SLOC.
   - file: tests/roadmap/plan_document/test_gate_rounds.py
     action: Create
     purpose: Schema obligations for GateRound and gate_rounds.
@@ -77,7 +78,8 @@ scope:
     action: Modify
     purpose: >-
       TestGateRoundRecord (fail on the plan PR; warn, even with CI=true, when GITHUB_EVENT_NAME is unset, push or any
-      other event; answered escalation, accepted deferral, existing plans exempt); the two added-plan fixtures that
+      other event; no scout row, a PROCEED listing nits with no confirming round, answered escalation then a confirmed
+      PROCEED, accepted deferral, existing plans exempt); the two added-plan fixtures that
       assert a clean pass gain a complete gate_rounds record so they hold on a plan PR's CI.
   - file: tests/test_workflow_skill_antidrift.py
     action: Modify
@@ -124,7 +126,8 @@ acceptance_criteria:
     PlanDocument accepts a gate_rounds list with the GateRound rules in scope, and the template carries it in place of
     the free-text gates line (rec-3041). VP steps 1 and 2.
   - >-
-    validate_plan_documents fails a newly-added v5 plan on its plan PR whose gate_rounds neither ends in a plan-critique PROCEED
+    validate_plan_documents fails a newly-added v5 plan on its plan PR whose gate_rounds has no decision-scout row, ends
+    neither in a plan-critique PROCEED that ends Step 9 (no nits, or the confirming round after a PROCEED listing nits)
     nor in an escalation answered accept-with-deferral, or has an unanswered escalation; it warns locally and on the push to main, and ignores
     existing plans. VP step 2.
   - >-
@@ -164,12 +167,12 @@ verification_plan:
     command: >-
       GITHUB_EVENT_NAME=pull_request bin/venv-python -m pytest -q tests/roadmap/plan_document/test_gate_rounds.py
       "tests/checks/roadmap/test_validate_plan_documents.py::TestGateRoundRecord"
-    expected: exit 0; every test passes (the dry build ran 26 passed).
+    expected: exit 0; every test passes (the dry build ran 28 passed).
     fix_if: >-
-      A GateRound rule or the validator differs from scope; fix the code, never the assertion. A count other than 26
+      A GateRound rule or the validator differs from scope; fix the code, never the assertion. A count other than 28
       means a parametrization changed: reconcile with the dry-build diff before proceeding.
     hermetic: true
-    expected_literals: ["26 passed"]
+    expected_literals: ["28 passed"]
     graduation: waive
     graduation_waiver_reason: >-
       Ordinary unit tests in every tier; the prefix only mirrors the plan PR's environment (each test sets its own).
@@ -222,7 +225,8 @@ verification_plan:
       S={'.claude/skills/planning/SKILL.md','.claude/skills/plan-critique/SKILL.md','.claude/commands/plan.md','docs/contracts/overseer-dispatch.yaml','scripts/roadmap/plan_document.py','scripts/checks/roadmap/validate_plan_documents.py'};
       E=[yaml.safe_load(p.read_text(encoding='utf-8')) for p in sorted(pathlib.Path('config/agent/verification_registry/entries').glob('*.yaml'))];
       E=[e for e in E if e.get('guard_target') in S]; R=[materialize_check(e).run().status for e in E];
-      print('selected', len(E), 'ran', len(R), 'ok', len(R)==len(E) and all(s==CheckStatus.PASS for s in R))"
+      ok=len(R)==len(E) and all(s==CheckStatus.PASS for s in R); print('selected', len(E), 'ran', len(R), 'ok', ok);
+      raise SystemExit(0 if ok else 1)"
     expected: >-
       exit 0; prints ran equal to selected and ok True (the dry build selected and ran 23: 12 test_selector, 8
       command_exit_zero, 2 grep_count, 1 command_output_matches, including plan-obligations-critic-consumes-report,
@@ -333,8 +337,9 @@ test_obligations:
     red_green_expectation: red before (GateRound and gate_rounds absent; extra="forbid" refuses the key), green after.
   - source: scripts/checks/roadmap/validate_plan_documents.py
     behavior: >-
-      Newly-added plans need a complete gate_rounds record on the plan PR, a warning locally and on the push to main;
-      existing plans are exempt.
+      Newly-added plans need a complete gate_rounds record on the plan PR (a scout row; critique ended per Step 9,
+      including the confirming round a nit-listing PROCEED owes; no open escalation), a warning locally and on the push
+      to main; existing plans are exempt.
     verification_step: 2
     test_selector: tests/checks/roadmap/test_validate_plan_documents.py::TestGateRoundRecord
     red_green_expectation: red before (no such check on main), green after.
@@ -363,7 +368,7 @@ context:
   - "Fable blind consult (facts-only brief): agreed on all three forks -- nits get one fresh confirming round, never ask on count alone, structured per-round record."
   - "Decision-scout verdict FLAGS_FOUND -- Decision 87 WARN (planner-reported verdict record; resolved: counts-only, renamed gate_rounds off the executor critique_history column); Decision 75 NOTE (Frame Challenge never a nit); Decision 229 NOTE (confirming round dispatched, never inline); Decision 163 SPIRIT (resolved: plan-PR check on newly-added plans). CITE: 73, 85, 86, 127, 128, 166, 205; roadmap T4.29 CITE, T4.30/T2.54/T4.14 RELATED. Decisions triaged: 190 of 190. Roadmap items intersected: 5; CONFLICT: 0; RELATED: 4"
   - "No numbered Decision is drafted: skill methodology with no governing Decision (decision-entry.yaml significance routing)."
-  - "Dry build of this plan's end state on 87a7b87d (no scope file differs from c30b8fff): 9 files, +388/-38; the new tests fail on main (23 failed, plus test_gate_rounds.py's ImportError) and pass after; scripts.validate --pre clean."
+  - "Dry build of this plan's end state on 87a7b87d (no scope file differs from c30b8fff): 9 files, +417/-38; the new tests fail on main (25 failed, plus test_gate_rounds.py's ImportError) and pass after; scripts.validate --pre clean."
   - "Not bundled: rec-3080 (warehouse verdict recording; gate_rounds is its file-side input, stays queued); bundled instead: rec-2480 and rec-3520, whose acceptances demanded the defect stay, were re-pointed through update_rec on 2026-10-30 with the operator's OK (Decision 84); rec-3518 is already met (614 B headroom after this plan)."
   - "Mid-flight plans from other projects: once this merges, a plan PR opened without gate_rounds fails validate_plan_documents on its PR CI with an actionable message (add the record per the planning skill); one that went green before this merged lands with a warning only, because push runs warn."
   - "This plan predates its own field: main's PlanDocument refuses gate_rounds (extra=forbid), so its gate history stays on the gates line below."
@@ -371,7 +376,7 @@ context:
   - "Alignment: Benjamin 'yes to all, write the plan' 2026-10-30T14:24Z (cmsg_017w1Kar4nqzb395d2mcyCJJUQfHgN1qdFyT1736XdRKvX), given on the presented text (thread message cmsg_017w1Kar4nqzb395d2mcyCJJChsuPZ5P5x73tD7psoa8u7)."
   - "Forward owner: when T4.30 c5 / T4.29 c1 open draft plan PRs before the scout and re-run critique per head SHA, that work re-keys validate_plan_documents' plan-PR fail branch (skip drafts, keep gate_rounds out of the critique-input fingerprint); this plan's rule text carries over. Filed as rec-4766 (followon_recs, Decision 86); execution_steps[4] confirms it is open."
   - "Deltas to the approved text, approved by the operator 2026-10-30T16:13Z ('yes please proceed', cmsg_017w1Kar4nqzb395d2mcyCJJAbjCnLf8dch3bxemur9orP, given on /mnt/project-files/plan-a-critique/DELTAS.md) -- round 1 (F1, F3, N2, N3, plus a compaction): kept label 'Finding-Origin Attribution and severity'; plan.md Step 8 gates-line item; template comment names escalated: true; scout escalation records accept-with-deferral; Step 10 item 7 sentence dropped. Round 2 (F1, F2, N3): contract flow 4 PROCEED branch; new gate_request_trampoline.escalation key and round gloss; gate_rounds pointer moved to the scout's Verdict-handling lead-in. Round 3 (B, C, N1, N3, N5): a nit excludes only a Frame Challenge contradiction; escalation key gains write-ahead and resume clauses and names the consult's open_questions carrier; template example row is a decision-scout row; 'Loop per the Convergence rule below'; 'Proceed on a PROCEED that ends the loop'. Round 4 (N3): the escalation key says 'convergence escalation', since a scout escalation is not Step 9's."
-  - "gates: decision-scout=FLAGS_FOUND (round 1, resolved at alignment); plan-critique round 1 REVISE (blocking 4: graduated label guard, accept-with-deferral terminal, plan.md Step 8 gates line, constraint contradiction; nits 3) -- all fixed; round 2 REVISE (blocking 3: contract flow 4 PROCEED branch, no contract receiver for a dispatched escalation, VP5 skipped 3 guard slots; nits 4) -- all fixed; round 3 REVISE (blocking 3: rec-3520/rec-2480 undisposed, Frame Challenge nit vs 12j, escalation not write-ahead-recorded; nits 6) -- all fixed but one clause, disputed: Step 9 needs no commit-before-hand-back rule because request_schema already requires artifacts committed and pushed before any GATE_REQUEST; round 4 REVISE (blocking 2: the CI=true fail branch also fires on the push to main, follow-on rec not yet filed; nits 4) -- fail branch keyed to the plan PR, rec filing gated in execution_steps[4] pending the operator's OK, nits applied (N4 needs no action while main has not moved)"
+  - "gates: decision-scout=FLAGS_FOUND (round 1, resolved at alignment); plan-critique round 1 REVISE (blocking 4: graduated label guard, accept-with-deferral terminal, plan.md Step 8 gates line, constraint contradiction; nits 3) -- all fixed; round 2 REVISE (blocking 3: contract flow 4 PROCEED branch, no contract receiver for a dispatched escalation, VP5 skipped 3 guard slots; nits 4) -- all fixed; round 3 REVISE (blocking 3: rec-3520/rec-2480 undisposed, Frame Challenge nit vs 12j, escalation not write-ahead-recorded; nits 6) -- all fixed but one clause, disputed: Step 9 needs no commit-before-hand-back rule because request_schema already requires artifacts committed and pushed before any GATE_REQUEST; round 4 REVISE (blocking 2: the CI=true fail branch also fires on the push to main, follow-on rec not yet filed; nits 4) -- fail branch keyed to the plan PR, rec filing gated in execution_steps[4] pending the operator's OK, nits applied (N4 needs no action while main has not moved); round 5 REVISE (blocking 1: the plan-PR check passed a nit-listing PROCEED with no confirming round; nits 4) -- check now requires the confirming round and a scout row (N3), VP5 exits non-zero on a failed guard (N1), execution_steps[0] re-pins VP4 after a rebase (N4); N2 (a pointer from both trampoline stages to the escalation key) declined: the key already says a non-empty open_questions request is not a round, and the pointer would spend the contract's last 2 effective lines on more approved-text change"
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -381,7 +386,8 @@ pre_implementation_checklist:
 execution_steps:
   - >-
     Rebase onto origin/main first and re-measure both skill sizes; if either surface changed on main since c30b8fff,
-    re-anchor each replacement below on the new text without changing the approved wording.
+    re-anchor each replacement below on the new text without changing the approved wording, and re-pin VP step 4's two
+    size ceilings to the re-measured main sizes (constraint[1]: no larger than on main).
   - |-
     .claude/skills/planning/SKILL.md -- apply exactly:
     (a) Decision Scout Gate: replace `**Verdict handling:**` with `**Verdict handling** (add a `gate_rounds` row per scout round):`, and in the NO_FLAGS bullet replace the tail ` and "gates: decision-scout=<verdict>; plan-critique=<verdict> after <N> round(s))".` with `.`
