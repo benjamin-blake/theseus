@@ -224,6 +224,9 @@ fi
 # inherited shell state.
 if [ "${INSTALL_TERRAFORM:-0}" = "1" ]; then
     t0=$SECONDS
+    # The CC-web harness may set the env-var field after the setup script runs, so default the admin profile here;
+    # the mirror sync and the profile-free tfvars delegate below both rely on it.
+    export AWS_PROFILE="${AWS_PROFILE:-agent_platform_admin}"
     MIRROR_DIR="$HOME/.terraform-mirror"
     # rec-2518: RESOLVED_TFRC is a sibling FILE of $MIRROR_DIR, not a child of it -- writing the
     # resolved tfrc inside $MIRROR_DIR would inflate the `ls -A "$MIRROR_DIR"` non-empty gate below

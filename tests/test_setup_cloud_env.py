@@ -273,3 +273,39 @@ def test_template_duration_seconds_fit_each_roles_max_session_duration() -> None
     admin_seconds = int(re.search(r"duration_seconds = (\d+)", admin).group(1))
     assert dev_seconds <= _role_max_session("platform_dev")
     assert admin_seconds <= _role_max_session("platform_admin")
+
+
+def _run_admin_block_recording_profile(tmp_path: Path, preset_profile: str | None) -> str:
+    script = SETUP_SCRIPT.read_text(encoding="utf-8")
+    block = _extract_install_terraform_block(script)
+    root = tmp_path / "repo"
+    delegate_dir = root / ".github" / "actions" / "materialise-tfvars"
+    delegate_dir.mkdir(parents=True)
+    record = tmp_path / "profile.txt"
+    delegate = delegate_dir / "materialise_tfvars.sh"
+    delegate.write_text(f'#!/usr/bin/env bash\nprintf "%s" "${{AWS_PROFILE-unset}}" > "{record}"\n', encoding="utf-8")
+    delegate.chmod(delegate.stat().st_mode | stat.S_IEXEC)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_aws = fake_bin / "aws"
+    fake_aws.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+    fake_aws.chmod(fake_aws.stat().st_mode | stat.S_IEXEC)
+    home = tmp_path / "home"
+    home.mkdir()
+    harness = f"log() {{ :; }}\nREPO_ROOT={root}\nHOME={home}\nINSTALL_TERRAFORM=1\n{block}\n"
+    env = {"PATH": f"{fake_bin}:{os.environ['PATH']}"}
+    if preset_profile is not None:
+        env["AWS_PROFILE"] = preset_profile
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", harness], capture_output=True, text=True, env=env, timeout=30, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    return record.read_text(encoding="utf-8")
+
+
+def test_admin_block_defaults_aws_profile_when_unset(tmp_path: Path) -> None:
+    assert _run_admin_block_recording_profile(tmp_path, None) == "agent_platform_admin"
+
+
+def test_admin_block_keeps_an_explicit_aws_profile(tmp_path: Path) -> None:
+    assert _run_admin_block_recording_profile(tmp_path, "agent_platform") == "agent_platform"
