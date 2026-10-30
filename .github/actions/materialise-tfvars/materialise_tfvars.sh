@@ -7,7 +7,7 @@
 # without it. Every failure path below is an explicit `if`/exit check rather than relying on
 # errexit, so behaviour does not depend on which is in force.
 #
-# THE single Secrets Manager fetch for terraform/personal/terraform.personal.tfvars -- collapses
+# THE single SSM Parameter Store fetch for terraform/personal/terraform.personal.tfvars -- collapses
 # the three inline "Materialise tfvars" / "Mask secret-sourced tfvars values in logs" / "Assert
 # tfvars file is non-empty" steps that action.yml and terraform-drift.yml used to carry
 # separately, and is also called directly from bin/setup-cloud-env.sh's ADMIN bootstrap branch, so
@@ -19,7 +19,7 @@
 # file). Default (no argument) behaviour is unchanged. Configuration is otherwise env-only ($GITHUB_ACTIONS gates ::add-mask::). Stays
 # profile-free: all four CI apply call sites use OIDC ambient credentials, so hardcoding
 # --profile agent_platform_admin would break them there. A PlatformDev container AccessDenies on
-# this secret by design (per-ARN GetSecretValue enumeration, Decision 157) -- that is the intended
+# this secret by design (per-parameter GetParameter grant, Decision 237) -- that is the intended
 # DEP-13 fail-closed outcome, not a bug; re-run from an ADMIN container.
 #
 # No INSTALL_TERRAFORM gate here -- that belongs to the caller (bin/setup-cloud-env.sh's bootstrap
