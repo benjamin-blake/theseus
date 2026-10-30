@@ -424,3 +424,36 @@ def test_cli_reads_links_from_literals_from(capsys: pytest.CaptureFixture[str]) 
         cwd="/",
     )
     assert run.returncode == 0 and "policy: rebuilt from deferred read" in run.stdout, run.stderr
+
+
+def _fallback_line(plan: dict, reason: str) -> None:
+    links, literals = ci_policies_links(), ci_policies_literals()
+    line = _line(build_digest(plan, literals, links=links), "github_ci_pr")
+    assert line.endswith(f"; not rendered: {reason})"), line
+    assert fit_report(plan, literals, links=links).startswith("Reviewer digest OPAQUE:")
+
+
+def test_wholly_unknown_source_list_is_not_rendered() -> None:
+    plan = ci_policies_plan()
+    change = _read(plan, "github_ci_pr")["change"]
+    change["after"]["source_policy_documents"] = None
+    change["after_unknown"]["source_policy_documents"] = True
+    _fallback_line(plan, "unmodelled argument")
+
+
+@pytest.mark.parametrize("condition", ["x", {"StringEquals": "v"}, ["a"]])
+def test_malformed_sourced_condition_falls_back_instead_of_raising(condition: object) -> None:
+    plan = ci_policies_plan()
+    sourced = json.dumps(
+        {"Statement": [{"Sid": "Odd", "Effect": "Allow", "Action": "s3:Get*", "Resource": "*", "Condition": condition}]}
+    )
+    _read(plan, "github_ci_pr")["change"]["after"]["source_policy_documents"] = [sourced]
+    _fallback_line(plan, "malformed plan entry")
+
+
+def test_unknown_elements_are_counted_per_distinct_document() -> None:
+    plan = _load(UNKNOWN)
+    result = rebuild_policy(
+        plan, _policy(plan, "created_policy"), load_policy_links([str(UNKNOWN / "source.tf.txt")]), [f"{DOC}created_doc"]
+    )
+    assert isinstance(result, Rebuilt) and result.unknown_elements == 1

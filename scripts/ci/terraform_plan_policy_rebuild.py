@@ -238,6 +238,7 @@ class _Doc:
             address = strip_instance_keys(str(entry.get("address", "")))
             self.reads.setdefault(address, []).append(entry)
         self.unknown = 0
+        self.counts: dict[str, int] = {}
 
     def read(self, name: str) -> dict:
         found = [
@@ -351,15 +352,19 @@ class _Doc:
         merged: list[dict] = []
         for source in self.sources(name, after, unknown, depth, seen):
             _merge(merged, source)
+        outer, self.unknown = self.unknown, 0
         own = [
             self.statement(name, i, b, flags[i] if isinstance(flags, list) and i < len(flags) else None)
             for i, b in enumerate(blocks)
         ]
+        self.counts[name], self.unknown = self.unknown, outer
         _merge(merged, own)
         return merged
 
     def sources(self, name: str, after: dict, unknown: dict, depth: int, seen: tuple[str, ...]) -> list[list[dict]]:
         elements, flags = after.get("source_policy_documents") or [], unknown.get("source_policy_documents")
+        if flags is True:
+            raise _Stop("unmodelled argument")
         if not isinstance(elements, list):
             raise _Stop(MALFORMED)
         out: list[list[dict]] = []
@@ -417,7 +422,7 @@ def rebuild_policy(plan: dict, entry: dict, links: PolicyLinks, policy_refs: Any
             current = [] if policy is None else _plain_statements(policy)
         except (ValueError, KeyError, TypeError):
             raise _Stop("current policy unparsed") from None
-        return Rebuilt(name, statements, rebuilder.unknown, current)
+        return Rebuilt(name, canonical(statements), sum(rebuilder.counts.values()), canonical(current))
     except _Stop as stop:
         return Incomplete(stop.reason)
     except Exception:
