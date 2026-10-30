@@ -8138,6 +8138,14 @@ required terraform-validate CI job, unaffected), Decision 55 (honest convergence
 any record; the mirror is purely an init-time enabler), Decision 127 (the quarantine + sanctioned-
 prose taxonomy recorded above).
 
+> **Update (2026-10-30, PLAN-admin-terraform-assets-session-hook):** the mirror sync moved out of
+> `bin/setup-cloud-env.sh`: that script runs once per environment snapshot and the agent proxy never signs its
+> requests, so the sync never authenticated there. The every-session SessionStart hook
+> `.claude/hooks/session_start_terraform_assets.sh` now runs it in ADMIN sessions, as PlatformDev (`agent_platform`;
+> the mirror holds public provider binaries). The non-empty gate is unchanged: it now governs
+> `$HOME/.terraform-mirror.tfrc`, which a terraform command names inline, and the reversal condition reads that
+> hook's gate in place of the setup script's.
+
 ---
 
 ## Decision 119: CC-web session-class constraint -- third-party terraform provider init is github.com-egress-blocked; validate/plan for such roots is CI-delegated (Decided)
