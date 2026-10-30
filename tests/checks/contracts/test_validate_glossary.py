@@ -179,6 +179,13 @@ def test_line_added_inside_a_defining_entry_already_on_the_base_is_linted(repo: 
     assert failed == ["Glossary"] and "docs/DECISIONS.md:6" in out, out
 
 
+def test_decision_held_only_in_the_archive_has_no_defining_range(repo: Path, capsys) -> None:
+    (repo / "docs/DECISIONS.md").unlink()
+    _write(repo, "docs/DECISIONS_ARCHIVE.md", _ENTRY)
+    failed = _run(repo)
+    assert failed == [] and "PASS" in capsys.readouterr().out
+
+
 def test_no_base_skips_lint_only(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _git(repo, "update-ref", "-d", "refs/remotes/origin/main")
     _append(repo, "docs/contracts/other.yaml", "The platform runs nightly.")

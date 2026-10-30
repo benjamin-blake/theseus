@@ -33,6 +33,8 @@ def test_identifiers_lists_the_contract_tokens() -> None:
         "an adopter product ships",
         "the adopters' products ship",
         "agent-platform",
+        "platform-x.y",
+        "foo-platform-bar",
         "agent-platform-data-lake",
         "platform-security-detector",
         "the platform-roadmap route",
