@@ -25,13 +25,18 @@ scope:
       PLAN-*.yaml files ADDED in this diff (status A or ?? from _common.get_status_aware_diff matching
       _common.PLAN_PATH_RE; merely-modified plans are deliberately outside it, as for rg_portability_lint, because 387
       legacy plans read implementation_declared falsy and three merged ones would redden unrelated PRs) whose
-      implementation_declared is falsy, read as plain YAML (a file that does not parse as YAML is a reported finding; a
-      parseable but schema-invalid plan is skipped with a note, since schema validity is validate_plan_documents'
-      concern). For each verification_plan step with phase pre-deploy, hermetic true and a
+      implementation_declared is falsy, read with yaml.safe_load only (a file that does not parse as YAML is a reported
+      finding; a parsed plan whose shape is wrong -- non-mapping root, non-list verification_plan, non-mapping step --
+      is skipped with a note, since schema validity is validate_plan_documents' concern; the check never imports
+      scripts.roadmap.plan_document or calls _common.load_plan, so the declared pre_globs stay closure-complete without
+      relying on a pruned edge). For each verification_plan step with phase pre-deploy, hermetic true and a
       pytest invocation (shlex-split; `-m pytest` or a `pytest` argv token), each positional selector argument under
-      tests/ is examined only when its file part (taken before any "::" node suffix) satisfies Path.is_file(); a
-      directory selector or a missing path is skipped and counted in the skipped note, never reported as an unreadable
-      finding (34 directory selectors exist in hermetic steps today; critique series 2 round 1 F1); the value of a
+      tests/ is examined by its file part (taken before any "::" node suffix): a Path.is_file() target is examined
+      itself; a Path.is_dir() target has every test_*.py beneath it examined, each with its own conftest chain, so a
+      guarded member that would make the directory's replay a hollow green is flagged naming that member (critique
+      series 2 round 3 F1; measured 2026-10-30: 34 directory selectors in hermetic steps, one with guarded members, in
+      an already-built plan, so no unrelated PR reddens); a missing path is skipped and counted in the skipped note,
+      never reported as an unreadable finding (round 1 F1); the value of a
       two-token option such as `--deselect X`, `--ignore X`, `-k X` or `-m X` is not a selector. The command is first
       split on shell control operators with a local regex equivalent to
       scripts/checks/verification/_vp_replay_classify._SHELL_SEGMENT_SPLIT_RE (copied, not imported, so the declared
@@ -39,8 +44,9 @@ scope:
       are never attributed to the pytest step: the test file and every conftest.py from its directory up to tests/ are AST-parsed for a
       module-level `pytest.importorskip("<name>")` (assigned or bare) or a module-level `import <name>` / `from <name>
       import` outside try. A hit on a name in the CI-absent set fails with: plan path, step id, selector, the guarding
-      file and name, and the fix ("set hermetic: false, or move the guarded selector into its own hermetic: false step --
-      vp-red-before.yaml hermetic_authoring carve-out (iii)"). A guarded whole-file selector mixed with unguarded ones is
+      file and name, and the fix ("set hermetic: false, or move the guarded selector into its own hermetic: false step
+      (for a directory selector, `--ignore` the guarded member in this step) -- vp-red-before.yaml hermetic_authoring
+      carve-out (iii)"). A guarded whole-file selector mixed with unguarded ones is
       flagged too: replay then passes with the guarded file skipped, a hollow green (critique series 2 round 2 F2). The
       CI-absent set is derived, never hard-coded (Decision 99): import names of requirements.in dists minus
       requirements-fast.txt dists minus requirements-dev.txt dists, reusing _parse_requirement_dist_names and
@@ -53,11 +59,15 @@ scope:
     purpose: >-
       Mirror test (Decision 131 name). Fixture repos under tmp_path: TestFlagsGuardedTarget (module-level importorskip,
       bare importorskip, module-level import, conftest-level guard, a file::Class::test node selector on a guarded
-      file, and a guarded whole file mixed with an unguarded file in one step -- each flagged with the message fields), TestPassesUnguardedTarget (function-scope importorskip, guard on a
+      file, a guarded whole file mixed with an unguarded file in one step, and a directory selector holding a guarded
+      member -- each flagged with the message fields), TestPassesUnguardedTarget (function-scope importorskip, guard on a
       name present in CI such as boto3, hermetic false step, post-deploy step, non-pytest command, selector file absent,
       implementation_declared true plan, a MODIFIED (not added) legacy plan whose step targets a guarded file, a chained
-      command whose non-pytest segment names a guarded file, a directory selector `tests/<dir>/` whose directory holds a
-      guarded file, a `--deselect tests/<guarded>.py::t` option value -- none flagged, the directory counted as skipped), TestAbsentSetDerivation (set equals
+      command whose non-pytest segment names a guarded file, a directory selector whose members are all unguarded, a
+      `--deselect tests/<guarded>.py::t` option value, a missing selector path -- none flagged, the missing path counted
+      as skipped). Cases are table-driven through one shared fixture-plan builder and pytest.mark.parametrize, so the
+      file stays well under 500 SLOC: two warehouse acceptances (rec-2809 after step 5, rec-4763) pin this single path,
+      so it must never need decomposing into a package, TestAbsentSetDerivation (set equals
       requirements.in - fast - dev import names on a fixture triple; the live repo set contains duckdb and not boto3),
       TestAccounting (examined/skipped declared exactly once).
   - file: scripts/checks/deps/_manifest.py
@@ -118,8 +128,9 @@ infrastructure_dependencies: []
 acceptance_criteria:
   - >-
     validate_hermetic_fast_tier_collectability fails a diff-present, not-yet-implemented plan whose hermetic pre-deploy
-    pytest step targets an existing test file guarded on a CI-absent package (including through a node selector), and
-    passes every unguarded shape listed in the mirror test.
+    pytest step targets an existing test file guarded on a CI-absent package (including through a node selector, a
+    mixed selector list, or a directory selector holding a guarded member), and passes every unguarded shape listed in
+    the mirror test.
   - The CI-absent set is derived from requirements.in, requirements-fast.txt and requirements-dev.txt, never hard-coded.
   - The check is registered in --pre and the full tier, and carve-out (iii) names it while keeping the pinned markers.
   - rec-2809 is closed by the Resolves trailer with an acceptance oracle that holds at the closing sha.
@@ -271,6 +282,7 @@ context:
   - Live instance outside the population (critique series 2 round 2 F1) - PLAN-telemetry-claude-p-capture-adapter.yaml (merged, unbuilt) step 7 node-selects tests/common/test_ducklake_event_verification_verbs.py (importorskip duckdb at line 16; replay exits 4), and steps 5 and 6 include test_derived_layer_reconciliation.py and test_append.py (hollow green). Owned by rec-4765, to amend before that plan is built; the other two merged plans with guarded steps are already built.
   - The absent set does not subtract the transitive closure of fast-tier packages; today it equals duckdb, psycopg2, pytz, radon (critique series 2 round 1 I3, informational).
   - Gotcha - plan C owns scripts/checks/verification/_manifest.py this wave, hence the deps domain.
+  - Gotcha - config/ci_rca_taxonomy.yaml is at 494 of 500 effective lines (validate_structural_size_limits); this row plus plan C's leaves 4, and other unbuilt plans also append there, so a later builder may need a compaction pass (critique series 2 round 3 I1).
   - "fork: plan-time check (rec-2809 option a) vs a replay environment carrying the heavy packages (option b) | chosen: option a | class: consistency-only | precedent: keep-PR-CI-light ruling 2026-10-18 | precedent_kind: answered-fork | reversible: yes | persisted: this plan + vp-red-before.yaml carve-out (iii)"
   - "fork: split the parity bundle on a round-5 REVISE | chosen: split | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: this plan (Benjamin 2026-10-30)"
   - Decision-scout verdict FLAGS_FOUND on the bundle (WARN 131 resolved by the mirror test name); CITE subset relevant here 73, 55, 189, 163, 181, 169, 170, 128, 159, 182, 201.
