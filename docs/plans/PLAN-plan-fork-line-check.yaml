@@ -41,17 +41,22 @@ scope:
       consistency-only"), precedent exactly "none" with a non-none kind, and precedent or precedent_kind none on a
       consistency-only line. Asked lines keep free precedent text (who answered, delegated provenance). Pointer failures,
       consistency-only lines only: reversible not yes; no pointer of the line's kind; any pointer of that kind that does
-      not resolve. decision pointers are "Decision NNN" tokens, resolved against docs/decisions-index.json: missing, or
-      superseded (currency starting "superseded", a non-null superseded_by, or a status starting "Superseded"), fails
-      and names the successor when known. contract pointers are "docs/contracts/<file>" or a bare "<file>.yaml" not
-      preceded by "/", resolved under docs/contracts/, with an optional "#dotted.key" anchor walked through the parsed
-      mapping (a small local walk; Decision 104 keeps check-domain helpers out of scripts/roadmap). answered-fork
-      pointers are "PLAN-<slug> fork <n>": the plan must not be the one being judged, docs/plans/PLAN-<slug>.yaml must
-      exist and parse, and its n-th context[] entry starting "fork:" (1-based) must contain "| class: asked" as a word.
-      Each referenced path is requested at most once per call. CLI: `bin/venv-python -m scripts.roadmap.plan_fork_lines
-      PLAN.yaml ...` binds read to the working tree and judges every fork line of the named plans (not diff-scoped),
-      prints one line per failure naming the plan path, "fork <n>", the rule and the template, and exits 1 on any
-      failure, else 0.
+      not resolve. decision pointers are "Decision NNN" tokens, resolved against docs/decisions-index.json. Missing
+      fails. Superseded fails: currency superseded_compacted, or a retired row with no currency whose status starts
+      "Superseded"; the message names the successor (superseded_by, else the status text's "Decision N"). Currency
+      superseded_pointer (Decision 80 today) is a WARN naming the entry whose supersedes list holds it, never a failure,
+      since decision-entry.yaml currency.consumer_contract lets only superseded_compacted remove an entry from a
+      consumer's active set. contract pointers are "docs/contracts/<name>.yaml" or a bare "<name>.yaml" not preceded by
+      "/", where <name> is one path segment matching [A-Za-z0-9_][A-Za-z0-9_.-]*, resolved under docs/contracts/, with
+      an optional "#dotted.key" anchor walked through the parsed mapping (a small local walk; Decision 104 keeps
+      check-domain helpers out of scripts/roadmap). answered-fork pointers are "PLAN-<slug> fork <n>" with <slug>
+      matching [a-z0-9][a-z0-9-]*: the plan must not be the one being judged, docs/plans/PLAN-<slug>.yaml must exist and
+      parse, and its n-th context[] entry starting "fork:" (1-based) must contain "| class: asked" as a word. Findings
+      carry a severity, fail or warn. Each referenced path is requested at most once per call. "fork <n>" counts
+      context[] entries starting "fork:"; a near-miss that does not is reported as "context[<i>]" (0-based). CLI:
+      `bin/venv-python -m scripts.roadmap.plan_fork_lines PLAN.yaml ...` binds read to the working tree and judges every
+      fork line of the named plans (not diff-scoped), prints one line per finding naming the plan path, the ordinal, the
+      rule and the template, and exits 1 on any failure, else 0.
   - file: scripts/checks/roadmap/validate_plan_fork_lines.py
     action: Create
     purpose: >-
@@ -67,9 +72,11 @@ scope:
       then append "Plan fork-line validation". Seams root/base/changed/read_base/read_head as in
       validate_test_skip_citations.run_check; the engine's read is bound to read_head (the working tree, or `git show
       <head>:<rel>` under the CLI's `--base REF --head REF` replay, so pointers resolve at REF). Reads, bounded: the
-      diff's plan paths (base and head), docs/contracts/overseer-dispatch.yaml, and the engine's own requests; it never
-      globs or lists docs/plans. A plan renamed in the diff arrives as an added path (--no-renames), so all its lines
-      are judged; accepted.
+      diff's plan paths (base and head), docs/contracts/overseer-dispatch.yaml, and the engine's own requests. run_check
+      and the engine make no git call and open no file except through the seams, and never glob or list docs/plans; the
+      registered entrypoint's only enumeration is _common.get_status_aware_diff. A missing record_grammar, or one with
+      no extractable template, is a failure, never a skip. WARN findings print without failing. A plan renamed in the
+      diff arrives as an added path (--no-renames), so all its lines are judged; accepted.
   - file: scripts/checks/roadmap/_manifest.py
     action: Modify
     purpose: >-
@@ -97,26 +104,31 @@ scope:
       Check tests through the seams. TestOnlyNewLinesAreJudged: a bad line already on the base passes; the same bad line
       added, or an edited base line, fails; an added plan judges all its lines; non-plan paths and deleted plans are
       ignored. TestBoundedReads (Benjamin's CI-time concern): over a fixture tree holding the diff plan, one plan its
-      answered-fork pointer names, two unreferenced plans (one an unparseable sentinel) and the index and contracts, the
-      set of paths requested through read_base/read_head equals exactly the diff plan, the contract, the index, each
-      cited contract and the one referenced plan; and with Path.glob, Path.rglob, Path.iterdir, os.listdir, os.scandir
-      and glob.glob patched to raise, run_check and the engine still complete. TestContractDrift: a record_grammar whose
-      template disagrees with the engine constants appends a failure naming the field. TestAccounting: base None ->
+      answered-fork pointer names, two unreferenced plans (one an unparseable sentinel) and the index and contracts, both
+      seams served from an in-memory dict, the set of paths requested equals exactly the diff plan, the contract, the
+      index, each cited contract and the one referenced plan; and with every module imported first and then
+      builtins.open, io.open, pathlib.Path.open, Path.read_text, Path.read_bytes, Path.glob, Path.rglob, Path.iterdir,
+      os.listdir, os.scandir, glob.glob, subprocess.run, subprocess.Popen and scripts.checks._common.run all patched to
+      raise for the whole call, run_check and the engine still complete. TestContractDrift: a record_grammar whose
+      template disagrees with the engine constants appends a failure naming the field; a missing record_grammar, or one
+      with no extractable template, fails and is never skipped. TestAccounting: base None ->
       skipped; no plan in the diff -> examined(0).
   - file: docs/contracts/overseer-dispatch.yaml
     action: Modify
     purpose: >-
       APPROVED_CONTRACT verbatim (execution_steps): record_grammar gains the pointer rules; enforcement_coverage gains the
       mechanical validate_plan_fork_lines row and the residual row narrows to rec-4786; amendment_log gains one entry and
-      the 2026-09-03 and 2026-10-18 entries are compacted to one line each (Decision 166 relief valve; 489 of 500
-      effective lines after, 492 before).
+      the 2026-09-03 and 2026-10-18 entries are compacted to one line each (Decision 166 relief valve; on main b91b6b0f,
+      498 effective lines before and 495 of 500 after).
   - file: tests/test_plan_fork_classification_contract.py
     action: Modify
     purpose: >-
       New class TestForkLineCheckCoverage: the mechanical row for the fork line names enforced_by
-      validate_plan_fork_lines and registry.resolve accepts that name; the residual row's owner is rec-4786; record_grammar
-      carries "'Decision NNN'", "docs/contracts/", "'PLAN-<slug> fork <n>'" and "bare literal"; negatives (enforced_by
-      deleted, renamed to an unregistered name, owner reset to rec-3530) fail. Existing tests unchanged; rec-3541 and
+      validate_plan_fork_lines and registry.resolve accepts that name; that name is a check step in both
+      registry.pre_sequence() and registry.full_sequence(); the residual row's owner is rec-4786; record_grammar carries
+      "'Decision NNN'", "docs/contracts/", "'PLAN-<slug> fork <n>'" and "bare literal"; negatives (enforced_by deleted,
+      renamed to an unregistered name, owner reset to rec-3530, and the registry Entry swapped via monkeypatch.setitem on
+      registry._ALL_ENTRIES for dataclasses.replace(entry, pre=False) and for full_segment=None) fail. Existing tests unchanged; rec-3541 and
       rec-3542 stay out of scope.
 bundled_recommendations:
   - rec-3530
@@ -134,11 +146,14 @@ acceptance_criteria:
     n-th fork line that is class: asked.
   - The check fails loudly when record_grammar's template and the engine constants disagree under the scoped comparison rule.
   - >-
-    On CI the check reads no docs/plans file outside the diff except one referenced plan per answered-fork pointer, and
-    lists no directory.
+    On CI, run_check and the engine read only through the injected seams: no docs/plans file outside the diff except one
+    referenced plan per answered-fork pointer, no directory listing, no git call and no direct file open; the registered
+    entrypoint's only enumeration is _common.get_status_aware_diff.
   - >-
-    docs/contracts/overseer-dispatch.yaml equals APPROVED_CONTRACT, stays at or under 500 effective lines, and the
-    contract test pins that the new row's enforced_by is a registered check and the residual owner is rec-4786.
+    In docs/contracts/overseer-dispatch.yaml the three APPROVED_CONTRACT replacements and the one appended
+    amendment_log line land verbatim (the date only varies), no other line changes, and the file stays at or under 500
+    effective lines; the contract test pins that the new row's enforced_by is a check registered in both tiers and the
+    residual owner is rec-4786.
   - rec-3530 is superseded by rec-4786 with the approved resolution after merge; the merge carries no Resolves trailer.
 verification_plan:
   - step: 1
@@ -157,7 +172,9 @@ verification_plan:
     command: bin/venv-python -m pytest tests/test_plan_fork_lines.py::TestConsistencyOnlyPointers -q
     expected: Exit 0, every node passes. Red before because the file does not exist.
     expected_literals: []
-    fix_if: An unresolved, superseded, self or notice-line pointer passes -> fix the resolver.
+    fix_if: >-
+      An unresolved, superseded, self or notice-line pointer passes, or a superseded_pointer Decision fails -> fix the
+      resolver.
     hermetic: true
     graduation: graduate
     graduation_check_id: plan-fork-line-precedent-pointers
@@ -183,11 +200,15 @@ verification_plan:
     graduation_check_id: plan-fork-line-new-lines-only
   - step: 5
     phase: pre-deploy
-    action: The check reads exactly the diff plans, the contract, the index, cited contracts and one plan per answered-fork pointer, and lists no directory.
+    action: >-
+      The check reads exactly the diff plans, the contract, the index, cited contracts and one plan per answered-fork
+      pointer, only through the seams, with no listing, git call or direct file open.
     command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_plan_fork_lines.py::TestBoundedReads -q
     expected: Exit 0, every node passes. Red before because the file does not exist.
     expected_literals: []
-    fix_if: An extra path is read or a listing call fires -> route the read through the injected reader; never widen the expected set.
+    fix_if: >-
+      An extra path is read, or a patched listing, open or subprocess call fires -> route the read through the injected
+      reader; never widen the expected set or drop a patch.
     hermetic: true
     graduation: graduate
     graduation_check_id: plan-fork-line-bounded-reads
@@ -217,7 +238,7 @@ verification_plan:
       CLI is a thin wrapper over the engine path steps 1 and 2 graduate; step 10 exercises it on real plans.
   - step: 8
     phase: pre-deploy
-    action: The contract's new coverage rows and record_grammar pointer rules are pinned.
+    action: The contract's new coverage rows and record_grammar pointer rules are pinned, and the check runs in both tiers.
     command: bin/venv-python -m pytest tests/test_plan_fork_classification_contract.py::TestForkLineCheckCoverage -q
     expected: Exit 0. Red before because the class does not exist.
     expected_literals: []
@@ -279,8 +300,8 @@ verification_plan:
     phase: post-deploy
     action: rec-3530 superseded by rec-4786; rec-4786 open.
     command: >-
-      bin/venv-python -c "from scripts.ops_data_portal import _fetch_rec_from_reader as f;a=f('rec-3530') or {};b=f('rec-4786')
-      or {};print(a.get('status'),b.get('status'));assert a.get('status')=='superseded' and b.get('status')=='open' and
+      bin/venv-python -c "from scripts.ops_data_portal import _fetch_rec_from_reader as f;p='agent_platform';a=f('rec-3530',
+      p) or {};b=f('rec-4786',p) or {};print(a.get('status'),b.get('status'));assert a.get('status')=='superseded' and b.get('status')=='open' and
       'rec-4786' in (a.get('resolution') or '')"
     expected: Exit 0 and "superseded open" printed.
     fix_if: rec-3530 still open -> run APPROVED_REC_UPDATE (only the PR number and merge sha may vary).
@@ -292,7 +313,9 @@ test_obligations:
     test_selector: tests/test_plan_fork_lines.py::TestGrammar
     red_green_expectation: red before (file absent), green after
   - source: scripts/roadmap/plan_fork_lines.py
-    behavior: On a consistency-only line, reversible no and every missing, unresolved, superseded, self or notice-line pointer fails.
+    behavior: >-
+      On a consistency-only line, reversible no and every missing, unresolved, superseded, self or notice-line pointer
+      fails; a superseded_pointer Decision only warns.
     verification_step: 2
     test_selector: tests/test_plan_fork_lines.py::TestConsistencyOnlyPointers
     red_green_expectation: red before (file absent), green after
@@ -302,7 +325,9 @@ test_obligations:
     test_selector: tests/checks/roadmap/test_validate_plan_fork_lines.py::TestOnlyNewLinesAreJudged
     red_green_expectation: red before (file absent), green after
   - source: scripts/checks/roadmap/validate_plan_fork_lines.py
-    behavior: The check reads only the diff plans, the contract, the index, cited contracts and one plan per answered-fork pointer, and lists no directory.
+    behavior: >-
+      The check reads only the diff plans, the contract, the index, cited contracts and one plan per answered-fork
+      pointer, through the seams only, with no listing, git call or direct file open.
     verification_step: 5
     test_selector: tests/checks/roadmap/test_validate_plan_fork_lines.py::TestBoundedReads
     red_green_expectation: red before (file absent), green after
@@ -312,10 +337,10 @@ test_obligations:
     test_selector: tests/test_plan_fork_classification_contract.py::TestForkLineCheckCoverage
     red_green_expectation: red before (class absent), green after
   - source: scripts/checks/roadmap/_manifest.py
-    behavior: The new Entry registers validate_plan_fork_lines in both tiers.
+    behavior: The new Entry places validate_plan_fork_lines in both pre_sequence() and full_sequence().
     verification_step: 8
     test_selector: tests/test_plan_fork_classification_contract.py::TestForkLineCheckCoverage
-    red_green_expectation: red before (registry.resolve raises for the unregistered name), green after
+    red_green_expectation: red before (the name is in neither sequence), green after
   - source: config/ci_rca_taxonomy.yaml
     behavior: The new check maps to a failure category.
     verification_step: 12
@@ -332,11 +357,10 @@ constraints:
   - No rescue agents or workaround loops (Decision 55).
 context:
   - >-
-    Decision-scout v1: FLAGS_FOUND -- WARN 166 (contract at 492 of 500 effective lines; APPROVED_CONTRACT compacts two
-    amendment_log entries, 489 after), NOTE 104 (engine in scripts/roadmap/), SPIRIT 210 (derive-and-assert against
+    Decision-scout v1: FLAGS_FOUND -- WARN 166 (contract at 492 of 500 effective lines then, 498 on main b91b6b0f after
+    #1759; APPROVED_CONTRACT compacts two amendment_log entries, 495 after), NOTE 104 (engine in scripts/roadmap/), SPIRIT 210 (derive-and-assert against
     record_grammar). CITE: 181, 163, 159, 169, 170, 131. Decisions triaged: 191 of 191. Roadmap items intersected: 2;
     CONFLICT: 0; RELATED: 2.
-  - "gates: decision-scout=FLAGS_FOUND (resolved as above); plan-critique=<pending>"
   - >-
     Approved by Benjamin 2026-10-30 ("excellent, I agree with all recommendations, write the plan", 20:21Z): texts A-C
     of /mnt/project-files/rec-3530/approved/v1/step6b-presentation.md (sha256 8e3aadb9...) and asked forks 1-5 at their
@@ -362,6 +386,11 @@ context:
   - "fork: where the code lives | chosen: pure engine in scripts/roadmap/plan_fork_lines.py, thin registered check in scripts/checks/roadmap/validate_plan_fork_lines.py | class: consistency-only | precedent: Decision 104 (domain helpers stay in their domain; the journal writer is not a check) | precedent_kind: decision | reversible: yes | persisted: plan scope"
   - "fork: rule source for the field names and enums | chosen: record_grammar stays the source; the check asserts the engine constants equal its template on every run | class: consistency-only | precedent: Decision 169 (derive-and-assert) | precedent_kind: decision | reversible: yes | persisted: the check"
   - "fork: whether to file a numbered Decision | chosen: no; the coverage rows are contract content | class: consistency-only | precedent: docs/contracts/decision-entry.yaml#significance.routing_rule | precedent_kind: contract | reversible: yes | persisted: plan context"
+  - "fork: what counts as a superseded Decision | chosen: currency superseded_compacted, or a retired row whose status starts Superseded, fails naming its successor; currency superseded_pointer (Decision 80 today) only warns | class: consistency-only | precedent: docs/contracts/decision-entry.yaml#currency.consumer_contract (only superseded_compacted may remove an entry from a consumer's active set) | precedent_kind: contract | reversible: yes | persisted: the engine"
+gate_rounds:
+  - {gate: decision-scout, round: 1, verdict: FLAGS_FOUND}
+  - {gate: plan-critique, round: 1, verdict: REVISE, blocking: 8, nits: 2}
+  - {gate: plan-critique, round: 2, verdict: REVISE, blocking: 3, nits: 6}
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -371,7 +400,7 @@ pre_implementation_checklist:
 execution_steps:
   - >-
     Confirm the checklist. STOP if docs/contracts/overseer-dispatch.yaml's residual row or record_grammar differs from
-    the OLD text quoted in APPROVED_CONTRACT (main 64fa015f), or if rec-4786 is not open.
+    the OLD text quoted in APPROVED_CONTRACT (main b91b6b0f), or if rec-4786 is not open.
   - Write the red tests first (steps 1-6 and 8 nodes) and confirm each fails for the stated reason.
   - scripts/roadmap/plan_fork_lines.py, then scripts/checks/roadmap/validate_plan_fork_lines.py, as scoped.
   - Manifest Entry, taxonomy row, and the seven graduated registry shards (steps 1-6 and 8) per the Verification Graduation walk.
@@ -410,7 +439,8 @@ execution_steps:
     NEW_LOG:
       - {date: "2026-09-03", semantic_break: false, change_class: field_add, summary: "PLAN-step-6b-fork-classification (B2-R4, PDB-03): added autonomy_tiers.plan_fork_classification (the four-criteria Autonomy-Boundary Policy at plan grain); a fourth GATE_REQUEST gate value with its trampoline_sequence stage, gate_run_id.not_applicable_to carve-out and pending_gates.write_ahead clause; and the corrected dispatch header and gate_run_id.provenance scoping. .claude/commands/plan.md and .claude/skills/planning/SKILL.md are named in applies_to."}
       - {date: "2026-10-18", semantic_break: false, change_class: field_add, summary: "PLAN-red-main-recovery-policy (Decision 226): autonomy_tiers.proceed_with_notice.never_overrides now names the red_overlap verdict instead of any open critical ci_rca rec."}
-    (b) Insert this line directly after the existing 2026-10-24 amendment_log line:
+    (b) Append this line as the last amendment_log entry (on main b91b6b0f, after the 2026-10-30
+    PLAN-critique-severity-convergence line; position only, the wording is the approved text):
       - {date: "<landing date>", semantic_break: false, change_class: field_add, summary: "PLAN-plan-fork-line-check (rec-3530): record_grammar states what a consistency-only line's precedent must carry; enforcement_coverage gains the mechanical validate_plan_fork_lines row and the residual row narrows to classification judgement, owned by rec-4786 (rec-3530 superseded); the 2026-09-03 and 2026-10-18 entries are compacted to one line each (Decision 166 relief valve)."}
     (c) In autonomy_tiers.plan_fork_classification.record_grammar, replace OLD_GRAMMAR with NEW_GRAMMAR.
     OLD_GRAMMAR:
@@ -455,10 +485,13 @@ execution_steps:
               Narrowed from rec-3530: judgement, so no check closes it. The alignment sign-off is where it is caught today,
               since the human sees every decided-with-notice line before confirming; plan-critique has no
               fork-classification item and /implement's deviation trigger does not read fork lines.
-    No other line changes. Result: 489 effective lines (scripts.checks.structural._classify.effective_lines).
+    No other line changes. Result: 495 effective lines on main b91b6b0f, counted by
+    scripts.checks.structural._classify.effective_lines. If main has moved the file past 500 after the change, STOP
+    and report; never raise the budget.
   - |-
     APPROVED_REC_UPDATE (approved 2026-10-30; run after the merge; variance: <PR> and <sha> only):
-      bin/venv-python -m scripts.ops_data_portal --update-rec rec-3530 --status superseded --resolution "Superseded by
+      bin/venv-python -m scripts.ops_data_portal --profile agent_platform --update-rec rec-3530 --status superseded
+      --resolution "Superseded by
       rec-4786 via PR #<PR> (merge SHA <sha>). Closing the residual row is unreachable: whether a consistency-only fork is
       convention-fit, has no credible alternative, is off always_ask and is settled by its cited precedent is judgement,
       so the row stays, narrowed and re-owned by rec-4786. Shipped: validate_plan_fork_lines (both tiers) judges every
