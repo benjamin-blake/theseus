@@ -104,3 +104,26 @@ def test_missing_sibling_skips_the_boundary_leg(tmp_path: Path, capsys) -> None:
 
 def test_live_repository_passes() -> None:
     assert _run(None) == []
+
+
+def test_claude_md_missing_fails(tmp_path: Path) -> None:
+    failed = _run(_write_repo(tmp_path, write_claude_md=False))
+    assert len(failed) == 1 and _TERRAFORM_CLAUDE_MD_REL_PATH in failed[0]
+
+
+def test_unparseable_contract_fails(tmp_path: Path) -> None:
+    root = _write_repo(tmp_path)
+    (root / _CONTRACT_REL_PATH).write_text("a: [unclosed\n", encoding="utf-8")
+    assert any("could not parse" in f and _CONTRACT_REL_PATH in f for f in _run(root))
+
+
+def test_unparseable_sibling_fails(tmp_path: Path) -> None:
+    root = _write_repo(tmp_path)
+    (root / _SIBLING_REL_PATH).write_text("a: [unclosed\n", encoding="utf-8")
+    assert any("could not parse" in f and _SIBLING_REL_PATH in f for f in _run(root))
+
+
+def test_non_mapping_contract_fails_on_paths(tmp_path: Path) -> None:
+    root = _write_repo(tmp_path)
+    (root / _CONTRACT_REL_PATH).write_text("- just\n- a list\n", encoding="utf-8")
+    assert any("missing or empty 'referenced_repo_paths'" in f for f in _run(root))
