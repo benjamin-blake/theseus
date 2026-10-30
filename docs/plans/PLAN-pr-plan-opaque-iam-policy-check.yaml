@@ -31,7 +31,7 @@ scope:
       read never) and whose change.after_unknown is an object with policy exactly true; documents are entries of type
       aws_iam_policy_document whose change.actions is ["read"] and which carry any non-empty action_reason
       (read_because_dependency_pending or read_because_config_unknown), whatever consumes them. Each list holds addresses rendered
-      as the digest renders them (strip_instance_keys, then _redact), deduplicated and sorted; a malformed entry,
+      as the digest renders them (_clean(strip_instance_keys(address)), then _redact), deduplicated and sorted; a malformed entry,
       change, actions or after_unknown is skipped, never raised. fit_report keeps its precedence and text: OVERFLOW
       (unchanged) first; else, when either list is non-empty, the new fixed line "Reviewer digest OPAQUE: policies
       unknown at plan time: <comma-separated addresses or none>; deferred documents: <comma-separated addresses or
@@ -50,7 +50,8 @@ scope:
   - file: scripts/ci/terraform_personal_plan_report.py
     action: Modify
     purpose: >-
-      fit_word returns OPAQUE for a fit text starting "Reviewer digest OPAQUE:" (OVERFLOW and FITS unchanged), so the
+      fit_word tests startswith("Reviewer digest OPAQUE:") first and returns OPAQUE (so an address containing OVERFLOW
+      cannot change the word; a case pins it), then OVERFLOW and FITS unchanged, so the
       comment's "Reviewer digest fit:" line stays exactly one word. For OPAQUE only, one new line follows it:
       "Unknown at plan time: " then the policy and document addresses parsed from the fixed OPAQUE grammar by one strict
       regex (anything that does not match renders no address line), each passed through plan_names_core.normalise_address
@@ -132,7 +133,7 @@ scope:
       terraform-plan-digest status on the head sha.", the item "After persisting plan.bin and posting its digest status,
       fails the job (red; still no required check) when the reviewer-digest fit check reports OPAQUE (an IAM policy
       unknown at plan time) or OVERFLOW." amendment_log gains at the top: date of the build, semantic_break false,
-      change_class field_add, and on its one summary: line the summary "PLAN-pr-plan-opaque-iam-policy-check:
+      change_class governance_note_add (this row's 2026-10-30 precedent), and on its one summary: line the summary "PLAN-pr-plan-opaque-iam-policy-check:
       speculative_plan_job fails the job when the reviewer-digest fit check reports OPAQUE or OVERFLOW." This adds 5
       effective lines (step 1, amendment entry 4 with the summary as one double-quoted line); 499 after #1736, so it
       reaches 504 and the fold is certain. Use the contracts relief valve "compact amendment history"
@@ -235,11 +236,12 @@ verification_plan:
       sys.exit(1 if failed else 0)
       EOF
       git diff --quiet origin/main -- terraform/github .github/CODEOWNERS
+      ! git diff origin/main -- config/composite_action_body_baseline.yaml config/sloc_budgets.yaml config/structural_size_budgets.yaml | grep -q raise-approved
       test "$(grep -cF 'After persisting plan.bin and posting its digest status, fails the job (red; still no required check) when the reviewer-digest fit check reports OPAQUE (an IAM policy unknown at plan time) or OVERFLOW.' docs/contracts/terraform-cc-web-operations.yaml)" -eq 1
     expected: >-
       exit 0 and GUARDS_OK printed; terraform/github and .github/CODEOWNERS unchanged from origin/main (the job stays out
-      of required checks); the contract at most 500 effective lines, and the approved contract sentence present exactly
-      once.
+      of required checks); no raise-approved marker added to a budget file; the contract at most 500 effective lines, and
+      the approved contract sentence present exactly once.
     fix_if: >-
       The contract over 500 - compact amendment history (fold the largest multi-line summaries, text unchanged); never
       raise, never touch the approved sentence. A predicate (h) failure - the step runs something not code-owned; it
@@ -262,37 +264,58 @@ verification_plan:
     phase: post-deploy
     action: >-
       The first real terraform/personal PR after merge (live proof; the trusted job runs main's workflow on
-      pull_request_target, so only a merged step can run). Through the github MCP server (no raw REST, no gh): save
-      mcp__github__actions_list method list_workflow_jobs for that PR's terraform-plan-trusted run as JSON to $JOBS_JSON,
-      and mcp__github__get_job_logs for its `plan` job to $JOB_LOG. The command reads only those two files.
+      pull_request_target, so only a merged step can run). Through the github MCP server (no raw REST, no gh), save three
+      files: mcp__github__actions_list method list_workflow_jobs for that PR's terraform-plan-trusted run, as JSON, to
+      $JOBS_JSON; the log text (not the JSON wrapper) of mcp__github__get_job_logs for its `plan` job with
+      return_content true and tail_lines large enough to hold the whole job, to $JOB_LOG; and
+      mcp__github__pull_request_read method get_comments for the PR, as JSON, to $COMMENTS_JSON. The command reads only
+      those files.
     command: |-
-      test -s "$JOBS_JSON" && test -s "$JOB_LOG" && bin/venv-python - <<'EOF'
-      import json, os, sys
+      test -s "$JOBS_JSON" && test -s "$JOB_LOG" && test -s "$COMMENTS_JSON" && bin/venv-python - <<'EOF'
+      import json, os, re, sys
       jobs = json.load(open(os.environ["JOBS_JSON"], encoding="utf-8"))["jobs"]
       job = [j for j in jobs if j["name"] == "plan"][0]
       steps = {s["name"]: s["conclusion"] for s in job["steps"]}
       step = steps.get("Fail when the reviewer digest cannot review this plan")
-      log, section, inside = open(os.environ["JOB_LOG"], encoding="utf-8", errors="replace").read().splitlines(), [], False
-      for line in log:
+      section, inside, seen = [], False, False
+      for line in open(os.environ["JOB_LOG"], encoding="utf-8", errors="replace").read().splitlines():
           if "##[group]Run " in line:
               inside = "--fit-check" in line
+              seen = seen or inside
           elif inside:
               section.append(line)
+      if not seen:
+          print("NO_FIT_CHECK_SECTION")
+          sys.exit(2)
       text = "\n".join(section)
       fits = "Reviewer digest: " in text
       blocked = "Reviewer digest OPAQUE:" in text or "Reviewer digest OVERFLOW:" in text
-      print(json.dumps({"step": step, "comment": steps.get("Post the plan comment"), "fits": fits, "blocked": blocked}))
-      ok = steps.get("Post the plan comment") == "success" and ((step == "success" and fits and not blocked) or (step == "failure" and blocked and not fits))
-      sys.exit(0 if ok else 1)
+      notes = [ln for ln in section if "error" in ln and re.search(r"(OPAQUE [0-9]+|OVERFLOW 1)$", ln)]
+      def bodies(x):
+          if isinstance(x, dict):
+              for v in x.values():
+                  yield from bodies(v)
+          elif isinstance(x, list):
+              for v in x:
+                  yield from bodies(v)
+          elif isinstance(x, str) and "Reviewer digest fit:" in x:
+              yield x
+      found = list(bodies(json.load(open(os.environ["COMMENTS_JSON"], encoding="utf-8"))))
+      word = re.search(r"Reviewer digest fit: ([A-Z]+)", found[-1]).group(1) if found else None
+      print(json.dumps({"step": step, "comment": steps.get("Post the plan comment"), "fits": fits, "blocked": blocked, "annotations": len(notes), "fit_word": word}))
+      passed = step == "success" and fits and not blocked and not notes and word == "FITS"
+      failed = step == "failure" and blocked and not fits and len(notes) == 1 and word in ("OPAQUE", "OVERFLOW")
+      sys.exit(0 if steps.get("Post the plan comment") == "success" and (passed or failed) else 1)
       EOF
     expected: >-
-      one JSON line with comment "success" and either step "success" with fits true and blocked false, or step "failure"
-      with blocked true and fits false; the PR comment's fit word agrees with the step (FITS when it passed, OPAQUE or
-      OVERFLOW when it failed), and the step section shows the one annotation line with only the word and a count.
+      one JSON line with comment "success" and either step "success", fits true, blocked false, 0 annotations and
+      fit_word FITS, or step "failure", blocked true, fits false, 1 annotation line carrying only the word and a count,
+      and fit_word OPAQUE or OVERFLOW.
     fix_if: >-
-      The step was skipped on a plan that ran - the placement is wrong; fix forward. The step disagrees with the comment's
-      fit word - the two read different inputs; fix forward. A finding on an unrelated PR - full-refresh drift on a
-      referenced resource; reconcile the drift (the merge-time review would refuse the same plan).
+      NO_FIT_CHECK_SECTION (exit 2) - the saved log is truncated or the step did not run; re-fetch the whole log first, and
+      only if the step is absent from a run that reached it is the placement wrong; fix forward. The step disagrees with
+      the comment's fit word - the two read different inputs; fix forward. A finding on an unrelated PR - full-refresh
+      drift on a referenced resource; reconcile the drift (the merge-time review would refuse the same plan).
     hermetic: false
 test_obligations:
   - source: scripts/ci/terraform_plan_digest.py
@@ -317,8 +340,9 @@ test_obligations:
     waiver_reason: Ceiling bookkeeping; the existing guard enforces it, and a new 1-line entry has no behaviour of its own to test.
   - source: docs/contracts/terraform-cc-web-operations.yaml
     behavior: Approved step sentence present.
-    verification_step: 4
-    command: bin/venv-python -m scripts.validate
+    verification_step: 3
+    command: >-
+      grep -cF 'After persisting plan.bin and posting its digest status, fails the job (red; still no required check) when the reviewer-digest fit check reports OPAQUE (an IAM policy unknown at plan time) or OVERFLOW.' docs/contracts/terraform-cc-web-operations.yaml
     waiver_reason: Prose only; validate_terraform_cc_web_operations checks the contract's structure, and VP 3 greps the sentence.
 constraints:
   - No guard, reviewer, review.sh, IAM, Terraform, authority-budget, environment-taxonomy, CODEOWNERS or Decision change (Decision 77, 92 pt 1).
@@ -339,15 +363,15 @@ context:
   - "Design history: the blind Fable consult (fable-blind/ADVICE-stage1.md, ADVICE-stage2.md beside step6b-v2) replaced the earlier standalone-script design after critique round 7 found #1736 deletes the speculative-plan job. Escalations: critique-round4-escalation.md, critique-round6-escalation.md, critique-round7-retarget.md."
   - "Why the PR plan is the merge plan: the trusted job persists tfplan/personal/<pr>/<sha>.bin and posts its digest; the push path fetches and applies it, digest-verified (fetch-saved-plan/action.yml:81-91)."
   - "Placement: before persist or digest a failure would skip both and fail the merge closed; after digest and before the comments, the comment steps' !cancelled() guards still post the names-only comment."
-  - "Expected trips and remedies: Lambda in-place edit deferring CI documents (fixed by #1730); a policy referencing a resource created in the same PR (#1442, #1641 shape) -> name-built ARN or two PRs; a default_tags change on the four allowlisted resources -> no one-line remedy, the plan for such a change decides; full-refresh drift on a referenced resource -> reconcile first; OVERFLOW -> split the change or raise DIGEST_SIZE_CAP by PR."
+  - "Expected trips and remedies: Lambda in-place edit deferring CI documents (fixed by #1730); a policy referencing a resource created in the same PR (#1442, #1641 shape) -> name-built ARN or two PRs; a default_tags change on the four allowlisted resources -> no one-line remedy, the plan for such a change decides; full-refresh drift on a referenced resource -> reconcile first; generally, any in-place update to a resource a policy document references defers that document, and splitting the PR does not help there - only a name-built ARN does; OVERFLOW -> split the change or raise DIGEST_SIZE_CAP by PR."
   - "Residuals (not fixed here): fresh-plan paths (dispatch acknowledge-and-retry, Decision 183 cl.2; Reconcile fallback, Decision 158) and a human 'merge anyway' still meet the merge-time coin flip until rec-4741; adopting GitHub auto-merge (git-ops.yaml push_pr_ci_merge_flow.wake_signals.auto_merge_relationship) would let a non-required red merge; the CI-green wake covers ci.yml only, so merges rely on get_check_runs (pull_request_target job runs appear there)."
-  - "S3: PLAN-trusted-plan-cutover (rec-4637). PR 1 #1728 and PR 2 #1735 merged; PR 3 #1736 (trusted job `plan`, deletes speculative-plan) approved by Benjamin 2026-10-30 11:08Z, merging after #1730 applies. This build edits #1736's test_terraform_plan_trusted.py and workflow after it lands."
+  - "S3: PLAN-trusted-plan-cutover (rec-4637). PR 1 #1728 and PR 2 #1735 merged; PR 3 #1736 (trusted job `plan`, deletes speculative-plan) merged 2026-10-30 as b2e4a548, after #1730 (cf4ccf98). This build edits #1736's test_terraform_plan_trusted.py and workflow."
   - "Merge rule: before merging any terraform/personal PR, confirm with get_check_runs that the trusted `plan` job finished green."
   - "Sequencing: the build starts once this plan merges and #1736 is on main, unless a new critical ci_rca rec is open. rec-4741's planning thread ('Show deferred policies to merge reviewer') also edits terraform_plan_digest.py; its build follows this one. The build waits for #1730 too (approval item 8; execution step 1 checks both)."
   - "Decision-scout: FLAGS_FOUND (reshaped design, 2026-10-30). Decisions triaged: 191 of 191. Roadmap items intersected: 2; CONFLICT: 0; RELATED: 2. CITE 238, 83, 89, 77, 92, 158, 162, 166; related 183, 226, 128, 144, 48, 205, 181. One NOTE (238 cl.4: the --fit-check unreadable-input message carried diagnostic text into a public log) folded as the fixed UNREADABLE_PLAN line plus a names-only log test. Opacity here is Terraform's unknown value, not the names-only rule, so 238's premises-change reversal is not triggered."
   - "Decided with notice (Decision 181, 89): the contract sentence stays exactly as approved; its enforcers are the ORDER pin and the fit-check tests, and the remedy for each trip is on the OPAQUE fit line and in 'Expected trips' above."
   - "red_overlap: verdict clear, no open reds (rec-4718 closed 2026-10-29 22:46Z after Reconcile run 40958224365)."
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 9 round(s) (R1-R7 on the earlier design, R8-R9 on this one); round 9 autonomous"
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
