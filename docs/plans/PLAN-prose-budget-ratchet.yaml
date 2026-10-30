@@ -1,0 +1,252 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: prose-budget-ratchet
+intent: >-
+  Make the ambient-prose byte budgets ratchet for real: a PR that shrinks a gated prose file must lower its budget in the
+  same PR, so budgets stay at measured size, compaction gains are locked in, and the two graduated equality guards on
+  config/prose_budgets.yaml stop rotting red on main (rec-4779).
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-prose-budget-ratchet.yaml
+phase: >-
+  ad_hoc_rec (soft-warn category; no tier_item claimed, so the Tier Item Freshness Gate is skipped). Executes rec-4779,
+  surfaced by the Project Review plan A critique rounds.
+scope:
+  - file: scripts/checks/prose/prose_limits.py
+    action: Modify
+    purpose: >-
+      An entry measured below its budget FAILS (it was a non-blocking advisory), naming the exact reseed line and the
+      sanction row; over-budget and unregistered branches unchanged; the advisory list and its print block go.
+  - file: scripts/preflight/prose_context.py
+    action: Modify
+    purpose: >-
+      _resolve_s1_root_load_set takes an optional root (default _common.ROOT), so the scope-boundary trigger reuses the
+      one @-import walk at a fixture root. No other behaviour change.
+  - file: scripts/checks/verification/validate_scope_boundary.py
+    action: Modify
+    purpose: >-
+      New trigger kind scope_file_is_prose_gated: fires when declared scope meets the S1 load set or an S2/S4/S8 path key
+      of trigger.registry_path, and sanctions the registry only when its base-to-working diff is decrease-only (every
+      entry value <= base, every other byte identical); otherwise a finding names why and the path stays unsanctioned.
+  - file: docs/contracts/implement-scope-boundary.yaml
+    action: Modify
+    purpose: The prose_budgets_ratchet_down sanction row and one amendment_log entry, exact text in execution_steps[3].
+  - file: config/prose_budgets.yaml
+    action: Modify
+    purpose: >-
+      Header ratchet paragraph replaced (exact text in execution_steps[4]); every entry reseeded to its measured bytes,
+      S1 included, its plan-D comment dropped (operator ruling, see context).
+  - file: tests/checks/prose/test_prose_limits.py
+    action: Modify
+    purpose: >-
+      New class TestUnderBudgetFails; the four under-budget-is-advisory tests and TestProseRatchetAdvisoryEmission are
+      rewritten to the failing polarity (a strengthening: same fixtures, opposite assertion).
+  - file: tests/checks/verification/validate_scope_boundary/test_prose_budgets_ratchet_row.py
+    action: Create
+    purpose: TestProseBudgetsRatchetRow, the trigger kind's arms (listed in execution_steps[2]) plus the real contract row shape.
+bundled_recommendations:
+  - rec-4779
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - validate_prose_limits fails a registered surface measured below its budget, and the failure names the surface and the exact value to reseed.
+  - A resolved plan whose declared scope contains a prose-gated surface may lower lines in config/prose_budgets.yaml without declaring it; any other edit to that file (a raise, a comment, a new key) still STOPs as out of scope.
+  - Every config/prose_budgets.yaml entry equals its measured bytes on the merged tree, and both graduated guards (prose-budgets-s4-entries-equal-measured-and-marker-free, prose-budgets-reseeded-to-measured) pass.
+  - docs/contracts/implement-scope-boundary.yaml stays at or under 500 effective lines; validate_scope_boundary.py stays under 500 SLOC.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: Under-budget fails, at budget passes, over-budget and unregistered still fail, message names the reseed value.
+    command: bin/venv-python -m pytest tests/checks/prose/test_prose_limits.py::TestUnderBudgetFails -q
+    expected: exit 0, all tests in the class pass.
+    fix_if: A test sees an empty failed list for an under-budget fixture -- the advisory branch survived in _check_entry.
+    hermetic: true
+    expected_literals: []
+    graduation: graduate
+    graduation_check_id: prose-limits-under-budget-fails
+  - step: 2
+    phase: pre-deploy
+    action: The sanction row's trigger arms.
+    command: bin/venv-python -m pytest tests/checks/verification/validate_scope_boundary/test_prose_budgets_ratchet_row.py::TestProseBudgetsRatchetRow -q
+    expected: exit 0, all arms pass.
+    fix_if: >-
+      A raise, a comment edit or a new key passed as sanctioned (the decrease-only diff test is too loose), or a decrease
+      with an S1 member in scope STOPs (the S1 walk did not run at the fixture root).
+    hermetic: true
+    expected_literals: []
+    graduation: graduate
+    graduation_check_id: scope-boundary-prose-budgets-ratchet-row
+  - step: 3
+    phase: pre-deploy
+    action: Whole-suite re-run of every suite the scope files feed.
+    command: >-
+      bin/venv-python -m pytest tests/checks/prose/ tests/checks/verification/validate_scope_boundary/
+      tests/test_scope_boundary_contract.py tests/test_prose_context.py -q
+    expected: exit 0.
+    fix_if: A pinned contract test or a prose_context caller broke -- fix the source, never the test.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: Whole-file re-run of suites the --pre affected set already selects for these scope files.
+  - step: 4
+    phase: pre-deploy
+    action: The live gate passes on the reseeded tree.
+    command: >-
+      bin/venv-python -c "from scripts.checks.prose.prose_limits import validate_prose_limits as v; f=[]; v(f);
+      print('PROSE_FAILED', len(f)); raise SystemExit(1 if f else 0)"
+    expected: exit 0; no surface reported below or over budget.
+    fix_if: A surface reports below budget -- reseed that entry to the printed value (a file changed on main since the reseed).
+    hermetic: true
+    expected_literals:
+      - PROSE_FAILED 0
+      - All gated prose surfaces within budget.
+    graduation: waive
+    graduation_waiver_reason: >-
+      Passes on origin/main too (there the advisory never fails), so the admission gate would refuse it as tautological;
+      the claim is carried by validate_prose_limits itself, which runs in every --pre.
+  - step: 5
+    phase: pre-deploy
+    action: Both graduated equality guards pass.
+    command: >-
+      bin/venv-python -c "from scripts import verification_graduation as g;
+      ids={'prose-budgets-s4-entries-equal-measured-and-marker-free','prose-budgets-reseeded-to-measured'};
+      r={e['check_id']: str(g.materialize_check(e).run().status) for e in g.load_entries() if e['check_id'] in ids};
+      print(r); raise SystemExit(0 if len(r)==2 and all(s.endswith('PASS') for s in r.values()) else 1)"
+    expected: exit 0; both ids map to PASS.
+    fix_if: An id is missing (a shard was renamed or retired) or FAILs (an entry is not at measured bytes).
+    hermetic: true
+    expected_literals: []
+    graduation: waive
+    graduation_waiver_reason: Both claims are already graduated rows; a third row would duplicate them.
+  - step: 6
+    phase: pre-deploy
+    action: Size governance on the two near-cap files.
+    command: >-
+      bin/venv-python -c "from pathlib import Path; from scripts.checks.structural._classify import effective_lines;
+      e=effective_lines(Path('docs/contracts/implement-scope-boundary.yaml').read_text(encoding='utf-8'));
+      s=sum(1 for l in Path('scripts/checks/verification/validate_scope_boundary.py').read_text(encoding='utf-8').splitlines()
+      if l.strip() and not l.strip().startswith('#')); print('contract', e, 'sloc', s); raise SystemExit(0 if e<=500 and s<=500 else 1)"
+    expected: exit 0 (contract 475 effective lines before this plan).
+    fix_if: Contract over 500 -- compact the new row and amendment entry, never raise (Decision 166).
+    hermetic: true
+    expected_literals: []
+    graduation: waive
+    graduation_waiver_reason: The structural-size and SLOC gates already run in --pre; this step only pins the plan's own headroom.
+  - step: 7
+    phase: post-deploy
+    action: 'Closure: rec-4779 closed by the Resolves trailer.'
+    command: >-
+      bin/venv-python -c "from src.common.ducklake_reader_client import fetch_recs_by_ids, make_reader;
+      rows,_=fetch_recs_by_ids(make_reader(),['rec-4779']); s={r['id']:r['status'] for r in rows}; print(s);
+      assert s=={'rec-4779':'closed'}, s"
+    expected: rec-4779 closed.
+    fix_if: Open -- read the closure job log; its acceptance is VP step 1's selector.
+    hermetic: false
+test_obligations:
+  - source: scripts/checks/prose/prose_limits.py
+    behavior: Under-budget fails with the reseed value; at-budget passes; over-budget and unregistered still fail.
+    verification_step: 1
+    test_selector: tests/checks/prose/test_prose_limits.py::TestUnderBudgetFails
+    red_green_expectation: red before (class absent; under-budget passes), green after.
+  - source: scripts/checks/verification/validate_scope_boundary.py
+    behavior: scope_file_is_prose_gated sanctions only a decrease-only registry diff, only for a plan with a gated surface in scope.
+    verification_step: 2
+    test_selector: tests/checks/verification/validate_scope_boundary/test_prose_budgets_ratchet_row.py::TestProseBudgetsRatchetRow
+    red_green_expectation: red before (file absent; the kind is unimplemented and fails loudly), green after.
+  - source: scripts/preflight/prose_context.py
+    behavior: S1 resolver honours an explicit root; default unchanged.
+    verification_step: 2
+    test_selector: tests/checks/verification/validate_scope_boundary/test_prose_budgets_ratchet_row.py::TestProseBudgetsRatchetRow
+    red_green_expectation: red before (an S1-member arm cannot fire at a fixture root), green after.
+  - source: docs/contracts/implement-scope-boundary.yaml
+    behavior: The row exists with the kind, registry_path and path_template the check reads.
+    verification_step: 2
+    test_selector: tests/checks/verification/validate_scope_boundary/test_prose_budgets_ratchet_row.py::TestProseBudgetsRatchetRow
+    red_green_expectation: red before (row absent), green after.
+  - source: config/prose_budgets.yaml
+    behavior: Every entry equals measured bytes.
+    verification_step: 5
+    command: prose-budgets-reseeded-to-measured
+    red_green_expectation: red before (both guards FAIL on main), green after.
+constraints:
+  - Lands after the critique-severity-convergence build merges (it shrinks the planning and plan-critique skills and leaves config/prose_budgets.yaml alone).
+  - Pure decreases only in config/prose_budgets.yaml -- no raise, so no raise-approved marker is added; plan-critique keeps its dec-75 marker (Decision 128 cl.3 allows either; keeping it is no churn).
+  - No reservation marker or any other loosening token is introduced (Decision 235 cl.1, Decision 165).
+  - Never split or decompose a prose surface to fit a budget (Decision 114/110); never raise the contract's size cap (Decision 166).
+  - No rescue agents or workaround loops (Decision 55).
+context:
+  - "Investigation: /mnt/project-files/prose-budget-guard/INVESTIGATION.md (root cause, drift commits #1170/#1273, 48/752 corpus sweep). Rec rationale in rec-4779."
+  - "Precedent: roadmap_liveness_baseline_shrink (a measured-pinned baseline whose shrink edit is sanctioned, growth refused elsewhere)."
+  - "Operator rulings 2026-10-30 (Benjamin): tight ratchet and write the plan (20:10:45Z, this thread); S1 reseeds to measured now and plan D raises it later with its own Decision marker (20:06:59Z, plan D thread card), superseding the 300 B reserve set by #1749."
+  - "Deliberate divergence, disclosed: SLOC (Decision 128), mypy (Decision 161 cl.3) and structural-size ratchets still only advise on under-budget; parity is not in scope."
+  - "The sixth sanction row meets implement-scope-boundary.yaml's re_ratification_trigger (count >= 6); its owner is human + plan-critique gate -- this plan's operator sign-off and critique are that review for this row."
+  - "Related-work check: red_overlap exit 1, blocked by rec-4780 (Critical ci_rca, plan_document corpus test worker crash) via shared transitive test modules only. Deferral rationale: its cause is already fixed on main by #1755 (094b9b58) and the rec self-closes on its probe; this plan touches no plan_document code, and its build still needs a green full tier before handoff (Decision 163)."
+  - "Layer 2 (graduated rows never re-run) stays with rec-3341 / rec-3247 / rec-3119 / rec-3286."
+  - "Sequencing: plan B (dry build) also adds sanction rows to the same contract and inherits about 7 effective lines of headroom; plan C's build cuts implement SKILL.md and must lower its line (the new row sanctions it)."
+  - "Decision-scout verdict: FLAGS_FOUND (Decision 235 WARN, Decision 165 SPIRIT WARN: both on the reservation marker, resolved by dropping it). CITE: Decision 43, Decision 127, Decision 128, Decision 165, Decision 59, Decision 181. Decisions triaged: 191 of 191. Roadmap items intersected: 2; CONFLICT: 0; RELATED: 2"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - >-
+    Rebase onto origin/main. Confirm the critique-severity-convergence build has merged (git log origin/main --
+    .claude/skills/planning/SKILL.md shows it); if not, STOP and report -- this build must not land first.
+  - >-
+    scripts/checks/prose/prose_limits.py: in _check_entry, current_bytes < budget appends to errors:
+    "{surface} {path}: {current_bytes} bytes below budget {budget}; lower the entry to {current_bytes} in
+    config/prose_budgets.yaml in this PR (the ratchet only goes down; implement-scope-boundary's prose_budgets_ratchet_down
+    row sanctions the edit)." Drop the advisories parameter, list and print block; update the module docstring's one
+    advisory sentence. scripts/preflight/prose_context.py: _resolve_s1_root_load_set(root: Path | None = None), using
+    root or _common.ROOT throughout.
+  - >-
+    scripts/checks/verification/validate_scope_boundary.py: add kind scope_file_is_prose_gated to _row_derived_paths.
+    Gated set = relpaths of _resolve_s1_root_load_set(root) union every key containing "/" or ending ".md" in the
+    working-tree trigger.registry_path (raw-text flattened entry scan, the registry's own block-style grammar). If
+    plan_scope_files is disjoint from it, return []. Else read the registry at base (git show, the _plan_content_at_ref
+    convention) and in the working tree; absent at either half -> append a finding and return []. Decrease-only means
+    the two texts are byte-identical after replacing each entry line's integer with a placeholder, and every working
+    value <= its base value; if so return [path_template], else append "scope-boundary: prose_budgets_ratchet_down
+    sanctions only lowered values in <registry>; this diff changes other text -- declare it in scope" and return [].
+    Update the module docstring. Test arms in the new file: (a) S4 path in scope + lowered value -> no findings;
+    (b) same + raised value -> STOP on the registry path; (c) same + comment edit -> STOP; (d) S1 member (CLAUDE.md or
+    an @-imported file) in scope + lowered value -> no findings; (e) no gated surface in scope + lowered value -> STOP;
+    (f) the real contract's row has kind scope_file_is_prose_gated, registry_path and path_template
+    config/prose_budgets.yaml.
+  - |-
+    docs/contracts/implement-scope-boundary.yaml -- apply exactly. Append after the roadmap_liveness_baseline_shrink row (same indentation):
+      prose_budgets_ratchet_down:
+        purpose: >-
+          validate_prose_limits fails an entry of config/prose_budgets.yaml measured below its budget, so a plan whose
+          declared scope shrinks a prose-gated surface (an S1 root load-set member, or an S2/S4/S8 path key) must lower
+          that entry. The grant is decrease-only and checked: any other byte change, a raise included, leaves the path
+          unsanctioned and STOPs. Raises stay with validate_prose_budget_raises (Decision 128/165).
+        trigger:
+          kind: scope_file_is_prose_gated
+          registry_path: config/prose_budgets.yaml
+          description: "Fires when the resolved plan's declared scope contains a prose-gated surface."
+        sanctions:
+          path_template: "config/prose_budgets.yaml"
+        prohibited_field_edits: []
+    Prepend to amendment_log (newest first):
+      - date: "2026-10-30"
+        semantic_break: false
+        change_class: field_add
+        summary: >-
+          PLAN-prose-budget-ratchet (rec-4779): added the prose_budgets_ratchet_down row (trigger kind
+          scope_file_is_prose_gated). It confers no entry-level freedom: the check sanctions a decrease-only diff and
+          validate_prose_limits pins every entry to measured bytes. Sixth row, meeting re_ratification_trigger.
+  - |-
+    config/prose_budgets.yaml -- replace the two lines starting "# Budgets ratchet DOWN only." with exactly:
+    # Budgets ratchet DOWN only and equal each surface's CURRENT byte size (zero headroom): validate_prose_limits
+    # fails current>budget and current<budget alike. A PR that shrinks a surface lowers its entry in the same PR
+    # (sanctioned by implement-scope-boundary.yaml's prose_budgets_ratchet_down row).
+    Then set every entry to its measured bytes (VP step 4's failure messages print each value), S1 included, and delete
+    the S1 line's trailing comment. Keep the plan-critique line's raise-approved marker.
+  - Execute Verification Plan steps 1-6; loop until pass; run the full tier before handoff per handoff_policy.
+  - 'Report: what was implemented, verification results, and each reseeded entry old -> new.'
+rollback: Revert the squash commit; budgets return to their prior values and the gate to advisory.
