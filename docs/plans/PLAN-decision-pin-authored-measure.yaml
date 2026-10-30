@@ -67,7 +67,8 @@ scope:
     purpose: This plan.
 bundled_recommendations:
   - rec-4730
-followon_recs: []
+followon_recs:
+  - rec-4744
 infrastructure_dependencies: []
 acceptance_criteria:
   - >-
@@ -81,8 +82,9 @@ acceptance_criteria:
     "> **Note:**" paragraph counts, as do "> **Note:** on 2026-10-01 the **Clause 2:** text." (date outside the bold
     prefix) and "[Amendment 2026-10-29: x.] more body [ref]" (bracket closes before the paragraph ends); body text after a trailer counts (so does that trailer); a dated annotation inside the
     body (e.g. Intent accretion) counts; growing the entry's own text by N bytes grows authored_bytes by N;
-    decision_entry refuses a missing or duplicated heading; for every live entry, the authored text is a prefix of the
-    block up to its separator.
+    decision_entry refuses a missing or duplicated heading; for every live entry, the kept text is a prefix of the block
+    and the stripped text holds only paragraphs opening "[Amendment " or "> **", with no "**Marker:**" line and no code
+    fence.
   - >-
     All seven pins (Decisions 210, 214, 222, 226, 228, 230, 237) assert authored_bytes(<that Decision's
     decision_entry block>) <= cap_bytes(), and no other assertion in their files changes meaning. No _CAP_BYTES,
@@ -95,9 +97,9 @@ acceptance_criteria:
     A test asserts cap_bytes() equals both the contract value and validate_decisions_size._PER_ENTRY_CAP_BYTES, so the
     validator's constant and the pins cannot drift from the contract.
   - >-
-    Headroom after the change matches the dry build (2026-10-29, origin/main 38593bdd): 210 1,016 B; 214 2,693; 222 1,567;
-    226 147; 228 2,095; 230 77; 237 958. A 300 B dated annotation on Decision 210 passes its pin (fails today); 110 B of new
-    clause text in Decision 230's body fails its pin.
+    VP step 3: a 300 B dated annotation on Decision 210 passes its pin (fails today) and 110 B of new clause text in
+    Decision 230's body fails its pin. The PR body reports headroom per pinned Decision (report-only; on 38593bdd the dry
+    build measured 210 1,016 B; 214 2,693; 222 1,567; 226 147; 228 2,095; 230 77; 237 958).
   - >-
     No change to docs/DECISIONS.md, docs/contracts/decision-entry.yaml, scripts/decisions_md.py,
     scripts/checks/decisions/validate_decisions_size.py or any other non-test file.
@@ -108,15 +110,20 @@ verification_plan:
     command: >-
       bin/venv-python -m pytest -q
       "tests/checks/decisions/test_decision_pin_measure.py::test_no_test_pins_a_decision_by_its_whole_span"
+      "tests/checks/decisions/test_decision_pin_measure.py::test_trailing_dated_annotations_are_excluded"
       "tests/checks/decisions/test_decision_pin_measure.py::test_entry_without_trailers_measures_as_the_validator_span"
       "tests/checks/decisions/test_decision_pin_measure.py::test_body_after_a_trailer_counts"
+      "tests/checks/decisions/test_decision_pin_measure.py::test_growth_of_the_entry_text_counts_byte_for_byte"
       "tests/checks/decisions/test_decision_pin_measure.py::test_cap_is_the_contract_cap"
-    expected: exit 0; four tests pass. The guard node fails on today's tree.
+      "tests/checks/decisions/test_decision_pin_measure.py::test_live_entries_lose_only_dated_annotations"
+    expected: >-
+      exit 0; ten tests pass (the trailing-annotation node is parametrized over four cases). The guard node fails on
+      today's tree.
     fix_if: >-
       The guard names a file: route its size assertion through the fixture. Never add a file to the guard's exemptions
       beyond the two named.
     hermetic: true
-    expected_literals: ["4 passed"]
+    expected_literals: ["10 passed"]
     graduation: waive
     graduation_waiver_reason: >-
       The nodes run in every tier as ordinary unit tests; a registry row would duplicate them.
@@ -156,13 +163,14 @@ verification_plan:
       live entries once.
   - step: 4
     phase: pre-deploy
-    action: rec-4730's own acceptance grep.
+    action: rec-4730's own acceptance grep, counted.
     command: >-
-      bash -c '! grep -rnE "len\((entry|body)\.encode\(.utf-8.\)\) <= _(DECISION_)?CAP_BYTES" tests/checks/ && echo no-whole-span-pins'
-    expected: exit 0; prints the marker.
-    fix_if: A file still matches - route it through the fixture.
+      grep -rncE "len\((entry|body)\.encode\(.utf-8.\)\) <= _(DECISION_)?CAP_BYTES" tests/checks/
+      | awk -F: '{s+=$2} END {print "whole-span-pins=" s+0}'
+    expected: exit 0; prints a zero count (today it prints five; the 230 pin already moved in #1719).
+    fix_if: A non-zero count - route the matching file through the fixture.
     hermetic: true
-    expected_literals: []
+    expected_literals: ["whole-span-pins=0"]
     graduation: waive
     graduation_waiver_reason: Subsumed by the step 1 guard node, which is stricter and runs in every tier.
   - step: 5
@@ -197,12 +205,25 @@ verification_plan:
     graduation: not-applicable
 test_obligations:
   - source: tests/fixtures/decision_entry.py
-    behavior: >-
-      Trailing dated annotations are excluded, everything else counts, the cap comes from the contract, and no Decision pin
-      measures the whole span.
+    behavior: Trailing dated annotations of every live form are excluded, the closing separator kept.
+    verification_step: 1
+    test_selector: tests/checks/decisions/test_decision_pin_measure.py::test_trailing_dated_annotations_are_excluded
+    red_green_expectation: red before (fixture and test absent), green after.
+  - source: tests/fixtures/decision_entry.py
+    behavior: Growth of the entry's own text counts byte for byte.
+    verification_step: 1
+    test_selector: tests/checks/decisions/test_decision_pin_measure.py::test_growth_of_the_entry_text_counts_byte_for_byte
+    red_green_expectation: red before (fixture and test absent), green after.
+  - source: tests/fixtures/decision_entry.py
+    behavior: The cap is the contract's and equals the validator's constant.
+    verification_step: 1
+    test_selector: tests/checks/decisions/test_decision_pin_measure.py::test_cap_is_the_contract_cap
+    red_green_expectation: red before (fixture and test absent), green after.
+  - source: tests/fixtures/decision_entry.py
+    behavior: No test that reads DECISIONS.md pins a Decision by its whole span or a literal cap.
     verification_step: 1
     test_selector: tests/checks/decisions/test_decision_pin_measure.py::test_no_test_pins_a_decision_by_its_whole_span
-    red_green_expectation: red before (module and guard absent; the guard node fails on today's seven pins), green after.
+    red_green_expectation: red before (the guard names the seven pin files on today's tree), green after.
 weakening_dispositions:
   - candidate: "[assertion-changed] tests/checks/contracts/test_ops_rule_source_records.py::test_decision_annotations"
     disposition: planned-change
@@ -226,8 +247,8 @@ weakening_dispositions:
     disposition: planned-change
     cite: "acceptance_criteria[2]"
   - candidate: "[test-removed] tests/checks/decisions/test_telemetry_production_catalog_decision.py::test_authored_span_admits_only_dated_trailers"
-    disposition: refactor
-    cite: "tests/checks/decisions/test_decision_pin_measure.py::test_body_after_a_trailer_counts"
+    disposition: planned-change
+    cite: "acceptance_criteria[1]"
 constraints:
   - Tests only. No Decision text, contract, parser or validator edit; a needed one stops the build and returns to planning.
   - >-
@@ -245,7 +266,8 @@ context:
   - "red_overlap 2026-10-29T23:50Z: clear (no reds). Earlier the same day it was blocked by rec-4718 (shared []), under Benjamin's 21:26Z override."
   - "rec-4731, rec-4732, rec-4055, rec-2809 are Project Review's (plans B/F); not planned here."
   - "Decision-scout verdict FLAGS_FOUND (one SPIRIT NOTE on Decision 151, handled as the known limit above); CITE: 167, 151, 181, 235. Decisions triaged: 191 of 191. Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1"
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED round 1 (four advisory findings fixed: blockquote and bracket boundaries, red-before step); round 2 confirming"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED round 1 (four advisory findings fixed); REVISE round 2 (F1-F6 fixed: closure steps, per-behaviour obligations, live-corpus test, counted grep); round 3"
+  - "Follow-on rec-4744 (critique round 2 frame Q1-Q3): home the authored-body measure in decision-entry.yaml or drop size from content pins; a contract change, so not here."
   - "Alignment: Benjamin 'write the plan' 2026-10-29T23:48Z (cmsg_012XgaFy8VaDQbxP5D8nC958L424G8Qf4cpprhgcuncYhP); this is the Decision 235 cl.1 human confirmation."
 pre_implementation_checklist:
   - Branch confirmed not on main
@@ -260,6 +282,18 @@ execution_steps:
     Before rerouting the pins, run the guard node (test_no_test_pins_a_decision_by_its_whole_span) and record in the PR
     body that it fails naming the seven pin files (acceptance_criteria[3] red before).
   - Route the seven pins through the fixture as scoped; change nothing else in those files.
-  - Run VP steps 1-6; loop until pass. Reconcile weakening_dispositions keys with validate_weakening_candidates output if they differ.
-  - 'Report: what was implemented, verification results, headroom per pinned Decision.'
+  - Run VP steps 1-6; loop until pass; on an unrecoverable failure stop and RCA (Decision 55). Reconcile weakening_dispositions keys with validate_weakening_candidates output if they differ.
+  - >-
+    Closure evidence, recorded as four SEPARATE facts (implement skill Commit Flows): GitHub readiness state; parent
+    validator evidence (VP step 6 full-tier exit 0 plus bin/venv-python -m scripts.checks.validation_result --verify-head
+    for the pushed HEAD); structured postflight evidence (write the scripts.session.postflight_evidence.CATEGORIES JSON
+    in the scratchpad, then bin/venv-python -m scripts.session.postflight --evidence <file>); the real outcome -- push,
+    PR (body carries the red-before guard output and the headroom table), CI green by event-driven wake (never polled),
+    code review PROCEED, squash-merge, then VP step 7.
+  - >-
+    Merge under the project's standing rule (code review PROCEED and CI green; tests only, nothing on the always-ask
+    list). Squash with mcp__github__merge_pull_request(merge_method="squash") and an explicit commit_message whose body
+    ends with its own key-value block -- the line "Resolves: rec-4730" directly above the Co-Authored-By and
+    Claude-Session attribution lines (git-ops.yaml resolves_trailer); the PR body alone does not reach the squash commit.
+  - 'Report: what was implemented, verification results, headroom per pinned Decision, the four closure facts.'
 rollback: Revert the PR; the pins return to whole-span measures. No runtime, data or Decision change.
