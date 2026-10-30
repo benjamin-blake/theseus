@@ -33,7 +33,10 @@ scope:
       A delete carries no after value and never trips. Trust policies (aws_iam_role.assume_role_policy) stay out by
       Benjamin's F1 choice (option C rejected; the type set mirrors the digest's policy types); (2) a data entry of type aws_iam_policy_document whose change.actions is ["read"] and
       which carries a non-empty action_reason -> reason deferred-read. Addresses have every bracketed instance key replaced
-      with [*] (Decision 238 cl.4: no instance key) and must fullmatch [A-Za-z0-9_.\-\[\]*]{1,256}, else print
+      with [*] by a quote-aware scan, reimplemented in the script (not imported) with the same algorithm as
+      scripts/ci/terraform_plan_digest.py strip_instance_keys: a key opening with a double quote is consumed through its
+      closing quote, honouring backslash escapes, then to the next ], so no fragment of a quoted key containing ], [ or
+      an escaped quote survives (Decision 238 cl.4: no instance key). The stripped address must fullmatch [A-Za-z0-9_.\-\[\]*]{1,256}, else print
       "<unprintable address>"; duplicates collapse; output sorted. Output grammar, fixed: first line
       "PLAN_TIME_POLICY: CLEAN" (exit 0) or "PLAN_TIME_POLICY: OPAQUE <n>" (exit 1) followed by one "- <address> <reason>"
       line per finding and one GitHub annotation line "::error title=IAM policy unknown at plan time::<n> ..." whose text
@@ -55,7 +58,9 @@ scope:
       subprocess run with sys.executable -I by path: update and create with unknown policy, parametrized over every
       POLICY_TYPES member (exit 1, address and policy-unknown), a replace pair ["delete","create"] and ["create","delete"] with unknown policy (OPAQUE), deferred read with read_because_dependency_pending and with
       read_because_config_unknown (deferred-read), known policy update, plain read without action_reason, delete, no-op,
-      non-policy type with an unknown policy-named attribute, module and for_each instance keys stripped, an address with a
+      non-policy type with an unknown policy-named attribute, module and for_each instance keys stripped, adversarial
+      quoted keys ["x]deadbeef42[y"] and ["a\"]tok3n[\"b"] printing no key fragment (neither deadbeef42 nor tok3n
+      appears in stdout), an address with a
       newline or "::" printed as <unprintable address>, duplicates collapsed; the default_tags case (an update to
       tags_all on aws_s3_bucket.data_lake, aws_s3_bucket.ducklake_catalog_dr, aws_dynamodb_table.counters and
       aws_sns_topic.alerts, deferred reads of the three CI documents, unknown policy on aws_iam_role_policy.github_ci_branch,
@@ -63,7 +68,9 @@ scope:
       resource_changes is CLEAN; unreadable, invalid JSON, a JSON list and a missing format_version exit 2 with no input
       text echoed; resource_changes as an object, an entry that is a string, a change that is a list and after_unknown as
       a list each exit 2 with the fixed unexpected-structure line, no input text and no traceback on stdout or stderr. Structural: the script's imports are all in sys.stdlib_module_names and none is scripts/src;
-      POLICY_TYPES == terraform_plan_digest._POLICY_TYPES.
+      POLICY_TYPES == terraform_plan_digest._POLICY_TYPES; over a fixture address list (plain, module-nested, numeric,
+      quoted-with-brackets, escaped-quote) the script's stripping function equals
+      terraform_plan_digest.strip_instance_keys.
   - file: tests/test_plan_time_policy_check_workflow.py
     action: Create
     purpose: >-
@@ -89,7 +96,8 @@ scope:
       the workflow's "$GITHUB_WORKSPACE/scripts/ci/plan_time_policy_check.py" "$WORKDIR/plan.json" and S3's
       scripts/ci/plan_time_policy_check.py "$RUNNER_TEMP/plan.json" both fit. The raw line contains none of "|", "&", ";", "set +e", "exit" or "true" (so it
       cannot be neutered on the same line); the step declares no shell: (the job default bash -e applies); its if:
-      equals the digest step's if: after whitespace normalisation; it has no continue-on-error.
+      equals the digest step's if: after whitespace normalisation; neither it nor the digest-posting job declares
+      continue-on-error.
       Fails when no workflow
       job posts the digest (the anchor moved: re-point this check, never delete it). Docstring: why anchored on the
       digest status (it is what the merge-time fetch verifies, fetch-saved-plan/action.yml:81-91), and that the trusted
@@ -100,7 +108,8 @@ scope:
       Mirror test. Real tree green with examined >= 1. Red cases on synthetic workflow trees: no digest-posting job; the
       check missing; the check before the digest step; one invocation before persist/digest plus one after; two
       invocations after; an extra "python3 scripts/ci/plan_time_policy_check.py" step before persist; a
-      "-m scripts.ci.plan_time_policy_check" step; a different if:; continue-on-error true; invoked without -I;
+      "-m scripts.ci.plan_time_policy_check" step; a different if:; continue-on-error true on the step; continue-on-error
+      true on the job; invoked without -I;
       "... || true"; "...; exit 0"; "... | tee log"; a trailing "&"; shell: bash on the step; a second body line; the
       argument other.json; two arguments; an unbalanced quote. Green cases: the quoted $GITHUB_WORKSPACE line exactly as
       the workflow row prescribes; S3's unquoted relative script path with a quoted $RUNNER_TEMP/plan.json; the same
@@ -159,7 +168,7 @@ scope:
       effective lines (step 1, amendment entry 4 with the summary as one double-quoted line, path 1). Lands at most 500
       effective lines: 498 on main since S3 build PR 1 (#1728) merged as 700d4914, so this change alone reaches 504 and
       the fold below is certain. Whenever the measured total would exceed 500, use the contracts relief valve "compact amendment history"
-      (config/structural_size_budgets.yaml contracts row): fold the oldest multi-line `summary: >-` blocks, the two
+      (config/structural_size_budgets.yaml contracts row): fold the largest multi-line `summary: >-` blocks, the two
       2026-09-21 entries first, onto single double-quoted lines under 2,000 characters, text unchanged (each folded value
       equals the original under yaml.safe_load), until at most 500. Never raise; never touch the approved sentence.
 bundled_recommendations: []
@@ -173,7 +182,10 @@ acceptance_criteria:
     otherwise, and ERROR with exit 2 on
     unreadable or non-plan input without echoing input text.
   - The default_tags fixture reports exactly the three deferred CI documents and the three CI role policies.
-  - The script imports only stdlib modules, runs by path under python3 -I, and POLICY_TYPES equals the digest's _POLICY_TYPES.
+  - >-
+    The script imports only stdlib modules, runs by path under python3 -I, POLICY_TYPES equals the digest's _POLICY_TYPES,
+    and its instance-key stripping equals the digest's strip_instance_keys on the fixture list, so no quoted-key fragment
+    is printed.
   - >-
     validate_plan_time_policy_check_wiring is registered in --pre and full, green on the real tree, and red when no job
     posts the digest status or when a digest-posting job lacks a correctly placed check step.
@@ -235,7 +247,7 @@ verification_plan:
       exit 0 and GUARDS_OK printed; the workflow at most 546 effective lines, the contract and the taxonomy at most 500,
       and the approved contract sentence present exactly once.
     fix_if: >-
-      The contract over 500 - compact amendment history (fold the oldest multi-line summaries, text unchanged); never
+      The contract over 500 - compact amendment history (fold the largest multi-line summaries, text unchanged); never
       raise, never touch the approved sentence. The taxonomy over 500 - fold the next wrapped rationale (Main Canary, else
       CodeQL). Another ceiling or budget exceeded - fold the change smaller; never raise. Sentence missing - restore the
       approved wording.
@@ -250,7 +262,8 @@ verification_plan:
       A failure in scope is fixed on the branch; never skip a test, relax an assertion or add a baseline. A failure outside
       scope becomes a rec via scripts.ops_data_portal (Decision 59, 55).
     hermetic: false
-    graduation: not-applicable
+    graduation: waive
+    graduation_waiver_reason: scripts.validate is refused by the graduate partition (recursion_refusal); it already runs in every tier.
   - step: 5
     phase: pre-deploy
     action: >-
@@ -402,7 +415,7 @@ context:
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
-  - Only the plan-cited decision sections (238, 83, 89, 92, 77, 162, 165, 166, 183, 226)
+  - Only the plan-cited decision sections (238, 83, 89, 92, 77, 162, 165, 166, 183, 226, 186)
   - All files in scope located and readable
   - Acceptance criteria understood and verifiable
 execution_steps:
