@@ -357,8 +357,9 @@ scope:
       (tier: not_a_gate, ci_rca: excluded: a rejected or cancelled run concludes failure or cancelled by an operator
       action, not a regression, and the operator who approved a run sees its result). The file stays at 500
       effective lines by joining wrapped continuation lines of existing rationales, the #1709 precedent. There is no
-      budget raise. PLAN-ci-policy-plan-time-lambda-arns (#1725) also adds a row to this file; whichever build lands
-      second recovers its line the same way (VP 3's validate_structural_size_limits catches it).
+      budget raise. PLAN-ci-policy-plan-time-lambda-arns (#1725) and PLAN-trusted-plan-cutover (#1722) may also add
+      rows to this file; whichever build lands later recovers its lines the same way (VP 3's
+      validate_structural_size_limits catches it).
   - file: config/composite_action_body_baseline.yaml
     action: Modify
     purpose: >-
@@ -633,8 +634,7 @@ verification_plan:
       tests/checks/iam_tf/test_telemetry_reader_and_twin_pins.py tests/checks/ci_guards/test_validate_content_reader_lock.py
       tests/hooks/test_protected_path_guard.py tests/verify_ci_workflow/test_deploy_telemetry_content_workflow.py
       tests/test_ci_telemetry_content_deploy.py tests/lambdas/ducklake_telemetry_content_reader/test_deploy_config.py
-      tests/test_build_lambda.py tests/ducklake_neon_smoke_test/test_lambda_telemetry_golden_gates.py
-      tests/ducklake_neon_smoke_test/test_lambda_telemetry_golden_content.py tests/checks/misc/test_sensitive_value_detectors.py
+      tests/test_build_lambda.py tests/checks/misc/test_sensitive_value_detectors.py
       tests/lambdas/ducklake_telemetry_content_reader/test_packaging.py
       tests/checks/contracts/test_validate_iam_simulate_fixture_shape.py tests/test_deploy_paths_admin_procedure.py
       tests/checks/structural/test_size_limits.py tests/checks/iam_tf/test_terraform_github_import_blocks.py
@@ -648,11 +648,32 @@ verification_plan:
     expected: exit 0. Before the change the new test files do not exist and the modified pins fail.
     fix_if: >-
       Fix the HCL, workflow, script or code; never relax a pin. The selection names every reader of the edited files the
-      planning dry run found red; VP 14's full tier covers the rest.
+      planning dry run found red; VP 14's full tier covers the rest. Replay cost (vp-red-before.yaml replay_bound): the
+      existing files took about 25 s at planning (80 s with the duckdb golden files, which VP 21 now carries), inside
+      validate_vp_replay's 120 s shared deadline with room for the new files.
     hermetic: true
     expected_literals: ["passed"]
     graduation: graduate
     graduation_check_id: telemetry-content-reader-lock
+  - step: 21
+    phase: pre-deploy
+    action: >-
+      The golden replay's opt-in content leg and the default run's untouched content route, on the real-DuckDB replay
+      fixture.
+    command: >-
+      bin/venv-python -m pytest tests/ducklake_neon_smoke_test/test_lambda_telemetry_golden_gates.py
+      tests/ducklake_neon_smoke_test/test_lambda_telemetry_golden_content.py -q
+    expected: >-
+      exit 0 with "passed" (no skips where duckdb is installed). Before the change test_lambda_telemetry_golden_content.py
+      does not exist and --content-leg is unknown.
+    fix_if: Fix the golden module or the gates flag; never weaken the leg's mismatch or SKIPPED cases.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      vp-red-before.yaml hermetic_authoring rule (iii): both files import duckdb at module level (pytest.importorskip),
+      which requirements-fast.txt excludes, so the step stays hermetic false; it is also the slow half of the old VP 1
+      (about 62 s of replays), which would breach validate_vp_replay's 120 s shared deadline if replayed. The full tier
+      (VP 14) runs both files.
   - step: 2
     phase: pre-deploy
     action: The rendered boundary stays at or under Decision 230's review trigger.
@@ -773,16 +794,20 @@ verification_plan:
     phase: pre-deploy
     action: "PRE-MERGE GATE (ADMIN): materialise terraform.bootstrap.tfvars from the sanctioned source, values never printed."
     command: >-
-      (umask 077 && aws secretsmanager get-secret-value --secret-id agent-platform-terraform-personal-tfvars --profile
-      agent_platform_admin --query SecretString --output text | grep -E
+      (umask 077 && if V=$(aws ssm get-parameter --name /secret/agent-platform-terraform-personal-tfvars --with-decryption
+      --profile agent_platform_admin --query Parameter.Value --output text 2>/dev/null); then S=ssm; else V=$(aws
+      secretsmanager get-secret-value --secret-id agent-platform-terraform-personal-tfvars --profile agent_platform_admin
+      --query SecretString --output text) && S=secretsmanager; fi && printf '%s\n' "$V" | grep -E
       '^[[:space:]]*(account_id|owner_email|platform_dev_external_id|platform_admin_external_id|agent_service_account_user_name)[[:space:]]*='
-      > terraform/bootstrap/terraform.bootstrap.tfvars) && git check-ignore -q terraform/bootstrap/terraform.bootstrap.tfvars
+      > terraform/bootstrap/terraform.bootstrap.tfvars && echo "SOURCE $S") && git check-ignore -q terraform/bootstrap/terraform.bootstrap.tfvars
       && test "$(grep -c -E '^[[:space:]]*(account_id|owner_email|platform_dev_external_id|platform_admin_external_id)[[:space:]]*='
       terraform/bootstrap/terraform.bootstrap.tfvars)" -eq 4 && echo "BOOTSTRAP TFVARS MATERIALISED (values not printed)"
     expected: >-
-      The four required keys are present (account_id, owner_email and both ExternalIds, which the root declares with no
-      default; PLAN-platform-iam-bootstrap-adopt step 8), the file is mode 600 and gitignored, and no value reaches the
-      terminal.
+      SOURCE ssm, then BOOTSTRAP TFVARS MATERIALISED. The four required keys are present (account_id, owner_email and
+      both ExternalIds, which the root declares with no default; PLAN-platform-iam-bootstrap-adopt step 8), the file is
+      mode 600 and gitignored, and no value reaches the terminal. The source is /secret/agent-platform-terraform-personal-tfvars
+      (Decision 237; secrets-to-ssm-retire deletes the Secrets Manager entry). SOURCE secretsmanager means the parameter
+      read failed and the entry still served: report it to the planning thread, because after the retire that path is gone.
     fix_if: A key missing -- recover per terraform-cc-web-operations.yaml tfvars_and_remote_state_recovery; never paste a value (Decision 101).
     hermetic: false
     graduation: not-applicable
@@ -874,8 +899,10 @@ verification_plan:
     expected: >-
       ADMIN_DENIED [] then ADMIN CREATES OK. The log group, its filter and its tags fall under PlatformAdmin's existing
       PlatformSecurityLogGroupManage (platform-security-*), the alarms and their tags under CloudWatchAlarmManagement
-      (alarm:*), the parameter under SSMParameterProvisioning, and the rest under IAMFull and LambdaAdminManagement. No
-      S3 verb is needed: the placeholder is a committed file. The output names verbs and resource names only.
+      (alarm:*), the parameter under SSMParameterProvisioning, the four reads on "*" under LambdaLogGroupDescribe,
+      PlatformSecurityLogsRead, CloudWatchAlarmDescribe and SSMDescribeParameters, and the rest under IAMFull and
+      LambdaAdminManagement. No S3 verb is needed: the placeholder is a committed file. The output names verbs and
+      resource names only.
     fix_if: >-
       A verb denied -- the apply would fail partway; stop and report it to the planning thread (a new admin grant is an
       always-ask IAM change).
@@ -1122,12 +1149,12 @@ test_obligations:
     red_green_expectation: red before (file missing), green after.
   - source: scripts/ducklake_smoke/lambda_telemetry_golden_content.py
     behavior: The content leg compares masked reassembly with the sent text and never passes without a content URL.
-    verification_step: 1
+    verification_step: 21
     test_selector: tests/ducklake_neon_smoke_test/test_lambda_telemetry_golden_content.py
     red_green_expectation: red before (module missing), green after.
   - source: scripts/ducklake_smoke/lambda_telemetry_golden_gates.py
     behavior: --content-leg is opt-in; a default run never calls the content route.
-    verification_step: 1
+    verification_step: 21
     test_selector: tests/ducklake_neon_smoke_test/test_lambda_telemetry_golden_content.py
     red_green_expectation: red before (flag missing), green after.
   - source: terraform/github/imports.tf
@@ -2091,7 +2118,7 @@ execution_steps:
   - "STEP 6: docs/DECISIONS.md, PINNED-7's three trailers verbatim (VP 19); contracts (build-lambda and deploy-paths with amendment_log rows, the content reader contract, the shared simulate fixture's compaction then its three rows, VP 16); manifest flip to active, the handler docstring and the packaging test's planned changes."
   - "STEP 7: the golden content module, the gates flag and their test file."
   - >-
-    STEP 8: VP 1-3, VP 16, VP 18, VP 19 and VP 14 (the full tier); VP 1's graduation registry shard. Open the PR, run VP 4-9 on the
+    STEP 8: VP 1-3, VP 16, VP 18, VP 19, VP 21 and VP 14 (the full tier); VP 1's graduation registry shard. Open the PR, run VP 4-9 on the
     operator's direction, and merge on code review PROCEED, green CI and the gate evidence. The pinned text was
     approved in the planning thread; a diff from it goes back to the operator before merge.
   - "STEP 9: Post-merge walk with the operator: VP 10-13, 15, 17 and 20. The squash body carries `Resolves: rec-4696`; the walk evidence is a counts-only comment on the merged PR."
