@@ -22,97 +22,127 @@ scope:
     purpose: >-
       Lands WITH THIS PLAN (plan PR), not in the build. The approved-text sidecar: schema_version 1, slug, and 21
       blocks {id, file, before, after} binding the build's edits to the five always-ask files below. Each block's
-      `after` is the operator-approved wording; `{{DATE}}` is the only placeholder used (the landing date). The build
-      copies every `after` verbatim (rewrapping is allowed, words are not) and the build's own PR is then checked
-      against this file by validate_merge_step: the mechanism proves itself on its first use.
+      `after` is the operator-approved wording; `{{DATE}}` (the landing date) is the only placeholder used. The build
+      copies every `after` verbatim, line breaks included, and its own PR is then checked against this file by
+      validate_merge_step: the mechanism proves itself on its first use.
   - file: scripts/approved_text.py
     action: Create
     purpose: >-
       The approved-text binding (docs/contracts/git-ops.yaml approved_text_binding). Pydantic Sidecar (extra=forbid:
-      schema_version Literal[1], slug, blocks min 1) and Block (extra=forbid: id, file, before, after; before may be
-      empty ONLY when the file is absent at the base, and then that block is the file's only block); load_sidecar(slug,
-      root) reading docs/plans/approved/<slug>.yaml (None when absent). Words = text.split() (whitespace and line
-      wrapping ignored). Placeholders: `{{N}}` matches \d+ and `{{DATE}}` matches \d{4}-\d{2}-\d{2} inside one token
-      (re.fullmatch after escaping); a token equal to the approved token always matches first, so text that names a
-      placeholder literally still verifies. apply(base_words, blocks) replaces each block's `before` words, which must
-      occur exactly once in the base and never overlap another block's, with its `after` words; anything else raises
-      ApprovedTextError naming the block id. verify(sidecar, root, base_ref) -> list[str]: per bound file, base text
-      from `git show <base_ref>:<file>` (absent = empty), head text from the working tree; a file whose head words do not
-      equal apply(base words) token-for-token yields one message naming the file and the first differing position with
-      8 words of context each side. digest(sidecar) = sha256 of the canonical JSON (separators "," ":", ensure_ascii
-      False) of [{file, before: words, after: words}] in sidecar order, so rewrapping never changes it and any word
-      change does. CLI: `record --slug S` prints `digest=<hex> blocks=<n>`; `verify --slug S [--base REF] [--expect HEX]`
-      prints `APPROVED-TEXT OK <digest>` or one `APPROVED-TEXT MISMATCH ...` line per failure and exits 1 (2 on a usage
-      or load error); --base defaults to `git merge-base origin/main HEAD`. Never raises at import (AGENTS.md Safety).
+      schema_version Literal[1], slug, blocks min 1, unique block ids) and Block (extra=forbid: id, file, before,
+      after; before may be empty ONLY when the file is absent at the base, and then that block is the file's only
+      block). parse_sidecar(text) and load_sidecar_at(ref, slug, root) reading docs/plans/approved/<slug>.yaml via `git
+      show <ref>:<path>` (None when absent at ref); load_sidecar(slug, root) reads the working tree (authoring only).
+      sidecar_state(slug, root, base) -> unchanged | added | changed | deleted | absent, comparing the working-tree file
+      to the base copy. Words = text.split() (whitespace and line wrapping ignored). Placeholders: an approved token
+      containing `{{N}}` (\d+) or `{{DATE}}` (\d{4}-\d{2}-\d{2}) matches only by re.fullmatch of the escaped token with
+      each placeholder replaced by its pattern, so an unfilled placeholder never verifies; every other token must be
+      equal. apply(base_words, blocks) replaces each block's `before` words, which must occur exactly once in the base
+      and never overlap another block's, with its `after` words; anything else raises ApprovedTextError naming the
+      block id. verify(sidecar, root, base_ref) -> list[str]: per bound file, base text from `git show
+      <base_ref>:<file>` (absent = empty), head text from the working tree; a file whose head words do not equal
+      apply(base words) token-for-token yields one message naming the file and the first differing position with 8
+      words of context each side, and a bound `.yaml` file that does not yaml.safe_load at HEAD yields one message.
+      digest(sidecar) = sha256 of the canonical JSON (separators "," ":", ensure_ascii False) of [{file, before: words,
+      after: words}] in sidecar order, so rewrapping never changes it and any word change does. CLI: `record --slug S`
+      reads the working tree and prints `digest=<hex> blocks=<n>`; `verify --slug S [--base REF] [--expect HEX]` loads
+      the sidecar AT THE BASE, prints `APPROVED-TEXT SIDECAR <state>` and exits 1 when the working-tree copy is added,
+      changed or deleted relative to the base, else prints `APPROVED-TEXT OK <digest>` or one `APPROVED-TEXT MISMATCH
+      ...` line per failure and exits 1 (2 on a usage or load error, or no sidecar at the base); --base defaults to
+      scripts.checks._common.status_diff_base() (the push base in push context, else the merge-base with origin/main).
+      A word engine rather than `git apply --check` or `git diff --word-diff`, which bind lines or whitespace runs: the
+      binding must survive rewrapping, allow filled placeholders and keep a wrap-stable digest. Never raises at import
+      (AGENTS.md Safety).
   - file: tests/test_approved_text.py
     action: Create
     purpose: >-
-      Fixture git repos (tmp_path): an exact copy of every block verifies; a rewrapped copy verifies; one extra word
-      inside a bound file fails, also when it sits far outside every block (the whole-file binding); one changed or
-      dropped word fails; a removed sentence that a block did not approve fails; `{{DATE}}` matches 2026-11-02 and not
-      "soon"; a literal `{{DATE}}` in both approved and head text verifies; a `before` that occurs twice or never, and
-      two overlapping blocks, raise ApprovedTextError naming the block; a new file (absent at base, before empty)
-      verifies; the digest is stable under rewrapping and changes with one word; record and verify CLI exit codes;
-      --expect with a wrong digest exits 1; and the committed sidecar docs/plans/approved/merge-step-checks.yaml loads
-      and every block's `before` occurs exactly once at origin/main's version of its file (skipped with a reason when
-      origin/main is unreachable).
+      Fixture git repos (tmp_path) only, no dependence on origin/main: an exact copy of every block verifies; a
+      rewrapped copy verifies; one extra word inside a bound file fails, also when it sits far outside every block (the
+      whole-file binding); one changed or dropped word fails; a removed sentence that a block did not approve fails;
+      `{{DATE}}` matches 2026-11-02 and not "soon"; an unfilled `{{DATE}}` left in the head text fails; a bound YAML
+      file that no longer parses fails; a `before` that occurs twice or never, and two overlapping blocks, raise
+      ApprovedTextError naming the block; a new file (absent at base, before empty) verifies; the sidecar is read from
+      the base ref, and sidecar_state reports a working-tree edit as changed, a removal as deleted and a branch-only
+      sidecar as added (verify exits 1 for each); the digest is stable under rewrapping and changes with one word;
+      record and verify CLI exit codes; --expect with a wrong digest exits 1. One real-tree test: every committed
+      docs/plans/approved/*.yaml parses, its slug equals its file stem, and docs/plans/PLAN-<slug>.yaml exists (true
+      before and after any build, so it never reddens main).
   - file: scripts/merge_step.py
     action: Create
     purpose: >-
       Three verbs over existing machinery, no new executor (Decision 201 point 4). Reads the plan's
-      bundled_recommendations from docs/plans/PLAN-<slug>.yaml with a raw yaml.safe_load (never PlanDocument).
+      bundled_recommendations from docs/plans/PLAN-<slug>.yaml with a raw yaml.safe_load (never PlanDocument). Reads
+      recs with ONE fetch_recs_by_ids call per verb and passes the rows to rec_trailer_acceptance.census(ids, rows=...,
+      repo_root=...) (Decision 215; no per-id rec_by_id); a reader failure prints `... unavailable: <reason>` and never
+      a holds verdict. Imports of ops_data_portal, the reader and ci_rca_lifecycle stay function-local.
       `premerge --slug S --message-file F [--expect HEX]`: (1) scripts.rec_trailer.parse_resolves_trailer(message) must
       equal the bundled set exactly, else `PREMERGE TRAILER MISMATCH expected=[...] parsed=[...]`; (2) acceptance preview
-      per bundled rec: scripts.rec_trailer_acceptance.census(ids) through the reader, every entry routed `junit` reset
-      to `static` (locally there is no same-run junit report; the preview reports and never closes), then
-      rec_trailer_acceptance.evaluate(entries, ROOT, HEAD sha); one line per rec `PREVIEW rec-N holds|fails|unmeasurable|
-      out_of_grammar arm=<arm>`; a reader failure prints `PREVIEW unavailable: <reason>` and never `holds` (Decision
-      215); (3) when docs/plans/approved/<slug>.yaml exists, approved_text.verify against merge-base(origin/main, HEAD)
-      and, with --expect, digest equality. Exit 1 when (1) or (3) fails or any rec previews fails/out_of_grammar; exit 0
-      otherwise (unavailable and unmeasurable are printed, not fatal). Writes nothing anywhere.
+      per bundled rec: census at ROOT with every entry routed `junit` reset to `static` (locally there is no same-run
+      junit report; the preview only reports), then rec_trailer_acceptance.evaluate(entries, ROOT, HEAD sha); one line
+      per rec `PREVIEW rec-N holds|fails|unmeasurable|out_of_grammar arm=<arm>`, and `PREVIEW rec-N missing` for an id
+      the reader lacks; (3) when the sidecar exists at merge-base(origin/main, HEAD), the approved_text verify path
+      (sidecar_state plus verify) against that base and, with --expect, digest equality. Exit 1 when (1) or (3) fails
+      or any rec previews fails, out_of_grammar or missing (a red line blocks the merge); unavailable and unmeasurable
+      are printed, not fatal. Writes nothing anywhere.
       `readback --slug S --sha SHA`: `git fetch origin main`, read `git log -1 --format=%B SHA`, parse the trailer and
       compare with the bundled set; prints `READBACK OK <sha> recs=[...]` or `READBACK MISSING <sha> missing=[...]` and
       exits 1. A plan with nothing bundled prints `READBACK OK <sha> recs=[]`.
-      `recover --slug S --sha SHA`: refuses (exit 2) unless readback at SHA reports recs missing, and acts only on
-      those missing bundled recs (never a rec present in the trailer, never an unbundled one). In a temporary `git
-      worktree add --detach` at SHA (always removed): census(missing) with junit routes reset to static,
-      evaluate(entries, worktree, SHA), rejoin(census_doc, verdict_doc, None) in the census-artifact shape
-      rec_trailer_acceptance.cmd_census writes, then ci_rca_lifecycle.close_recs_from_trailer(missing, SHA,
-      "local:merge_step recover", recs_cache, acceptance_verdicts=..., require_acceptance_verdict=True), so the
-      merge-leg gate and the Decision 201 verdict gate both run and a non-holds verdict leaves the rec open. Returns
-      that function's exit code. Under 500 SLOC (Decision 128); must not import closure_stamps_applicable.
+      `recover --slug S --sha SHA`: refuses (exit 2) unless the plan's implementation_declared is true at SHA and not
+      at SHA^ (the same flip test _common._plan_declared_at_ref applies, so SHA is this plan's own merge) AND readback
+      at SHA reports recs missing; acts only on those missing bundled recs (never a rec present in the trailer, never
+      an unbundled one). In a temporary `git worktree add --detach` at SHA, with a `.venv` symlink to ROOT/.venv when
+      that exists (bin/venv-python resolves the venv relative to the checkout; without one it falls back to PATH), and
+      always removed (symlink first, then `git worktree remove --force`, in a finally): census(missing, rows=...,
+      repo_root=worktree) with NO junit reset, evaluate(entries, worktree, SHA), rejoin(census_doc, verdict_doc, None)
+      in the census-artifact shape rec_trailer_acceptance.cmd_census writes, so a junit-routed rec resolves to
+      unmeasurable (Decision 201 source_admission: its authoritative verdict is the merge run's junit report, never
+      re-executed here); then ci_rca_lifecycle.close_recs_from_trailer(missing, SHA, "merge_step recover (operator
+      session, no workflow run)", recs_cache, acceptance_verdicts=..., require_acceptance_verdict=True), so the
+      merge-leg gate and the Decision 201 verdict gate both run and a non-holds verdict leaves the rec open. Prints
+      `RECOVER rec-N junit-routed: left open; resolves_trailer FALLBACK once the merge run is green` per junit-routed
+      rec. Returns that function's exit code. Under 500 SLOC (Decision 128); must not import closure_stamps_applicable.
   - file: tests/test_merge_step.py
     action: Create
     purpose: >-
       readback OK, MISSING and empty-bundle cases on fixture repos; recover refuses when the trailer is present, refuses
-      an unbundled rec, and on a missing trailer calls close_recs_from_trailer with require_acceptance_verdict=True, the
-      merge sha and only the missing recs (stubbed reader, evaluate and close); premerge trailer mismatch exits 1 and an
-      exact match passes; premerge runs approved_text verify when a sidecar exists and --expect mismatch exits 1; the
-      temporary worktree is removed on success and on error.
+      an unbundled rec, refuses a SHA where the plan's declaration does not flip, and on a missing trailer calls
+      close_recs_from_trailer with require_acceptance_verdict=True, the merge sha and only the missing recs (stubbed
+      reader, evaluate and close); census receives the rows from one fetch_recs_by_ids call and repo_root=<worktree>; a
+      junit-routed entry is never in evaluate's probe payload and reaches the close as unmeasurable; premerge trailer
+      mismatch exits 1 and an exact match passes; premerge runs the approved-text path when a sidecar exists at the
+      base and --expect mismatch exits 1. Unstubbed worktree test (fixture repo carrying a copy of bin/venv-python and a
+      `.venv/bin/python` link to sys.executable): inside recover's worktree, `bin/venv-python -c "print(42)"` exits 0
+      and prints 42, the worktree's `.venv` resolves to the fixture's, and the worktree is gone afterwards, on success
+      and on error.
   - file: tests/test_rec_trailer_acceptance_premerge.py
     action: Create
     purpose: >-
-      rec-4687's acceptance file. The premerge acceptance preview: a holds verdict prints holds and exits 0; a fails or
-      out_of_grammar verdict exits 1 naming the rec; a junit-routed entry is evaluated through the static probe; a reader
-      exception prints `PREVIEW unavailable` and no rec line says holds; nothing calls update_rec or the writer (assert
-      not called).
+      rec-4687's acceptance file; every test sits in class TestPremergePreview (the acceptance names that node). The
+      premerge acceptance preview: a holds verdict prints holds and exits 0; a fails or out_of_grammar verdict exits 1
+      naming the rec; a junit-routed entry is evaluated through the static probe; a reader exception prints `PREVIEW
+      unavailable` and no rec line says holds; nothing calls update_rec or the writer (assert not called).
   - file: scripts/checks/verification/validate_merge_step.py
     action: Create
     purpose: >-
       Registered fast-tier check, owner platform, Decision 170 accounting (examined = declared plans considered).
       base = _common.status_diff_base() or "origin/main"; plans = _common.resolve_declared_plans(get_changed_files(),
       ROOT, base) (content-keyed: the plan whose implementation_declared flips in this diff). Per plan: (T) outside push
-      context only (push_context_base() is None): when bundled_recommendations is non-empty, the union of
-      parse_resolves_trailer over every `git log --format=%B <base>..HEAD` message must equal the bundled set exactly,
-      else fail naming expected and found; (A) when docs/plans/approved/<slug>.yaml exists, approved_text.verify(sidecar,
-      ROOT, base) messages fail the check. A sidecar load error fails loud. Takes injected root/base/changed seams so red
-      cases run on fixture repos. Prints PASS with counts.
+      context only (push_context_base() is None), when bundled_recommendations is non-empty and the declaration is
+      COMMITTED (`git show HEAD:<plan>` reads implementation_declared true): the union of parse_resolves_trailer over
+      every `git log --format=%B <base>..HEAD` message must equal the bundled set exactly, else fail naming expected
+      and found; a declaration present only in the working tree prints `PENDING trailer: declaration not committed`
+      (the Commit Flow's --pre runs before the commit; CI always sees the committed state). (A) the sidecar is read AT
+      THE BASE: sidecar_state added, changed or deleted fails (an approval cannot ride in or be edited by the build it
+      binds); when present at the base, approved_text.verify(sidecar, ROOT, base) messages fail the check. A sidecar
+      load error fails loud. Takes injected root/base/changed seams so red cases run on fixture repos. Prints PASS with
+      counts.
   - file: tests/checks/verification/test_validate_merge_step.py
     action: Create
     purpose: >-
       Fixture repos: declared plan with bundled recs and the trailer in a branch commit passes; trailer only in a PR
-      body (no commit) fails; trailer naming a subset or a superset fails; push context skips (T); a sidecar mismatch
-      fails and an exact sidecar passes; an undeclared plan is not checked; real-tree run passes.
+      body (no commit) fails; trailer naming a subset or a superset fails; an uncommitted declaration prints PENDING
+      and passes; push context skips (T); a sidecar mismatch fails and an exact sidecar passes; a sidecar edited,
+      deleted or first added on the branch fails; an undeclared plan is not checked; real-tree run passes.
   - file: scripts/checks/verification/_manifest.py
     action: Modify
     purpose: >-
@@ -127,6 +157,9 @@ scope:
   - file: config/agent/verification_registry/entries/merge-step-check-tests.yaml
     action: Create
     purpose: Graduated registry row for VP step 3 (test_selector, guard_target the new check).
+  - file: config/agent/verification_registry/entries/merge-step-verb-tests.yaml
+    action: Create
+    purpose: Graduated registry row for VP step 2 (test_selector, guard_target scripts/merge_step.py).
   - file: config/agent/verification_registry/entries/approved-text-tests.yaml
     action: Create
     purpose: Graduated registry row for VP step 1 (test_selector, guard_target scripts/approved_text.py).
@@ -134,11 +167,12 @@ scope:
     action: Modify
     purpose: >-
       Add implement_recheck(rec_ids, *, reader=None) -> list of (rec_id, verdict, evidence, proposal): fetch through
-      fetch_recs_by_ids, evaluate_rec_relevance(run_acceptance_probe=True), and for a verdict other than relevant,
-      unknown or satisfied the proposal string from propose_or_close_rec(..., deterministic=False); satisfied gets no
-      proposal and no write. It NEVER passes deterministic=True and never calls update_rec (rec-4592). A `__main__`
-      CLI `--implement-recheck rec-A[,rec-B]` prints one line per rec (`rec-N <verdict> | <evidence[:120]>`, then any
-      proposal) and exits 0; a missing id prints `rec-N missing` and exits 1.
+      one fetch_recs_by_ids call, evaluate_rec_relevance(run_acceptance_probe=True), and for a verdict other than
+      relevant, unknown or satisfied the proposal string from propose_or_close_rec(..., deterministic=False); satisfied
+      gets no proposal and no write. It NEVER passes deterministic=True and never calls update_rec (rec-4592). A
+      `__main__` CLI `--implement-recheck rec-A[,rec-B]` prints one line per rec (`rec-N <verdict> |
+      <evidence[:120]>`, then any proposal) and exits 0; a missing id prints `rec-N missing` and exits 1. New imports
+      stay function-local (scripts/backlog_health/classify.py imports this module on the credential-split path).
   - file: tests/test_rec_relevance.py
     action: Modify
     purpose: >-
@@ -151,7 +185,7 @@ scope:
       Exactly the sidecar's six SKILL.md blocks: Step 3 becomes the one-line --implement-recheck call that never closes;
       the Wait-for-CI all-green line points at Commit Flow step 4; the IMPLEMENTATION commit carries the Resolves
       trailer; PR body step 1 repeats it; step 4 runs premerge, merges with an explicit commit_message, then readback;
-      step 5 names the refusal route and recover. Net -936 bytes (35,394 to 34,458 against the 35,402 budget).
+      step 5 names each refusal's route and recover. Net -856 bytes (35,394 to 34,538 against the 35,402 budget).
   - file: .claude/commands/implement.md
     action: Modify
     purpose: Exactly the sidecar's one block - the Step 7 trailer and refusal-route paragraph.
@@ -160,11 +194,11 @@ scope:
     purpose: >-
       Exactly the sidecar's six blocks: contract_version 8 -> 9; one new amendment_log row and every existing row
       compacted to a one-line flow mapping (parsed values unchanged; the contracts class's declared relief valve,
-      490 -> 466 effective lines against the 500 limit, Decision 166); three referenced_repo_paths; the merge step in
+      490 -> 470 effective lines against the 500 limit, Decision 166); three referenced_repo_paths; the merge step in
       push_pr_ci_merge_flow; resolves_trailer rewritten (keeps the CARRIER "implementation merge" and PLACEMENT
-      "Key: value" wording validate_rec_autoclose_trailer_gate reads; adds TRANSPORT, the recover route and the re-run
-      route); new keys approved_text_binding and merge_step_coverage (Decision 181 clause 2, residual owned by
-      rec-4755).
+      "Key: value" wording validate_rec_autoclose_trailer_gate reads; adds TRANSPORT, the recover route with its junit
+      rule, and the acceptance-refusal route); new keys approved_text_binding and merge_step_coverage (Decision 181
+      clause 2, residual owned by rec-4755).
   - file: docs/contracts/recommendation-relevance.yaml
     action: Modify
     purpose: >-
@@ -174,45 +208,47 @@ scope:
   - file: docs/DECISIONS.md
     action: Modify
     purpose: >-
-      Exactly the sidecar's one block: a dated annotation under Decision 186's Decision 201 annotation saying the
-      printed close_proposed route does not exist and naming the two real routes. Annotation only (amendment_forms
-      general rule); no Decision body or rule changes.
+      Exactly the sidecar's one block: a `> **Update (DATE):**` annotation under Decision 186's Decision 201 annotation
+      saying the printed close_proposed route does not exist, pointing a Decision 201 refusal at git-ops.yaml
+      resolves_trailer and leaving a Decision 186 refusal open for the operator (rec-4088 owns that route). Annotation
+      only (amendment_forms blockquote_update); no Decision body or rule changes.
 bundled_recommendations: [rec-2437, rec-2733, rec-3856, rec-4244, rec-4443, rec-4592, rec-4687]
 followon_recs: [rec-4755]
 infrastructure_dependencies: []
 acceptance_criteria:
-  - Every bundled rec's stored acceptance command exits 0 on the implementation branch (VP step 7).
-  - validate_merge_step fails a declared plan whose bundled recs no branch commit's trailer names exactly, and a bound
-    file whose words differ from the approved blocks; it passes this plan's own build PR (VP steps 3 and 8).
-  - approved_text verify accepts rewrapping and the `{{DATE}}` placeholder and rejects any added, removed or changed
-    word anywhere in a bound file (VP step 1).
-  - merge_step recover closes only through close_recs_from_trailer with require_acceptance_verdict=True, only for
-    bundled recs readback found missing (VP step 2).
+  - Every bundled rec's stored acceptance holds at the PR head (VP step 7).
+  - validate_merge_step fails a declared plan whose committed declaration no branch commit's trailer matches exactly, a
+    bound file whose words differ from the approved blocks, and a sidecar the build adds, edits or deletes; it passes
+    this plan's own build PR (VP steps 3 and 8).
+  - approved_text verify accepts rewrapping and a filled `{{DATE}}` and rejects any added, removed or changed word
+    anywhere in a bound file, an unfilled placeholder and an unparseable bound YAML file (VP step 1).
+  - merge_step recover acts only on this plan's own merge, closes only through close_recs_from_trailer with
+    require_acceptance_verdict=True, only for bundled recs readback found missing, and never re-executes a
+    junit-routed acceptance (VP step 2).
   - The /implement Step 3 re-check never closes a rec (VP step 4).
-  - No surface still names the printed close_proposed route, the PR-body inheritance claim, or the step-3 auto-close
-    (VP step 6).
+  - The implement skill, the implement command and git-ops.yaml no longer name the printed close_proposed route, the
+    PR-body inheritance claim or the step-3 auto-close; DECISIONS.md keeps the original sentence under the dated
+    annotation (VP step 6).
   - After merge, readback reports every bundled rec in the merge commit and the trailer jobs close them (VP steps 9-10).
 verification_plan:
   - step: 1
     phase: pre-deploy
-    action: Approved-text unit and fixture tests, including the committed sidecar against origin/main.
+    action: Approved-text unit and fixture tests.
     command: bin/venv-python -m pytest tests/test_approved_text.py -q
     expected: All tests pass.
-    fix_if: Any failure; a sidecar-block failure means a bound file moved on main since the plan merged (re-approval).
+    fix_if: Any failure.
     hermetic: true
     graduation: graduate
     graduation_check_id: approved-text-tests
   - step: 2
     phase: pre-deploy
-    action: merge_step verb tests (readback, recover refusals and gate threading, premerge).
+    action: merge_step verb tests (readback, recover refusals, gate threading and junit rule, premerge, real worktree).
     command: bin/venv-python -m pytest tests/test_merge_step.py -q
     expected: All tests pass.
     fix_if: Any failure.
     hermetic: true
-    graduation: waive
-    graduation_waiver_reason: >-
-      Whole-file selector over a file this plan creates; it runs in the --pre pytest_diff affected set and the check's
-      own graduated row (step 3) guards the enforcement path; a second standing row would duplicate coverage.
+    graduation: graduate
+    graduation_check_id: merge-step-verb-tests
   - step: 3
     phase: pre-deploy
     action: validate_merge_step red and green cases on fixture repos.
@@ -224,10 +260,10 @@ verification_plan:
     graduation_check_id: merge-step-check-tests
   - step: 4
     phase: pre-deploy
-    action: rec-4592's node and rec-4687's file.
+    action: rec-4592's node and rec-4687's class.
     command: >-
       bin/venv-python -m pytest tests/test_rec_relevance.py::TestBundledRecNeverClosedBeforeMerge
-      tests/test_rec_trailer_acceptance_premerge.py -q
+      tests/test_rec_trailer_acceptance_premerge.py::TestPremergePreview -q
     expected: All tests pass.
     fix_if: Any failure.
     hermetic: true
@@ -244,8 +280,11 @@ verification_plan:
     fix_if: >-
       MISMATCH names a file: make that file's words equal the sidecar's `after` text (only `{{DATE}}` may differ); never
       edit the sidecar, which is the operator's approval.
-    hermetic: true
-    graduation: not-applicable
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Compares the bound files with their diff-base versions, so it is meaningful only on the build branch and the
+      merge push; validate_merge_step's (A) leg is the durable check and step 3's graduated row guards it.
   - step: 6
     phase: pre-deploy
     action: Stale-reference sweep for the retired routes and claims.
@@ -261,7 +300,9 @@ verification_plan:
       evaluates at closure.
   - step: 7
     phase: pre-deploy
-    action: Every bundled rec's stored acceptance holds at the PR head (the premerge preview, run for real).
+    action: >-
+      Commit Flow step, after the trailer commit and the rebase: every bundled rec's stored acceptance holds at the PR
+      head (the premerge preview, run for real).
     command: >-
       git log -1 --format=%B HEAD > /tmp/merge-step-msg.txt && bin/venv-python -m scripts.merge_step premerge --slug
       merge-step-checks --message-file /tmp/merge-step-msg.txt
@@ -274,7 +315,9 @@ verification_plan:
     graduation: not-applicable
   - step: 8
     phase: pre-deploy
-    action: The check passes the real tree with this plan declared (trailer on the branch commit, sidecar exact).
+    action: >-
+      Commit Flow "Run the full gate locally first" item 4, after the graduation walk and the implementation_declared
+      flip: the check sees this plan declared (trailer PENDING until the commit, sidecar exact).
     command: bin/venv-python -m scripts.validate --pre
     expected: Exit 0; the validate_merge_step section prints PASS with 1 plan examined.
     fix_if: Read the validate_merge_step section; fix the branch, never the sidecar.
@@ -282,14 +325,16 @@ verification_plan:
     graduation: not-applicable
   - step: 11
     phase: pre-deploy
-    action: Full tier, then HEAD attestation, before each commit and push (handoff_policy).
+    action: >-
+      Commit Flow full tier after the trailer commit and the rebase, then HEAD attestation, before each push
+      (handoff_policy); validate_merge_step now enforces the committed trailer.
     command: bin/venv-python -m scripts.validate && bin/venv-python -m scripts.checks.validation_result --verify-head
     expected: The full tier exits 0 and the validation result attests the current HEAD's tree.
     fix_if: Any failure -- fix and rerun the full tier from the start.
     hermetic: false
     graduation: waive
     graduation_waiver_reason: >-
-      A whole full-tier run; graduate steps may not invoke scripts.validate (recursion), and steps 1 and 3 carry the
+      A whole full-tier run; graduate steps may not invoke scripts.validate (recursion), and steps 1-3 carry the
       durable regressions.
   - step: 9
     phase: post-deploy
@@ -307,20 +352,20 @@ verification_plan:
     expected: All seven closed, none missing.
     fix_if: >-
       A rec left open: read the trailer-closure job log at the merge sha and follow git-ops.yaml resolves_trailer's
-      refusal route; never close by hand around a refusal.
+      route for that marker; never close by hand around a refusal.
 test_obligations:
   - source: scripts/approved_text.py
-    behavior: Any added, removed or changed word in a bound file fails; rewrapping and placeholders pass.
+    behavior: Any added, removed or changed word in a bound file fails; rewrapping and filled placeholders pass; the sidecar is read from the base.
     verification_step: 1
     test_selector: tests/test_approved_text.py
     red_green_expectation: red before (file absent), green after
   - source: scripts/merge_step.py
-    behavior: recover closes only missing bundled recs, only through the verdict-gated close; readback and premerge verdicts.
+    behavior: recover closes only this plan's missing bundled recs, only through the verdict-gated close, never re-running a junit route; readback and premerge verdicts.
     verification_step: 2
     test_selector: tests/test_merge_step.py
     red_green_expectation: red before (file absent), green after
   - source: scripts/checks/verification/validate_merge_step.py
-    behavior: A declared plan's bundled recs must be named by a branch-commit trailer; approved text must match.
+    behavior: A committed declaration's bundled recs must be named by a branch-commit trailer; approved text must match a base-read sidecar.
     verification_step: 3
     test_selector: tests/checks/verification/test_validate_merge_step.py
     red_green_expectation: red before (file absent), green after
@@ -354,14 +399,20 @@ test_obligations:
     verification_step: 8
     command: bin/venv-python -m scripts.validate --pre
     waiver_reason: Registry data written by the graduation walk; validate_verification_registry and validate_graduation_completeness in VP 8 check it.
+  - source: config/agent/verification_registry/entries/merge-step-verb-tests.yaml
+    behavior: The graduated row names VP 2's file and scripts/merge_step.py.
+    verification_step: 8
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: Registry data written by the graduation walk; validate_verification_registry and validate_graduation_completeness in VP 8 check it.
   - source: config/agent/verification_registry/entries/approved-text-tests.yaml
     behavior: The graduated row names VP 1's file and scripts/approved_text.py.
     verification_step: 8
     command: bin/venv-python -m scripts.validate --pre
     waiver_reason: Registry data written by the graduation walk; validate_verification_registry and validate_graduation_completeness in VP 8 check it.
 constraints:
-  - Approved text is binding. Copy every sidecar `after` verbatim into its file (rewrapping allowed); never edit the
-    sidecar. If a bound file must change any other way, stop and report; that is a new operator ask.
+  - Approved text is binding. Copy every sidecar `after` verbatim into its file, line breaks included (rec-4244's
+    acceptance greps one line and rec-3856's greps the 12 lines after `resolves_trailer:`); never edit the sidecar.
+    If a bound file must change any other way, stop and report; that is a new operator ask.
   - Never weaken a check or an acceptance to obtain green (Decision 181; implement-scope-boundary.yaml CONTENT).
   - No CI workflow, IAM, Terraform or Lambda change. Hooks are out of scope (rec-4755 owns the merge-time gate).
   - No rescue agents or workaround loops (Decision 55).
@@ -369,11 +420,12 @@ constraints:
 context:
   - "Decision-scout verdict: FLAGS_FOUND (Decisions triaged: 190 of 190; Roadmap items intersected: 6; CONFLICT: 0; RELATED: 5). CITE: 201, 55, 76, 128, 166, 215. Flags dispositioned: 186 NOTE (commands/implement.md + DECISIONS.md annotation in scope), 103 NOTE (implement venue only, T3.9 keeps auto-close), 181 NOTE (merge_step_coverage; strengthen-only route), 163 WARN (validate_merge_step enforces trailer + approved text; procedural residual owned by rec-4755)."
   - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - "Critique round 1 (REVISE) dispositions: F1 no standing test reads origin/main, VP 5 non-hermetic, verify defaults to status_diff_base; F7 sidecar read at the base, added/changed/deleted fails; C1 recover keeps junit routes (unmeasurable, FALLBACK); C2 Decision 186 routing left to rec-4088; F4 .venv symlink plus an unstubbed worktree test; F2 rec-4687 acceptance strengthened 2026-10-30 (original command kept, `&& ...::TestPremergePreview` appended; rec-4755 likewise); F3 line-break constraint, both greps checked on the dry run; F8/F9 VP 5 waive, VP 2 graduated; F10 VP 7/8/11 placed in the Commit Flow; F11 recover keyed to the plan's own merge; F12 one fetch, rows=, repo_root; F13 placeholders never match literally, YAML must parse; F16 a red premerge line blocks; C3 blockquote_update spelling. Frame: no Terraform squash setting (the branch commit already carries the trailer through a UI squash under COMMIT_MESSAGES), no split (F1 removed the main-red path), word engine argued in scope."
   - "Related-work check: scripts.ci_rca.red_overlap verdict clear (no open reds) on 2026-10-30."
   - "Operator rulings: step 6b (2026-10-30) whole word-level change set per bound file, public-surface text content-bound; this build lands before PR #1570's build (merge-race-attestation), so it takes git-ops contract_version 9 and the amendment_log compaction."
   - "Approved text: docs/plans/approved/merge-step-checks.yaml, digest printed by `approved_text record` once built; the approving message id is in the project handoff, never in the repo."
   - "Blind Fable consult (project file plan-c ADVICE) recommended the word-level scope, the sidecar-vs-message-id split, and the verdict-bound recover."
-  - "Gotcha: escape-classified ci_rca recs still carry the trailer; the trailer path refuses them loud-not-red and they then follow ci-rca-lifecycle.yaml manual_route (rec-4088 open)."
+  - "Gotcha: escape-classified ci_rca recs still carry the trailer; the trailer path refuses them loud-not-red (Decision 186) and they stay open for the operator; rec-4088 owns their route."
   - "Gotcha: the Commit Flow's single implementation commit must carry the trailer; a fix-up commit need not repeat it (the check takes the union over branch commits)."
   - "Gotcha: if plan critique-convergence lands first and makes gate_rounds required, add it on rebase. config/ci_rca_taxonomy.yaml is a shared append."
   - "Gotcha: a sidecar `before` that stops matching because main moved is a mismatch by design: stop and ask, never re-derive the sidecar."
@@ -388,9 +440,10 @@ execution_steps:
   - "scripts/merge_step.py, tests/test_merge_step.py, tests/test_rec_trailer_acceptance_premerge.py (VP 2, VP 4 second half)."
   - "scripts/rec_relevance.py implement_recheck + CLI, tests/test_rec_relevance.py class (VP 4)."
   - "validate_merge_step, its test, manifest entry, taxonomy row (VP 3)."
-  - "Apply the sidecar's 21 blocks to the five bound files with {{DATE}} as the landing date; run VP 5 and VP 6."
-  - "Commit with the trailer in the commit body: Resolves: rec-2437, rec-2733, rec-3856, rec-4244, rec-4443, rec-4592, rec-4687."
-  - "Execute the Verification Plan (VP 7, VP 8 after the full tier); graduation walk writes the two registry rows."
+  - "Apply the sidecar's 21 blocks to the five bound files verbatim, line breaks included, with {{DATE}} as the landing date; run VP 5 and VP 6."
+  - "Live Verification (Workflow Step 4): VP 1-6 must PASS. VP 7, 8 and 11 are Commit Flow steps: record them in the VP table as PENDING with their Commit Flow position, and complete them before the push; the PR body carries their results."
+  - "Code review, then the graduation walk (writes the three registry rows), then 'Run the full gate locally first': item 3 flips implementation_declared, item 4's --pre is VP 8."
+  - "IMPLEMENTATION Commit Flow: commit with the trailer as its own paragraph (-m \"Resolves: rec-2437, rec-2733, rec-3856, rec-4244, rec-4443, rec-4592, rec-4687\"), rebase, VP 11, VP 7, push."
   - "Merge per the new Commit Flow step 4 (the first real premerge/readback), then VP 9 and VP 10."
   - "Report: what was implemented, verification results, the digest printed by VP 5."
 rollback: >-
