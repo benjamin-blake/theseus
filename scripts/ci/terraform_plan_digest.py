@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Names-only Terraform plan digest for the merge-time subagent plan reviewer (rec-4639).
 
-Usage: terraform_plan_digest.py [--literals-from PATH]... [--fit-report] <plan.json>
-Exit 0 digest (or one fit-report line) printed, 1 plan unreadable or not a JSON object, 3 the actionable
-content alone exceeds the size budget (DigestOverflow; nothing is printed to stdout).
+Usage: terraform_plan_digest.py [--literals-from PATH]... [--fit-report | --fit-check] <plan.json>
+Exit 0 digest (or one fit-report line, or --fit-check FITS) printed, 1 plan unreadable or not a JSON object, 3 the
+actionable content alone exceeds the size budget (DigestOverflow; nothing is printed to stdout; --fit-check OVERFLOW),
+4 --fit-check OPAQUE (an IAM policy or deferred policy document whose content is unknown at plan time).
 
 The reviewer sees addresses (instance keys stripped), types, actions, changed top-level attribute
 NAMES and output names -- never a Terraform value. Exactly three per-type renderers print a value
@@ -440,6 +441,9 @@ def build_digest(plan: dict, literals: frozenset[str] = frozenset(), size_cap: i
 def fit_report(plan: dict, literals: frozenset[str] = frozenset(), cap: int = DIGEST_SIZE_CAP) -> str:
     parts = _Parts(plan, literals)
     if fits(parts.head_bytes, cap):
+        policies, documents = opaque_entries(plan)
+        if policies or documents:
+            return _opaque_line(policies, documents)
         return (
             f"Reviewer digest: {parts.actionable} actionable of {parts.total} resource change(s), "
             f"{parts.head_bytes} of {cap} bytes."
@@ -451,15 +455,74 @@ def fit_report(plan: dict, literals: frozenset[str] = frozenset(), cap: int = DI
     )
 
 
+def opaque_entries(plan: dict) -> tuple[list[str], list[str]]:
+    """(policies, documents) whose content the merge-time reviewer cannot read: addresses as the digest renders them."""
+    policies: set[str] = set()
+    documents: set[str] = set()
+    for entry in iter_resource_changes(plan):
+        if not isinstance(entry, dict) or not isinstance(entry.get("change"), dict):
+            continue
+        change = entry["change"]
+        actions = change.get("actions")
+        if not isinstance(actions, list):
+            continue
+        address = _redact(_clean(strip_instance_keys(str(entry.get("address", "<unknown>")))))
+        if entry.get("type") in _POLICY_TYPES:
+            unknown = change.get("after_unknown")
+            if ("create" in actions or "update" in actions) and isinstance(unknown, dict) and unknown.get("policy") is True:
+                policies.add(address)
+        elif entry.get("type") == "aws_iam_policy_document" and actions == ["read"] and entry.get("action_reason"):
+            documents.add(address)
+    return sorted(policies), sorted(documents)
+
+
+def _opaque_line(policies: list[str], documents: list[str]) -> str:
+    return (
+        f"Reviewer digest OPAQUE: policies unknown at plan time: {', '.join(policies) or 'none'}; "
+        f"deferred documents: {', '.join(documents) or 'none'}. "
+        "The merge-time review cannot read them: build ARNs from names or split the PR."
+    )
+
+
+UNREADABLE_PLAN = "terraform_plan_digest: UNREADABLE_PLAN the plan JSON cannot be read (detail not shown)"
+_FIT_ANNOTATION = "::error title=Reviewer digest cannot review this plan::"
+
+
+def _fit_check(args: argparse.Namespace) -> int:
+    try:
+        with open(args.plan, encoding="utf-8") as handle:
+            plan = json.load(handle)
+        if not isinstance(plan, dict):
+            raise ValueError
+        literals = load_literals(args.literals_from)
+        line = fit_report(plan, literals)
+        policies, documents = opaque_entries(plan)
+    except Exception:
+        print(UNREADABLE_PLAN, file=sys.stderr)
+        return 1
+    print(line)
+    if line.startswith("Reviewer digest OVERFLOW:"):
+        print(f"{_FIT_ANNOTATION}OVERFLOW 1")
+        return 3
+    if line.startswith("Reviewer digest OPAQUE:"):
+        print(f"{_FIT_ANNOTATION}OPAQUE {len(policies) + len(documents)}")
+        return 4
+    return 0
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     if not _package_resolves_under_root():
         print("terraform_plan_digest: the scripts package did not resolve under the repo root", file=sys.stderr)
         return 2
     parser = argparse.ArgumentParser(prog="terraform_plan_digest.py")
     parser.add_argument("--literals-from", action="append", default=[], metavar="PATH")
-    parser.add_argument("--fit-report", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--fit-report", action="store_true")
+    mode.add_argument("--fit-check", action="store_true")
     parser.add_argument("plan")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    if args.fit_check:
+        return _fit_check(args)
     try:
         with open(args.plan, encoding="utf-8") as handle:
             plan = json.load(handle)
