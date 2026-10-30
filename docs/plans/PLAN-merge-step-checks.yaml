@@ -87,7 +87,8 @@ scope:
       a holds verdict. Imports of ops_data_portal, the reader and ci_rca_lifecycle stay function-local.
       `premerge --slug S --message-file F [--expect HEX]`: prints `PREMERGE HEAD <sha>` (the sha the merge call passes as
       expectedHeadSha); (1) scripts.rec_trailer.parse_resolves_trailer(message) must equal the expected set exactly,
-      else `PREMERGE TRAILER MISMATCH expected=[...] parsed=[...]`, except that when the plan is undeclared at HEAD and
+      else `PREMERGE TRAILER MISMATCH expected=[...] parsed=[...]` with validate_merge_step (T)'s remedy for each arm,
+      except that when the plan is undeclared at HEAD and
       the parsed trailer is non-empty it prints `PREMERGE UNDECLARED <slug>: implementation_declared is false at HEAD --
       set it ('Run the full gate locally first' item 3), commit, re-run CI; never drop the trailer` instead (a multi-PR
       intermediate PR carries no trailer and is unaffected); (2) acceptance preview
@@ -169,7 +170,11 @@ scope:
       only (push base None), when bundled_recommendations is non-empty and the declaration is
       COMMITTED (`git show HEAD:<plan>` reads implementation_declared true): the union of parse_resolves_trailer over
       every `git log --format=%B <base>..HEAD` message must equal the bundled set exactly, else fail naming expected
-      and found plus the remedy (`add a commit whose message carries: Resolves: <set>`); a declaration present only in
+      and found plus the remedy for each arm: a missing rec, `add a commit whose message carries: Resolves: <set>`; an
+      extra rec (the union never shrinks, e.g. after a plan amendment PR removed a superseded rec), rewrite the
+      trailer-carrying commit's message (`git commit --amend` when it is the last commit, else `git reset --soft
+      <merge-base>` and recommit with the corrected trailer) and push with --force-with-lease (git-ops.yaml
+      rebase_phase_distinction); a declaration present only in
       the working tree prints `PENDING trailer: declaration not committed`
       (the Commit Flow's --pre runs before the commit; CI always sees the committed state). (A) the sidecar is read AT
       THE BASE: sidecar_state added, changed or deleted fails (an approval cannot ride in or be edited by the build it
@@ -180,7 +185,7 @@ scope:
     action: Create
     purpose: >-
       Fixture repos: declared plan with bundled recs and the trailer in a branch commit passes; trailer only in a PR
-      body (no commit) fails; trailer naming a subset or a superset fails; an uncommitted declaration prints PENDING
+      body (no commit) fails; trailer naming a subset or a superset fails, each printing its own arm's remedy; an uncommitted declaration prints PENDING
       and passes; push context skips (T); a sidecar mismatch fails and an exact sidecar passes; a sidecar edited,
       deleted or first added on the branch fails; an undeclared plan is not checked; real-tree run passes. Every
       fixture case injects root, base and the push-base seam and clears GITHUB_EVENT_NAME and GITHUB_EVENT_BEFORE, so
@@ -206,6 +211,11 @@ scope:
   - file: config/agent/verification_registry/entries/approved-text-tests.yaml
     action: Create
     purpose: Graduated registry row for VP step 1 (test_selector, guard_target scripts/roadmap/approved_text.py).
+  - file: config/agent/verification_registry/entries/merge-step-retired-routes-absent.yaml
+    action: Create
+    purpose: >-
+      Graduated registry row for VP step 6 (command_exit_zero; check_spec.command is `bash -c` of VP 6's command, the
+      form agents-md-contradiction-resolved uses; guard_target docs/contracts/git-ops.yaml).
   - file: scripts/rec_relevance.py
     action: Modify
     purpose: >-
@@ -242,13 +252,14 @@ scope:
     purpose: >-
       Exactly the sidecar's six blocks: contract_version 8 -> 9; one new amendment_log row and every existing row
       compacted to a one-line flow mapping (parsed values unchanged; the contracts class's declared relief valve,
-      490 -> 477 effective lines against the 500 limit, Decision 166); three referenced_repo_paths; the merge step in
+      490 -> 478 effective lines against the 500 limit, Decision 166); three referenced_repo_paths; the merge step in
       push_pr_ci_merge_flow (premerge, commit_message, expectedHeadSha and readback for an IMPLEMENTATION merge only);
       resolves_trailer rewritten (keeps the CARRIER "implementation merge" and PLACEMENT
       "Key: value" wording validate_rec_autoclose_trailer_gate reads; adds TRANSPORT, the recover route with its junit
       rule, and the acceptance-refusal route); new keys approved_text_binding and merge_step_coverage (Decision 181
-      clause 2; the merge step is procedural for every agent that merges, /overseer included; residual owned by
-      rec-4755).
+      clause 2; the merge step is procedural for every agent that merges, /overseer included, and a trailer on a PR
+      that declares no plan has no mechanical leg; residuals owned by rec-4755); the FALLBACK sentence drops its
+      Decision 70 cite.
   - file: docs/contracts/recommendation-relevance.yaml
     action: Modify
     purpose: >-
@@ -326,7 +337,7 @@ verification_plan:
   - step: 5
     phase: pre-deploy
     action: The approved-text binding holds on the build branch (the mechanism checking its own build).
-    command: bin/venv-python -m scripts.roadmap.approved_text verify --slug merge-step-checks --expect 0ace5a396cbfe74f8e4e3647fcd760762bbf8ae29622d03c30b5fb853937dc86
+    command: bin/venv-python -m scripts.roadmap.approved_text verify --slug merge-step-checks --expect affcbc8d328a5335995a4c094cee54e8d3427e4b6e36e8052a13dcb0fcefbc9f
     expected: Prints APPROVED-TEXT OK and the digest the operator approved (the --expect value); exit 0.
     fix_if: >-
       MISMATCH names a file: make that file's words equal the sidecar's `after` text (only `{{DATE}}` may differ); never
@@ -345,10 +356,8 @@ verification_plan:
     expected: No matches; exit 0.
     fix_if: A match names a surface the sidecar missed; stop and report (the wording is approved text).
     hermetic: true
-    graduation: waive
-    graduation_waiver_reason: >-
-      Duplicates the bundled recs' own negated-grep acceptances (rec-2733, rec-4443, rec-4592), which the trailer gate
-      evaluates at closure.
+    graduation: graduate
+    graduation_check_id: merge-step-retired-routes-absent
   - step: 7
     phase: pre-deploy
     action: >-
@@ -357,7 +366,7 @@ verification_plan:
     command: >-
       git log -1 --grep='^Resolves: ' --format=%B origin/main..HEAD > /tmp/merge-step-msg.txt && bin/venv-python -m
       scripts.session.merge_step premerge
-      --slug merge-step-checks --message-file /tmp/merge-step-msg.txt --expect 0ace5a396cbfe74f8e4e3647fcd760762bbf8ae29622d03c30b5fb853937dc86
+      --slug merge-step-checks --message-file /tmp/merge-step-msg.txt --expect affcbc8d328a5335995a4c094cee54e8d3427e4b6e36e8052a13dcb0fcefbc9f
     expected: >-
       The trailer parses to the seven bundled recs, every PREVIEW line says holds, the approved text verifies at the
       approved digest, no STALE BASE line; exit 0.
@@ -396,13 +405,15 @@ verification_plan:
       durable regressions.
   - step: 9
     phase: post-deploy
-    action: Read the merge commit back.
-    command: bin/venv-python -m scripts.session.merge_step readback --slug merge-step-checks --sha <merge sha>
+    action: Read the merge commit back (MERGE_SHA is the sha merge_pull_request returned).
+    command: bin/venv-python -m scripts.session.merge_step readback --slug merge-step-checks --sha "$MERGE_SHA"
     expected: READBACK OK naming all seven recs.
-    fix_if: READBACK MISSING -- run `bin/venv-python -m scripts.session.merge_step recover --slug merge-step-checks --sha <merge sha>`.
+    fix_if: READBACK MISSING -- run `bin/venv-python -m scripts.session.merge_step recover --slug merge-step-checks --sha "$MERGE_SHA"`.
   - step: 10
     phase: post-deploy
-    action: The trailer jobs closed every bundled rec through the Decision 201 gate.
+    action: >-
+      After the merge push run's trailer-closure job concludes (Commit Flow step 5): the trailer jobs closed every
+      bundled rec through the Decision 201 gate.
     command: >-
       bin/venv-python -c "from src.common.ducklake_reader_client import make_reader, fetch_recs_by_ids; rows, m =
       fetch_recs_by_ids(make_reader(), ['rec-2437','rec-2733','rec-3856','rec-4244','rec-4443','rec-4592','rec-4687']);
@@ -440,28 +451,28 @@ test_obligations:
   - source: docs/contracts/git-ops.yaml
     behavior: The contract's new wording is exactly the approved text, and its referenced paths and trailer clauses hold.
     verification_step: 5
-    command: bin/venv-python -m scripts.roadmap.approved_text verify --slug merge-step-checks --expect 0ace5a396cbfe74f8e4e3647fcd760762bbf8ae29622d03c30b5fb853937dc86
-    red_green_expectation: red before (scripts.roadmap.approved_text absent), green after; validate_git_ops_contract and validate_rec_autoclose_trailer_gate run in VP 8
+    command: bin/venv-python -m scripts.roadmap.approved_text verify --slug merge-step-checks --expect affcbc8d328a5335995a4c094cee54e8d3427e4b6e36e8052a13dcb0fcefbc9f
+    red_green_expectation: red before (verify prints APPROVED-TEXT MISMATCH naming the unedited file; on the plan tree the module is also absent), green after; validate_git_ops_contract and validate_rec_autoclose_trailer_gate run in VP 8
   - source: docs/contracts/recommendation-relevance.yaml
     behavior: The implement_gate and venue wording is exactly the approved text and the verdict enum stays in sync.
     verification_step: 5
-    command: bin/venv-python -m scripts.roadmap.approved_text verify --slug merge-step-checks --expect 0ace5a396cbfe74f8e4e3647fcd760762bbf8ae29622d03c30b5fb853937dc86
-    red_green_expectation: red before (scripts.roadmap.approved_text absent), green after; validate_rec_relevance_contract runs in VP 8
+    command: bin/venv-python -m scripts.roadmap.approved_text verify --slug merge-step-checks --expect affcbc8d328a5335995a4c094cee54e8d3427e4b6e36e8052a13dcb0fcefbc9f
+    red_green_expectation: red before (verify prints APPROVED-TEXT MISMATCH naming the unedited file; on the plan tree the module is also absent), green after; validate_rec_relevance_contract runs in VP 8
   - source: .claude/skills/implement/SKILL.md
     behavior: The implement skill's Step 3 and Commit Flow wording is exactly the approved text.
     verification_step: 5
-    command: bin/venv-python -m scripts.roadmap.approved_text verify --slug merge-step-checks --expect 0ace5a396cbfe74f8e4e3647fcd760762bbf8ae29622d03c30b5fb853937dc86
-    red_green_expectation: red before (scripts.roadmap.approved_text absent), green after; the prose budget and skill checks run in VP 8
+    command: bin/venv-python -m scripts.roadmap.approved_text verify --slug merge-step-checks --expect affcbc8d328a5335995a4c094cee54e8d3427e4b6e36e8052a13dcb0fcefbc9f
+    red_green_expectation: red before (verify prints APPROVED-TEXT MISMATCH naming the unedited file; on the plan tree the module is also absent), green after; the prose budget and skill checks run in VP 8
   - source: .claude/commands/implement.md
     behavior: The Step 7 trailer and refusal-route paragraph is exactly the approved text.
     verification_step: 5
-    command: bin/venv-python -m scripts.roadmap.approved_text verify --slug merge-step-checks --expect 0ace5a396cbfe74f8e4e3647fcd760762bbf8ae29622d03c30b5fb853937dc86
-    red_green_expectation: red before (scripts.roadmap.approved_text absent), green after
+    command: bin/venv-python -m scripts.roadmap.approved_text verify --slug merge-step-checks --expect affcbc8d328a5335995a4c094cee54e8d3427e4b6e36e8052a13dcb0fcefbc9f
+    red_green_expectation: red before (verify prints APPROVED-TEXT MISMATCH naming the unedited file; on the plan tree the module is also absent), green after
   - source: docs/DECISIONS.md
     behavior: The Decision 186 annotation is exactly the approved text and changes no rule.
     verification_step: 5
-    command: bin/venv-python -m scripts.roadmap.approved_text verify --slug merge-step-checks --expect 0ace5a396cbfe74f8e4e3647fcd760762bbf8ae29622d03c30b5fb853937dc86
-    red_green_expectation: red before (scripts.roadmap.approved_text absent), green after; the decisions conformance and index checks run in VP 8
+    command: bin/venv-python -m scripts.roadmap.approved_text verify --slug merge-step-checks --expect affcbc8d328a5335995a4c094cee54e8d3427e4b6e36e8052a13dcb0fcefbc9f
+    red_green_expectation: red before (verify prints APPROVED-TEXT MISMATCH naming the unedited file; on the plan tree the module is also absent), green after; the decisions conformance and index checks run in VP 8
   - source: config/ci_rca_taxonomy.yaml
     behavior: validate_merge_step has a taxonomy category.
     verification_step: 8
@@ -479,6 +490,11 @@ test_obligations:
     waiver_reason: Registry data written by the graduation walk; validate_verification_registry and validate_graduation_completeness in VP 8 check it.
   - source: config/agent/verification_registry/entries/approved-text-tests.yaml
     behavior: The graduated row names VP 1's file and scripts/roadmap/approved_text.py.
+    verification_step: 8
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: Registry data written by the graduation walk; validate_verification_registry and validate_graduation_completeness in VP 8 check it.
+  - source: config/agent/verification_registry/entries/merge-step-retired-routes-absent.yaml
+    behavior: The graduated row runs VP 6's sweep through bash -c and guards docs/contracts/git-ops.yaml.
     verification_step: 8
     command: bin/venv-python -m scripts.validate --pre
     waiver_reason: Registry data written by the graduation walk; validate_verification_registry and validate_graduation_completeness in VP 8 check it.
@@ -502,14 +518,15 @@ context:
   - "Gotcha: once this lands, an in-flight build that flips a declaration with bundled recs and carries the trailer only in its PR body fails validate_merge_step (T) until a branch commit carries the trailer (the failure prints the remedy); PLAN-deferred-policy-digest is one such plan."
   - "Related-work check: scripts.ci_rca.red_overlap verdict clear (no open reds) on 2026-10-30."
   - "Operator rulings: step 6b (2026-10-30) whole word-level change set per bound file, public-surface text content-bound; this build lands before PR #1570's build (merge-race-attestation), so it takes git-ops contract_version 9 and the amendment_log compaction."
-  - "Approved text: docs/plans/approved/merge-step-checks.yaml, 21 blocks, digest 0ace5a396cbfe74f8e4e3647fcd760762bbf8ae29622d03c30b5fb853937dc86 (computed at plan time with the canonical form scope fixes; VP 5 and VP 7 pass it as --expect). The approving message id is in the project handoff, never in the repo."
+  - "Approved text: docs/plans/approved/merge-step-checks.yaml, 21 blocks, digest affcbc8d328a5335995a4c094cee54e8d3427e4b6e36e8052a13dcb0fcefbc9f (computed at plan time with the canonical form scope fixes; VP 5 and VP 7 pass it as --expect). The approving message id is in the project handoff, never in the repo."
   - "Blind Fable consult (project file plan-c ADVICE) recommended the word-level scope, the sidecar-vs-message-id split, and the verdict-bound recover."
   - "Gotcha: escape-classified ci_rca recs still carry the trailer; the trailer path refuses them loud-not-red (Decision 186) and they stay open for the operator; rec-4088 owns their route."
   - "Gotcha: the Commit Flow's single implementation commit must carry the trailer; a fix-up commit need not repeat it (the check takes the union over branch commits)."
   - "Gotcha: if plan critique-convergence lands first and makes gate_rounds required, add it on rebase. config/ci_rca_taxonomy.yaml is a shared append."
   - "Gotcha: a sidecar `before` that stops matching because main moved is a mismatch by design: stop and ask, never re-derive the sidecar."
-  - "Gotcha: PLAN-merge-race-attestation (PR #1570, builds after this one) planned the same amendment_log compaction for git-ops.yaml headroom; after this build git-ops.yaml sits at 477/500 effective lines with that relief spent, so its build must re-plan headroom and take contract_version 10."
+  - "Gotcha: PLAN-merge-race-attestation (PR #1570, builds after this one) planned the same amendment_log compaction for git-ops.yaml headroom; after this build git-ops.yaml sits at 478/500 effective lines with that relief spent, so its build must re-plan headroom and take contract_version 10."
   - "Critique round 5 (REVISE) dispositions: J1 premerge prints PREMERGE UNDECLARED with the flip remedy (readback beside UNEXPECTED); J2 the FALLBACK wording returns to 'transport failure' and rec-4770 (filed 2026-10-30, in followon_recs) owns making it verdict-bound; J3 merge_step_coverage names push_pr_ci_merge_flow and /overseer; J4 premerge fails already-superseded and already-declined with the plan amendment remedy, already-closed stays non-fatal; J5 the shared fixtures file is the SLOC relief, and the stop-and-report constraint stands; J6/J7 informational (SKILL.md 34,890 B, git-ops 477 lines)."
+  - "Critique round 6 (REVISE) dispositions: F1 VP 6 graduates (merge-step-retired-routes-absent, a command_exit_zero row, so nothing stands down after closure); F2 (T) and premerge print a remedy per arm (an extra rec rewrites the trailer commit); F3 the FALLBACK sentence drops its Decision 70 cite (bootstrap-record deletion; ci-rca-lifecycle.yaml closure_proof_citation); F4 merge_step_coverage declares trailers on PRs with no plan (fast_lane_repair, remediation evidence PRs) as a residual, and rec-4755's context covers them; F5 VP 10 waits for the trailer-closure job; F6 VP 9 names MERGE_SHA; F7 the bound-file red is the MISMATCH line; F8/F9 informational; git-ops 478 lines. The wording has not been approved yet, so F3/F4 cost no re-approval."
   - "Gotcha (measured 2026-10-30): 13 of 92 trailer-carrying feat merges since 2026-09-15 never flipped implementation_declared; such a build gets PREMERGE UNDECLARED, and one that skips both the flip and premerge escapes legs (T) and (A) (rec-4755's merge-time gate owns that residual)."
 pre_implementation_checklist:
   - Branch confirmed not on main
