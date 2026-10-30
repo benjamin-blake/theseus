@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from scripts.ci.terraform_hcl_lexer import LexRefusal, Token, lex
+from scripts.ci.terraform_hcl_lexer import Token, lex
 from scripts.terraform_apply_guard import iter_resource_changes
 
 DOC_PREFIX = "data.aws_iam_policy_document."
@@ -97,13 +97,6 @@ class _Stop(Exception):
 
 def _is_override(name: str) -> bool:
     return name in ("override.tf", "override.tf.json") or name.endswith(("_override.tf", "_override.tf.json"))
-
-
-def _line_values(tokens: list[Token], start: int) -> tuple[list[Token], int]:
-    end = start
-    while end < len(tokens) and tokens[end].kind != "nl":
-        end += 1
-    return tokens[start:end], end
 
 
 _REFERENCE_KINDS = ["ident", "punct", "ident", "punct", "ident", "punct", "ident"]
@@ -203,7 +196,7 @@ def load_policy_links(paths: list[str]) -> PolicyLinks:
     for tf in files:
         try:
             found_policies, found_documents = _file_links(tf.read_text(encoding="utf-8", errors="replace"))
-        except (LexRefusal, OSError, IndexError, ValueError):
+        except Exception:
             continue
         for key, value in found_policies.items():
             policies[key] = None if key in policies else value
@@ -218,6 +211,11 @@ def _any_unknown(flag: Any) -> bool:
     if isinstance(flag, dict):
         return any(_any_unknown(f) for f in flag.values())
     return flag is True
+
+
+def _unseen_unknown(items: Any, flags: Any) -> bool:
+    """True when an unknown flag sits past the end of the planned list (Terraform leaves such elements out of `after`)."""
+    return isinstance(flags, list) and _any_unknown(flags[len(items) if isinstance(items, list) else 0 :])
 
 
 def _plain_statements(raw: Any) -> list[dict]:
@@ -255,7 +253,7 @@ class _Doc:
         return found[0]["change"]
 
     def listing(self, name: str, index: int, field: str, values: Any, flags: Any) -> tuple[Optional[list], int]:
-        if flags is True:
+        if flags is True or _unseen_unknown(values, flags):
             raise _Stop("statement field unknown")
         if values is None or values == []:
             return None, 0
@@ -276,7 +274,7 @@ class _Doc:
         return out, unknown
 
     def principals(self, name: str, index: int, field: str, blocks: Any, flags: Any) -> tuple[Any, int]:
-        if flags is True:
+        if flags is True or _unseen_unknown(blocks, flags):
             raise _Stop("statement field unknown")
         if not blocks:
             return None, 0
@@ -293,7 +291,7 @@ class _Doc:
         return ("*" if out == {"*": ["*"]} else out), unknown
 
     def condition(self, name: str, index: int, blocks: Any, flags: Any) -> tuple[Any, int]:
-        if flags is True:
+        if flags is True or _unseen_unknown(blocks, flags):
             raise _Stop("statement field unknown")
         if not blocks:
             return None, 0
@@ -349,6 +347,8 @@ class _Doc:
         blocks, flags = after.get("statement") or [], unknown.get("statement")
         if not isinstance(blocks, list) or not isinstance(flags, (list, bool, type(None))):
             raise _Stop(MALFORMED)
+        if _unseen_unknown(blocks, flags):
+            raise _Stop("statement field unknown")
         merged: list[dict] = []
         for source in self.sources(name, after, unknown, depth, seen):
             _merge(merged, source)
@@ -367,6 +367,8 @@ class _Doc:
             raise _Stop("unmodelled argument")
         if not isinstance(elements, list):
             raise _Stop(MALFORMED)
+        if _unseen_unknown(elements, flags):
+            raise _Stop("sourced document not resolvable")
         out: list[list[dict]] = []
         for pos, element in enumerate(elements):
             if isinstance(flags, list) and pos < len(flags) and flags[pos] is True:

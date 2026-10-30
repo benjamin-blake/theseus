@@ -457,3 +457,60 @@ def test_unknown_elements_are_counted_per_distinct_document() -> None:
         plan, _policy(plan, "created_policy"), load_policy_links([str(UNKNOWN / "source.tf.txt")]), [f"{DOC}created_doc"]
     )
     assert isinstance(result, Rebuilt) and result.unknown_elements == 1
+
+
+def _flag_past_actions(plan: dict) -> None:
+    _read(plan, "github_ci_pr")["change"]["after_unknown"]["statement"][0]["actions"].append(True)
+
+
+def _flag_past_statements(plan: dict) -> None:
+    _read(plan, "github_ci_pr")["change"]["after_unknown"]["statement"].append({"actions": True})
+
+
+def _flag_past_sources(plan: dict) -> None:
+    _read(plan, "github_ci_pr")["change"]["after_unknown"]["source_policy_documents"].append(True)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "reason"),
+    [
+        (_flag_past_actions, "statement field unknown"),
+        (_flag_past_statements, "statement field unknown"),
+        (_flag_past_sources, "sourced document not resolvable"),
+    ],
+)
+def test_unknown_flags_past_the_planned_list_are_not_dropped(mutate, reason: str) -> None:
+    plan = ci_policies_plan()
+    mutate(plan)
+    _fallback_line(plan, reason)
+
+
+def _minimal(statement: dict, flags: dict) -> tuple[dict, PolicyLinks]:
+    block = {"actions": ["s3:Get*"], "resources": ["*"], "condition": [], "principals": [], "sid": "S", **statement}
+    read = {
+        "address": f"{DOC}d",
+        "type": "aws_iam_policy_document",
+        "action_reason": "read_because_config_unknown",
+        "change": {"actions": ["read"], "after": {"statement": [block]}, "after_unknown": {"statement": [flags]}},
+    }
+    policy = {
+        "address": "aws_iam_role_policy.p",
+        "type": "aws_iam_role_policy",
+        "change": {"actions": ["create"], "before": None, "after": {}, "after_unknown": {"policy": True}},
+    }
+    return {"resource_changes": [policy, read]}, PolicyLinks({"aws_iam_role_policy.p": "d"}, {})
+
+
+@pytest.mark.parametrize(
+    ("statement", "flags"),
+    [
+        ({"actions": []}, {"actions": [True]}),
+        ({"condition": []}, {"condition": [{"values": [True]}]}),
+        ({"condition": [{"test": "Bool", "variable": "v", "values": []}]}, {"condition": [{"values": [True]}]}),
+        ({"principals": [{"type": "AWS", "identifiers": []}]}, {"principals": [{"identifiers": [True]}]}),
+    ],
+)
+def test_empty_planned_lists_with_unknown_flags_are_incomplete(statement: dict, flags: dict) -> None:
+    plan, links = _minimal(statement, flags)
+    result = rebuild_policy(plan, plan["resource_changes"][0], links, [f"{DOC}d.json"])
+    assert isinstance(result, Incomplete) and result.reason == "statement field unknown"
