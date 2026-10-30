@@ -30,11 +30,16 @@ scope:
       `resource "<T>" "<N>"` block whose `policy` attribute is exactly `data.aws_iam_policy_document.<D>.json` or
       `.minified_json` and nothing else up to the end of the line; document -> ordered sources for each
       `data "aws_iam_policy_document" "<D>"` block whose `source_policy_documents` is exactly a list literal of such
-      references. It never raises: like load_literals it skips a file on OSError and decodes with errors="replace", and a
-      file the lexer refuses (LexRefusal) or any other parse problem contributes nothing. (2) rebuild_policy(plan, entry,
-      links) never raises (any malformed plan shape is Incomplete) and returns Rebuilt(document, statements, unknown_elements) or
-      Incomplete(reason). It links the policy entry to its document only through PolicyLinks AND the configuration
-      `policy` references (both must name the same document); finds that document's single planned `read` entry in
+      references. It returns no links at all when any path given is, or any directory given contains, a Terraform
+      override file (override.tf, *_override.tf, override.tf.json, *_override.tf.json), because an override can replace
+      the linked attribute; a policy or document address declared by more than one block contributes no link. It never
+      raises: like load_literals it skips a file on OSError and decodes with errors="replace", and a file the lexer
+      refuses (LexRefusal) or any other parse problem contributes nothing. (2) rebuild_policy(plan, entry, links,
+      policy_refs) never raises (any malformed plan shape is Incomplete) and returns Rebuilt(document, statements,
+      unknown_elements) or Incomplete(reason). policy_refs is the entry's configuration `policy` references, passed in
+      by the digest from its existing configuration walk (_config_resources stays in the digest; nothing else moves). It
+      links the policy entry to its document only through PolicyLinks AND policy_refs (both must name the same
+      document); finds that document's single planned `read` entry in
       resource_changes (any non-empty action_reason); maps each `change.after.statement` block to an IAM statement (sid
       -> Sid when non-empty; effect null -> Allow; actions, not_actions, resources, not_resources; principals and
       not_principals -> {type: identifiers}, a type "*" with identifiers ["*"] -> "*"; condition -> {test: {variable:
@@ -58,13 +63,15 @@ scope:
     purpose: >-
       Imports strip_instance_keys and the rebuild functions from scripts.ci.terraform_plan_policy_rebuild and re-exports
       strip_instance_keys (tests import it from here). main() computes links = load_policy_links(args.literals_from) once,
-      right after load_literals in every mode (digest, --fit-report, --fit-check); under --fit-check that call sits
+      right after load_literals in every mode (digest, --fit-report, --fit-check), or None when no --literals-from is
+      given (so a call without source attempts no rebuild); under --fit-check that call sits
       inside the sibling's guarded region (so nothing it does can put a path or traceback in the public trusted-job log),
       and the other modes keep their existing handling; links is passed to build_digest and fit_report; build_digest, fit_report and
       _Parts gain a keyword `links` defaulting to None, and None attempts no rebuild (every opaque policy line stays
       today's). With links, a
       policy-type entry whose after_unknown.policy is true and whose configuration references name a document with a
-      planned read is passed to rebuild_policy: Rebuilt prints ` policy: rebuilt from deferred read <document> (<n>
+      planned read is passed to rebuild_policy with those references (from _config_resources, as _deferred_note reads
+      them): Rebuilt prints ` policy: rebuilt from deferred read <document> (<n>
       statements, <u> elements unknown until apply): <delta>` (singular "statement" / "element" when the count is 1),
       where <delta> is the existing renderer's parts over canonical(before statements) and canonical(rebuilt statements)
       joined by "; ", or "no action, Sid, or count delta" when there are none (a create has no before statements);
@@ -75,9 +82,9 @@ scope:
       computed at plan time from the document's planned arguments; elements counted as unknown are decided at apply."
       The module docstring's description of the IAM renderer names the rebuilt line and the exact-link rule. Known-policy
       lines, the sibling's opaque_entries, OPAQUE fit line and --fit-check exit codes are unchanged. Stays under 500 SLOC
-      (400 at b2e4a548, plus the sibling's predicate); if a crossing is projected, move the IAM renderer block
-      (_statements through _render_policy) into the new module and re-export it here (Decision 128 facade), never raise a
-      budget.
+      (400 at b2e4a548, plus the sibling's predicate, minus strip_instance_keys); if a crossing is projected, move the
+      IAM renderer block (_statements through _render_policy, with the _gate and NON_LITERAL it depends on) into the new
+      module and re-export it here (Decision 128 facade), never raise a budget.
   - file: .github/CODEOWNERS
     action: Modify
     purpose: >-
@@ -134,8 +141,10 @@ scope:
     action: Modify
     purpose: >-
       Add one deferred document read whose planned statements carry SENTINEL- strings in Resource and Condition values
-      and a literal action, its aws_iam_role_policy update (before policy also carrying SENTINEL- values) with
-      after_unknown.policy true, and the configuration entry for that policy. Existing entries unchanged.
+      and a literal action, its aws_iam_role_policy update (before policy also carrying SENTINEL- values, and not
+      containing that action, so the action reaches the reviewer as an added delta token) with after_unknown.policy true,
+      and the configuration entry for that policy. Document and policy names never contain "SENTINEL". Existing entries
+      unchanged.
   - file: tests/fixtures/subagent_plan_review/source.tf.txt
     action: Modify
     purpose: >-
@@ -234,6 +243,7 @@ verification_plan:
       "tests/test_terraform_plan_digest_deferred_statements.py::test_incomplete_reasons_print_the_fallback_line"
       "tests/test_terraform_plan_digest_deferred_statements.py::test_transformed_policy_expression_is_not_rendered"
       "tests/test_terraform_plan_digest_deferred_statements.py::test_lex_refusal_contributes_no_link"
+      "tests/test_terraform_plan_digest_deferred_statements.py::test_override_file_disables_links"
       "tests/test_terraform_plan_digest_deferred_statements.py::test_no_links_keeps_todays_lines"
       "tests/test_terraform_plan_digest_deferred_statements.py::test_links_never_change_known_policy_lines"
       "tests/test_terraform_plan_digest_deferred_statements.py::test_config_unknown_read_is_named_in_the_note"
@@ -474,7 +484,7 @@ constraints:
   - No rescue agents or workaround loops (Decision 55); a missed replay bar returns to planning, never a re-run.
 context:
   - "Decision-scout verdict FLAGS_FOUND (NOTE 128: keep the digest file the entry point, re-export anything moved; NOTE 100: no plan-time native render exists for a deferred read, fall back for unmodelled arguments). Decisions triaged: 191 of 191. Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1. CITE: 77, 158, 183, 238, 101, 128."
-  - "gates: decision-scout=FLAGS_FOUND; step-6b=write-the-plan 2026-10-30 12:44Z; plan-critique=PENDING (r1 REVISE addressed)"
+  - "gates: decision-scout=FLAGS_FOUND; step-6b=write-the-plan 2026-10-30 12:44Z; plan-critique=PROCEED after 3 round(s)"
   - 'red_overlap (2026-10-30): {"verdict": "clear", "slo_hours": 4, "reds": []}'
   - >-
     Approvals: Benjamin "write the plan, 4 A dynamic", 2026-10-30 12:44Z (cmsg_01Cqz6E4mzSv6kkGCSCub3WMKyWZ7gLJvUKxiuLYmnKK7D),
@@ -492,7 +502,8 @@ context:
     FINDINGS.md, ADVICE.md): source is the deferred read's change.after, never configuration expressions (those drop
     dynamic blocks and literal list parts); both deferral reasons count; provider merge order; canonical comparison on
     the rebuilt path only; new module plus CODEOWNERS line. Added after 6b, fail-safe direction: a policy renders only
-    when its .tf `policy` attribute is exactly the document's .json (lexed with terraform_hcl_lexer), because the plan's
+    when its .tf `policy` attribute is exactly the document's .json (lexed with terraform_hcl_lexer; no override file
+    present), because the plan's
     references cannot tell `data.x.json` from a transform such as replace(data.x.json, ...) and the guard never reads
     policy content. Also after 6b: the closed reason "malformed plan entry"; and one helper, strip_instance_keys, moves
     from the digest into the new module (re-exported unchanged) where 6b said nothing moves, because a two-way import
@@ -504,12 +515,12 @@ context:
   - "Unproven until it happens: a real deferred document reaching the reviewer on a live path (rare after #1730); no VP waits on it."
   - "Replay baseline: /mnt/project-files/secrets-to-ssm/expand-red-rca/ (RCA.md, replay/digest-red.txt, run_review.sh; 4 REVISE of 25 with the opaque line, 0 of 12 without)."
   - >-
-    plan-critique dispositions. r1: F1 fits = byte budget; F2 AC4 baseline; F3 one-way import; F4 harmful literal
-    source; F5 closure and merge steps; F6 never-raise, guarded, "malformed plan entry"; F7 replay freshness, control
-    STARVED; F8 fixed-prefix sentinels. r2: A control-known from provider JSON plus the statement, delta equality
-    asserted; B update recipe, full AC1 line; VP 6 trap; C AC4 note wording; D preamble node; helper move noticed; links
-    in every mode; empty lists render; VP 4 overflow suite; VP 12 save-then-grep; replay hashes. Info, not acted on:
-    name-built ARNs; push-path merge-tree skew (matters only for a merge-anyway of a PR the sibling reddened).
+    plan-critique dispositions. r1: byte-budget fits; AC4 baseline; one-way import; harmful literal source; closure and
+    merge steps; never-raise, guarded, "malformed plan entry"; replay freshness, control STARVED; sentinels. r2:
+    control-known from provider JSON, delta asserted; update recipe, full AC1 line; VP 6 trap; AC4 note; preamble node;
+    helper move noticed; links every mode; empty lists; VP 4 overflow suite; VP 12 save-then-grep; replay hashes. r3
+    PROCEED, folded: override files and duplicate blocks give no links; policy_refs passed in; control-known counts;
+    fixture, facade, no-source, replay-script precisions. Info only: name-built ARNs; push-path merge-tree skew.
   - "Decisions 132/189: the replay steps are LLM judgement, never graduated. Decision 119: the hashicorp/aws provider initialises in CC-web, so fixtures are generated locally from a probe root, never from terraform/personal."
 pre_implementation_checklist:
   - Branch confirmed not on main
@@ -543,7 +554,9 @@ execution_steps:
     VP 7 lines; the census line) and drive CI green by event-driven wake (never polled).
   - >-
     Replay (VP 10-11), at the CI-green head, writing only under
-    /mnt/project-files/ci-policy-plan-time/deferred-policy-digest/replay/ (never in the repo). build_digests.py imports
+    /mnt/project-files/ci-policy-plan-time/deferred-policy-digest/replay/ (never in the repo). The build writes
+    build_digests.py and sequential_replay.py there (they do not exist yet); both run by path, so each puts the repo
+    root on sys.path itself. build_digests.py imports
     the branch's modules and writes three digests from the RCA's replay/digest-red.txt: incident-rebuilt.txt (line 1 is
     the new REVIEWER_PREAMBLE; lines 12 and 19 are replaced by the lines build_digest prints, with links, for the
     ci_policies fixture's aws_iam_role_policy.github_ci_branch and data.aws_iam_policy_document.github_ci_branch entries);
@@ -551,7 +564,9 @@ execution_steps:
     harmful_ci_policies_source(), so iam:* and AdminEscalation print as literals); control-known.txt (new preamble; line
     12 is the line build_digest prints, with the same harmful literals, for that role policy as a known update: before.policy
     the fixture's provider-JSON before policy, after.policy that same JSON with {"Sid": "AdminEscalation", "Effect":
-    "Allow", "Action": "iam:*", "Resource": "*"} appended, after_unknown {}; line 19 removed). Before writing any
+    "Allow", "Action": "iam:*", "Resource": "*"} appended, after_unknown {}; line 19 removed, and line 2's summary and
+    the read-by-type tail line regenerated as the digest prints them with that read not deferred: 16 actionable, 8
+    read, aws_iam_policy_document x8, as the RCA's digest-fixed.txt did). Before writing any
     digest, build_digests.py asserts that the known line's text after "policy: " and the rebuilt line's text after the
     provenance clause's "): " both equal "Allow +[iam:*] -[]; Sids +[AdminEscalation] -[]", so the pair differs only in
     the provenance clause and the deferred-read line, and refuses to write the digests otherwise. Every replaced line
