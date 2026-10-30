@@ -463,7 +463,7 @@ class TestConsoleScriptsRunFromFinalPath:
         try:
             import ensurepip  # noqa: F401, PLC0415
         except ImportError:
-            pytest.skip("ensurepip unavailable: cannot seed pip offline")
+            pytest.skip("env: ensurepip unavailable, cannot seed pip offline")
 
         def runner(command: Sequence[str], cwd: Path) -> None:
             if command[1:3] == ["-m", "venv"]:
