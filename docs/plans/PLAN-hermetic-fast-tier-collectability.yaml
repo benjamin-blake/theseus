@@ -29,7 +29,8 @@ scope:
       finding; a parsed plan whose shape is wrong -- non-mapping root, non-list verification_plan, non-mapping step --
       is skipped with a note, since schema validity is validate_plan_documents' concern; the check never imports
       scripts.roadmap.plan_document or calls _common.load_plan, so the declared pre_globs stay closure-complete without
-      relying on a pruned edge). For each verification_plan step with phase pre-deploy, hermetic true and a
+      relying on a pruned edge). For each verification_plan step with phase pre-deploy, hermetic truthy as pydantic's lax bool reads it (true, "true",
+      1 and the like, matching how validate_vp_replay sees the step; an uncoercible value is a reported finding) and a
       pytest invocation (shlex-split; `-m pytest` or a `pytest` argv token), each positional selector argument under
       tests/ is examined by its file part (taken before any "::" node suffix): a Path.is_file() target is examined
       itself; a Path.is_dir() target has every test_*.py beneath it examined, each with its own conftest chain, so a
@@ -45,8 +46,9 @@ scope:
       module-level `pytest.importorskip("<name>")` (assigned or bare) or a module-level `import <name>` / `from <name>
       import` outside try. A hit on a name in the CI-absent set fails with: plan path, step id, selector, the guarding
       file and name, and the fix ("set hermetic: false, or move the guarded selector into its own hermetic: false step
-      (for a directory selector, `--ignore` the guarded member in this step) -- vp-red-before.yaml hermetic_authoring
-      carve-out (iii)"). A guarded whole-file selector mixed with unguarded ones is
+      (for a directory selector, list its unguarded member files instead of the directory) -- vp-red-before.yaml
+      hermetic_authoring carve-out (iii)"); no `--ignore` advice, since `--ignore` values are never subtracted from a
+      directory walk (critique series 2 round 4 F1). A guarded whole-file selector mixed with unguarded ones is
       flagged too: replay then passes with the guarded file skipped, a hollow green (critique series 2 round 2 F2). The
       CI-absent set is derived, never hard-coded (Decision 99): import names of requirements.in dists minus
       requirements-fast.txt dists minus requirements-dev.txt dists, reusing _parse_requirement_dist_names and
@@ -60,7 +62,8 @@ scope:
       Mirror test (Decision 131 name). Fixture repos under tmp_path: TestFlagsGuardedTarget (module-level importorskip,
       bare importorskip, module-level import, conftest-level guard, a file::Class::test node selector on a guarded
       file, a guarded whole file mixed with an unguarded file in one step, and a directory selector holding a guarded
-      member -- each flagged with the message fields), TestPassesUnguardedTarget (function-scope importorskip, guard on a
+      member -- each flagged with the message fields, the directory case's message advising the member-file list and
+      never `--ignore`; and a quoted hermetic "true" step on a guarded file), TestPassesUnguardedTarget (function-scope importorskip, guard on a
       name present in CI such as boto3, hermetic false step, post-deploy step, non-pytest command, selector file absent,
       implementation_declared true plan, a MODIFIED (not added) legacy plan whose step targets a guarded file, a chained
       command whose non-pytest segment names a guarded file, a directory selector whose members are all unguarded, a
@@ -92,7 +95,7 @@ scope:
       with: enforced at plan-PR time by validate_hermetic_fast_tier_collectability for target files that exist, covering
       direct module-level guards or imports in the target file and its conftest chain (transitive first-party imports are
       not examined, nor are an already-merged unbuilt plan's existing steps or a later edit to one -- residuals owned by
-      rec-4763, with the one live instance today owned by rec-4765) (added by rec-2809); a target the implementation creates is caught before push by the CI-parity
+      rec-4763, with the one live instance today owned by rec-4765) (added by rec-2809); a target the implementation creates or newly guards is caught before push by the CI-parity
       agent-container --pre (scripts/checks/deps/fast_tier_env.py, delivered by PLAN-fast-tier-ci-parity), and its
       remaining plan-amendment cost is owned by rec-4757; the root-cause alternative (a replay environment carrying
       these packages) is closed by the keep-PR-CI-light ruling (Benjamin, 2026-10-18). It keeps the
@@ -282,6 +285,7 @@ context:
   - Live instance outside the population (critique series 2 round 2 F1) - PLAN-telemetry-claude-p-capture-adapter.yaml (merged, unbuilt) step 7 node-selects tests/common/test_ducklake_event_verification_verbs.py (importorskip duckdb at line 16; replay exits 4), and steps 5 and 6 include test_derived_layer_reconciliation.py and test_append.py (hollow green). Owned by rec-4765, to amend before that plan is built; the other two merged plans with guarded steps are already built.
   - The absent set does not subtract the transitive closure of fast-tier packages; today it equals duckdb, psycopg2, pytz, radon (critique series 2 round 1 I3, informational).
   - Gotcha - plan C owns scripts/checks/verification/_manifest.py this wave, hence the deps domain.
+  - Why static AST, not a runtime collect-only probe - the full tier on main has duckdb installed, so a collect-only probe there could not see the absence; the AST walk gives the same verdict in --pre and the full tier (critique series 2 round 4 I1). Function-scope importorskip is outside carve-out (iii)'s module-level subject.
   - Gotcha - config/ci_rca_taxonomy.yaml is at 494 of 500 effective lines (validate_structural_size_limits); this row plus plan C's leaves 4, and other unbuilt plans also append there, so a later builder may need a compaction pass (critique series 2 round 3 I1).
   - "fork: plan-time check (rec-2809 option a) vs a replay environment carrying the heavy packages (option b) | chosen: option a | class: consistency-only | precedent: keep-PR-CI-light ruling 2026-10-18 | precedent_kind: answered-fork | reversible: yes | persisted: this plan + vp-red-before.yaml carve-out (iii)"
   - "fork: split the parity bundle on a round-5 REVISE | chosen: split | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: this plan (Benjamin 2026-10-30)"
