@@ -315,6 +315,14 @@ ENTRIES: tuple[Entry, ...] = (
         full_segment="full_after_lint",
     ),
     Entry(
+        name="validate_terraform_personal_cd",
+        module="scripts.checks.contracts.validate_terraform_personal_cd",
+        attr="validate_terraform_personal_cd",
+        pre=True,
+        pre_globs=None,
+        full_segment="full_after_lint",
+    ),
+    Entry(
         name="validate_skill_prose_relocation",
         module="scripts.checks.contracts.validate_skill_prose_relocation",
         attr="validate_skill_prose_relocation",

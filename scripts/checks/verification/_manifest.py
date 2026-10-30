@@ -22,6 +22,7 @@ ENTRIES: tuple[Entry, ...] = (
         pre=True,
         pre_globs=(
             "docs/plans/**",
+            "scripts/contract_rules.py",
             "scripts/roadmap/**",
             "scripts/checks/verification/**",
             "scripts/checks/_common.py",

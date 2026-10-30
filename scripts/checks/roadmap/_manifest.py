@@ -92,6 +92,7 @@ ENTRIES: tuple[Entry, ...] = (
             "docs/plans/**",
             "docs/ROADMAP-*",
             "docs/DECISIONS.md",
+            "scripts/contract_rules.py",
             "scripts/roadmap/**",
             "scripts/checks/roadmap/**",
             "scripts/checks/_common.py",
