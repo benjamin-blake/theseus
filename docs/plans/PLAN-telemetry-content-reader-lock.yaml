@@ -627,7 +627,7 @@ acceptance_criteria:
 verification_plan:
   - step: 1
     phase: pre-deploy
-    action: rec-4696's acceptance, and the lock's pins, check, hook, workflow, script, build flag, deploy config and golden leg.
+    action: rec-4696's acceptance, and the lock's pins, check, hook, workflow, script, build flag and deploy config (the golden leg is VP 21).
     command: >-
       bin/venv-python -m pytest tests/checks/iam_tf/test_telemetry_content_reader_iam.py
       tests/checks/iam_tf/test_url_only_invoke_guard.py tests/checks/iam_tf/test_telemetry_prefix_fence.py
@@ -797,9 +797,10 @@ verification_plan:
       (umask 077 && if V=$(aws ssm get-parameter --name /secret/agent-platform-terraform-personal-tfvars --with-decryption
       --profile agent_platform_admin --query Parameter.Value --output text 2>/dev/null); then S=ssm; else V=$(aws
       secretsmanager get-secret-value --secret-id agent-platform-terraform-personal-tfvars --profile agent_platform_admin
-      --query SecretString --output text) && S=secretsmanager; fi && printf '%s\n' "$V" | grep -E
+      --query SecretString --output text 2>/dev/null) && S=secretsmanager; fi && printf '%s\n' "$V" | grep -E
       '^[[:space:]]*(account_id|owner_email|platform_dev_external_id|platform_admin_external_id|agent_service_account_user_name)[[:space:]]*='
-      > terraform/bootstrap/terraform.bootstrap.tfvars && echo "SOURCE $S") && git check-ignore -q terraform/bootstrap/terraform.bootstrap.tfvars
+      > terraform/bootstrap/terraform.bootstrap.tfvars && chmod 600 terraform/bootstrap/terraform.bootstrap.tfvars && echo "SOURCE $S")
+      && git check-ignore -q terraform/bootstrap/terraform.bootstrap.tfvars
       && test "$(grep -c -E '^[[:space:]]*(account_id|owner_email|platform_dev_external_id|platform_admin_external_id)[[:space:]]*='
       terraform/bootstrap/terraform.bootstrap.tfvars)" -eq 4 && echo "BOOTSTRAP TFVARS MATERIALISED (values not printed)"
     expected: >-
@@ -808,6 +809,8 @@ verification_plan:
       mode 600 and gitignored, and no value reaches the terminal. The source is /secret/agent-platform-terraform-personal-tfvars
       (Decision 237; secrets-to-ssm-retire deletes the Secrets Manager entry). SOURCE secretsmanager means the parameter
       read failed and the entry still served: report it to the planning thread, because after the retire that path is gone.
+      No SOURCE line means both reads failed (stderr is suppressed so no caller ARN reaches the transcript); re-run each
+      read by hand with --query Parameter.Name or Name to see the error without a value.
     fix_if: A key missing -- recover per terraform-cc-web-operations.yaml tfvars_and_remote_state_recovery; never paste a value (Decision 101).
     hermetic: false
     graduation: not-applicable
@@ -1266,9 +1269,9 @@ context:
   - "Decided with notice (detail in each scope row): gated job owns code, layers, handler and env, bootstrap owns identity, URL, logging and concurrency; layer digest pins; placeholder code until the first approval, a committed zip named by filename (no S3 object; critique round 2 H3, M1); the invoker filter excludes PlatformDev alone; reader concurrency 5 -> 3; environment created in Settings then imported (rec-4355); cancel-in-progress kept; the content deploy honours TELEMETRY_PRODUCTION_HOLD (#1717); golden content leg in its own module, off in CI until rec-4735; the hook uses its own gitignored marker; apply-role simulate rows in the shared fixture with aws:PrincipalArn context; active status sets a V3 floor on the bundled code (validate_tier_floor)."
   - "Decision authority (critique round 2 H1): the access log group, filter and both alarms sit in the platform-security-* family (no CI write or log-event read grant, tamper paging, no PlatformDev read; critique R1-R2), which Decision 101(b) and 202 cl.3 reserve for detector resources. PINNED-7's trailers extend the family through numbered Decision 239 (202 and 237 extended 101(b) the same way, by numbered Decision), operator-approved with the other pinned text; the 239 trailer also adds the layer-provenance residual to cl.6 (rec-4742)."
   - "Decision 93 note: the reviewer gate on this one function is deliberate until rec-2827 (Decision 239 cl.5). A pending approval never blocks another merge or deploy; bundled shared modules mean a pending run after many telemetry merges."
-  - "Residuals owned elsewhere: other telemetry functions' raw reads and unreviewed deploys, incl. CI apply passing their roles to a new function (Decision 239 cl.6, rec-2827); admin bypass (security project); blob-tier read-back (rec-4699); CI golden content grant (rec-4735 after rec-4480); CI-writable URL parameter (rec-4739); layer pin coupling (rec-4738); layer provenance (rec-4742); maintenance-bundle sizing comments (rec-4740); stale rec-4696 contract pointers (rec-4743)."
+  - "Residuals owned elsewhere: other telemetry functions' raw reads and unreviewed deploys, incl. CI apply passing their roles to a new function (Decision 239 cl.6, rec-2827); admin bypass (security project); blob-tier read-back (rec-4699); CI golden content grant (rec-4735 after rec-4480); CI-writable URL parameter (rec-4739); layer pin coupling (rec-4738); layer provenance (rec-4742); maintenance-bundle sizing comments (rec-4740); stale rec-4696 contract pointers (rec-4743); the content reader's Secrets Manager pieces (PINNED-1's DSN data source and TelemetryReaderDsnRead, deploy_config.json's TELEMETRY_DSN_SECRET_ID, the handler's secret read) belong to secrets-to-ssm-cutover and -retire, which must scope them through an admin bootstrap apply and an approved gated run (relayed to the SSM project 2026-10-30)."
   - "Decision-scout: FLAGS_FOUND, 190 of 190 triaged, 9 roadmap items, CONFLICT 0, RELATED 9. Resolved: 172 (github_repos subjects), 126 (amended by 239, #1719), 202 (platform-security-* family, extended by PINNED-7), 177 (probe phrase folded pre-merge), 93 (note above). CITE: 236, 230, 213, 143, 144, 223, 225, 238, 237, 154, 125, 79, 226, 162, 166, 202, 101."
-  - "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE round 1 (18 findings applied), REVISE round 2 (3 High, 2 Medium, 5 Low applied; dry run of the revised text against every test file and registered check that reads an edited file, plus terraform validate), PROCEED round 3 (9 Low applied), confirming round pending; red_overlap=blocked by rec-4718 (shared ci_guards tests), operator override 2026-10-29 21:26Z (cmsg_012XgaFy8VaDQbxP5D8nC958FVGyH7skspbGyQDu9Ahtdz)."
+  - "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE round 1 (18 findings applied), REVISE round 2 (3 High, 2 Medium, 5 Low applied; dry run of the revised text against every test file and registered check that reads an edited file, plus terraform validate), PROCEED round 3 (9 Low applied), REVISE round 4 confirming (M1 VP 1 replay cost and 3 Low applied; VP 5 reads SSM first at the SSM cutover project's request), PROCEED round 5 confirming (3 Low applied, L4 relayed to the SSM project); operator approval of PINNED-1..8 pending; red_overlap=blocked by rec-4718 (shared ci_guards tests), operator override 2026-10-29 21:26Z (cmsg_012XgaFy8VaDQbxP5D8nC958FVGyH7skspbGyQDu9Ahtdz)."
 pre_implementation_checklist:
   - Branch confirmed not on main
   - The operator has created the telemetry-content-deploy environment in Settings (required reviewer, admin bypass off, deployment branches selected with a main policy) and reported its main policy id
