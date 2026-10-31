@@ -90,7 +90,7 @@ _PRUNED_EDGES: dict[str, tuple[str, ...]] = {
         "scripts.checks.verification._manifest",
     ),
     # A deferred, PLC0415-exempt function-scope import in _common.load_plan. Safe by COVERAGE, not reachability:
-    # 3 of its 5 callers declare no globs at all and so always run; the other 2 already declare scripts/roadmap/** themselves.
+    # 3 of its 5 callers declare no globs at all and so always run; the other 2 glob plan_document's whole closure themselves.
     "scripts.checks._common": ("scripts.roadmap.plan_document",),
     # RETIRED (rec-3291 / rec-3563): the former "scripts.checks._budget_recs": ("scripts.ops_data_portal",)
     # row pruned _budget_recs's own direct edge to the rec-filing portal hub. The migration onto
