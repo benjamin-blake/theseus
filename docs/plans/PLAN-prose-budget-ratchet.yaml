@@ -18,7 +18,8 @@ scope:
     action: Modify
     purpose: >-
       An entry measured below its budget FAILS (it was a non-blocking advisory), naming the exact reseed line and the
-      sanction row; over-budget and unregistered branches unchanged; the advisory list and its print block go.
+      sanction row; over-budget and unregistered branches unchanged; the advisory list and its print block go. The check
+      declares registry.examined(n, unit="prose_surfaces") (Decision 170 touch-it-fix-it; execution_steps[6]).
   - file: scripts/preflight/prose_context.py
     action: Modify
     purpose: >-
@@ -46,7 +47,8 @@ scope:
     purpose: >-
       New class TestUnderBudgetFails; the four under-budget-is-advisory tests flip to the failing polarity;
       TestProseRatchetAdvisoryEmission is deleted (its claim is re-decided); every background S1 fixture budget is set to
-      its measured bytes and every over-budget/unregistered assertion names its own surface (execution_steps[1]).
+      its measured bytes and every over-budget/unregistered assertion names its own surface (execution_steps[1]); new
+      class TestExaminedDeclaration (execution_steps[6]).
   - file: config/agent/verification_registry/entries/prose-ratchet-advisory-emitted-below-budget.yaml
     action: Delete
     purpose: >-
@@ -58,6 +60,11 @@ scope:
   - file: tests/checks/verification/validate_scope_boundary/test_prose_budgets_ratchet_row.py
     action: Create
     purpose: TestProseBudgetsRatchetRow, the trigger kind's arms (listed in execution_steps[2]) plus the real contract row shape.
+  - file: config/check_accounting_baseline.yaml
+    action: Modify
+    purpose: >-
+      Strike the "- validate_prose_limits" entry, a shrink of the Decision 170 grandfather roster: once the check declares
+      examined(), TestRosterCarriesNoFullyDeclaringModule fails until it leaves the roster. No other line changes.
 bundled_recommendations:
   - rec-4779
 followon_recs: []
@@ -68,6 +75,7 @@ acceptance_criteria:
   - The graduated shard prose-ratchet-advisory-emitted-below-budget is retired into entries/deprecated/, and no live test_selector shard names a test node that no longer exists in tests/checks/prose/test_prose_limits.py.
   - Every config/prose_budgets.yaml entry equals its measured bytes on the merged tree, and both graduated guards (prose-budgets-s4-entries-equal-measured-and-marker-free, prose-budgets-reseeded-to-measured) pass.
   - docs/contracts/implement-scope-boundary.yaml stays at or under 500 effective lines; validate_scope_boundary.py stays under 500 SLOC.
+  - validate_prose_limits declares examined(n, unit="prose_surfaces") on every exit path, n being the surfaces it checked, and config/check_accounting_baseline.yaml no longer lists it.
 verification_plan:
   - step: 1
     phase: pre-deploy
@@ -96,12 +104,13 @@ verification_plan:
     action: Whole-suite re-run of every suite the scope files feed.
     command: >-
       bin/venv-python -m pytest tests/checks/prose/ tests/checks/verification/validate_scope_boundary/
-      tests/test_scope_boundary_contract.py tests/test_prose_context.py -q
+      tests/test_scope_boundary_contract.py tests/test_prose_context.py tests/checks/hygiene/test_validate_check_accounting.py -q
     expected: exit 0.
     fix_if: >-
       A pinned contract test or a prose_context caller broke -- fix the source. A test_prose_limits fixture that fails only
       because its background S1 budget now sits above measured is reseeded to its measured bytes (execution_steps[1]);
-      never loosen an assertion.
+      never loosen an assertion. TestRosterCarriesNoFullyDeclaringModule naming validate_prose_limits -- strike its
+      config/check_accounting_baseline.yaml line (execution_steps[6]).
     hermetic: false
     graduation: waive
     graduation_waiver_reason: Whole-file re-run of suites the --pre affected set already selects for these scope files.
@@ -168,6 +177,18 @@ verification_plan:
     graduation_waiver_reason: >-
       A one-time migration claim about this plan's own retirement (the shape rec-3247 warns against graduating); the
       corpus-wide dangling-node guard is rec-4115's.
+  - step: 10
+    phase: pre-deploy
+    action: validate_prose_limits declares the surfaces it examined, on the passing and the failing exit alike.
+    command: bin/venv-python -m pytest tests/checks/prose/test_prose_limits.py::TestExaminedDeclaration -q
+    expected: exit 0, all tests in the class pass.
+    fix_if: >-
+      The declaration is None on one exit (examined() sits inside a branch rather than before the final errors branch),
+      or its count differs from the _check_entry calls made.
+    hermetic: true
+    expected_literals: []
+    graduation: graduate
+    graduation_check_id: prose-limits-declares-examined-surfaces
   - step: 9
     phase: pre-deploy
     action: >-
@@ -221,6 +242,18 @@ test_obligations:
     verification_step: 8
     command: entries/deprecated/prose-ratchet-advisory-emitted-below-budget.yaml
     red_green_expectation: red before (file absent; VP step 8 prints RETIRED False), green after.
+  - source: scripts/checks/prose/prose_limits.py
+    behavior: The check declares examined(n, unit="prose_surfaces") on every exit path.
+    verification_step: 10
+    test_selector: tests/checks/prose/test_prose_limits.py::TestExaminedDeclaration
+    red_green_expectation: red before (class absent; no declaration is made), green after.
+  - source: config/check_accounting_baseline.yaml
+    behavior: The grandfather roster no longer exempts validate_prose_limits.
+    verification_step: 3
+    test_selector: tests/checks/hygiene/test_validate_check_accounting.py::TestRosterCarriesNoFullyDeclaringModule
+    red_green_expectation: >-
+      red with the examined() adoption but without the strike (TestRosterCarriesNoFullyDeclaringModule names
+      validate_prose_limits), green with both.
 constraints:
   - Lands after the critique-severity-convergence build merges (it shrinks the planning and plan-critique skills and leaves config/prose_budgets.yaml alone).
   - Pure decreases only in config/prose_budgets.yaml -- no raise, so no raise-approved marker is added; plan-critique keeps its dec-75 marker (Decision 128 cl.3 allows either; keeping it is no churn).
@@ -234,6 +267,7 @@ context:
   - "Deliberate divergence, disclosed: SLOC (Decision 128), mypy (Decision 161 cl.3) and structural-size ratchets still only advise on under-budget; parity is not in scope."
   - "Re-ratification: the sixth row meets implement-scope-boundary.yaml's re_ratification_trigger (owner human + plan-critique gate). Outcome recorded in the amendment entry: stays provisional_v0 (this plan adds a trigger-field shape, so the grammar has not settled); the count trigger re-arms at >= 8, and the days_since_authored_at >= 90 trigger fires next, on 2026-11-30."
   - "Related-work check: red_overlap exit 1, blocked by rec-4780 (Critical ci_rca, plan_document corpus test worker crash) via shared transitive test modules only. Deferral rationale: its cause was fixed on main by #1755 (094b9b58), and rec-4780 read back closed on 2026-10-30; this plan touches no plan_document code, and its build still needs a green full tier before handoff (Decision 163)."
+  - "Amendment 2026-10-30 (implement-scope-boundary amendment_procedure, act one of two; directed by the coordinator at 23:44Z under Benjamin's standing authorisation for this plan, open and merge on plan-critique PROCEED plus green CI; no Decision or contract text changes): the build found prose_limits.py on the Decision 170 grandfather roster (check_accounting_baseline.yaml:52), so the edit obliges an examined() declaration and the roster strike; scope, execution_steps[6], VP step 10 and acceptance_criteria[5] added. The planning miss is rec-4383's class (plan_obligations deriving the accounting-baseline companion; read back open, Medium, 2026-10-30); no new rec. Amendment adds: Decision 170 (touch-it-fix-it, shrink-only roster)."
   - "Layer 2 (graduated rows never re-run) stays with rec-3341 / rec-3247 / rec-3119 / rec-3286; dangling test nodes corpus-wide with rec-4115."
   - "Sequencing: plan B (dry build) adds sanction rows to the same contract with 1 effective line of headroom left (499 of 500), and can no longer spend planning's 575 B slack (it compacts or takes a Decision-cited raise); the coordinator is told, since its planning thread has not started. Plan C's build cuts implement SKILL.md and lowers its own line (the new row sanctions it)."
   - "Decision-scout verdict: FLAGS_FOUND (Decision 235 WARN, Decision 165 SPIRIT WARN: both on the reservation marker, resolved by dropping it). CITE: Decision 43, Decision 127, Decision 128, Decision 165, Decision 59, Decision 181. Decisions triaged: 191 of 191. Roadmap items intersected: 2; CONFLICT: 0; RELATED: 2"
@@ -243,6 +277,9 @@ gate_rounds:
   - {gate: plan-critique, round: 2, verdict: REVISE, blocking: 1, nits: 7}
   - {gate: plan-critique, round: 3, verdict: PROCEED, blocking: 0, nits: 5}
   - {gate: plan-critique, round: 4, verdict: PROCEED, blocking: 0, nits: 6}
+  - {gate: plan-critique, round: 5, verdict: REVISE, blocking: 1, nits: 7}
+  - {gate: plan-critique, round: 6, verdict: PROCEED, blocking: 0, nits: 2}
+  - {gate: plan-critique, round: 7, verdict: PROCEED, blocking: 0, nits: 1}
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -336,7 +373,17 @@ execution_steps:
     verification-registry.yaml governance note: the two precedents recorded one because a Decision re-decided their
     claim, and a note here would spend contract text the operator has not approved; the commit body carries the record.
   - >-
-    Run VP steps 1-6 and 8 (red then green where stated); on a repeated failure apply the implement skill's
+    Check accounting (Decision 170): editing prose_limits.py trips validate_check_accounting's touch-it-fix-it rule, so
+    the check adopts the declaration. In validate_prose_limits count every _check_entry call (S1's one, each S2/S4 file
+    not skipped as an S1 member, each S8 file) and call registry.examined(n, unit="prose_surfaces") once, after the S8
+    loop and before the final errors branch, so the passing and failing exits both declare (n >= 1, since S1 is always
+    checked). Strike the "  - validate_prose_limits" line from config/check_accounting_baseline.yaml (a shrink;
+    validate_check_accounting.py's _BASELINE_SEED is untouched). tests/checks/prose/test_prose_limits.py: add
+    TestExaminedDeclaration on the tests/checks/hygiene/test_validate_raises_reporting.py outcome_scope /
+    pop_declaration precedent: a passing fixture with S1 plus one S2, one S4 and one S8 file declares
+    ("examined", "prose_surfaces", 4), and a failing fixture still declares, with its own count.
+  - >-
+    Run VP steps 1-6, 8 and 10 (red then green where stated); on a repeated failure apply the implement skill's
     3-fix-attempt STOP (deviation_trigger branch c), never a workaround loop. Record one weakening_dispositions entry per
     candidate validate_weakening_candidates lists for test_prose_limits.py: refactor citing the surviving
     file.py::name where the claim survives (at-budget passes, the strengthened per-surface assertions); otherwise
@@ -348,4 +395,8 @@ execution_steps:
     evidence (the scripts.session.postflight_evidence.CATEGORIES JSON, then scripts.session.postflight --evidence <file>);
     the real outcome (push, PR, CI green by event-driven wake, merge sha, VP step 7).
   - 'Report: what was implemented, the four closure facts, verification results, and each reseeded entry old -> new.'
-rollback: Revert the squash commit; budgets return to their prior values, the gate to advisory and the shard to entries/.
+rollback: >-
+  Revert the squash commit except the examined() declaration in prose_limits.py, TestExaminedDeclaration with its
+  graduated shard, and the check_accounting_baseline.yaml strike (the Decision 170 roster is shrink-only; re-adding the
+  name fails validate_check_accounting); budgets return to their prior values, the gate to advisory and the shard to
+  entries/.
