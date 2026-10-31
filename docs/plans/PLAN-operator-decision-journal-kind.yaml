@@ -17,8 +17,9 @@ closes_criteria:
 scope:
 - file: docs/plans/reports/REPORT-w3-feedback-loop-staging.md
   action: Modify
-  purpose: 'Append section 9, the approved text verbatim from execution_steps (DATE set to the build day), after line 859, separated
-    by one blank line. Lines 1-859 stay byte-identical: Decision 221 and merged plans cite this report by line number.'
+  purpose: 'Append section 9, the approved text of docs/plans/approved/operator-decision-journal-kind.yaml (DATE set to the build
+    day), after line 859, separated by one blank line. Lines 1-859 stay byte-identical: Decision 221 and merged plans cite this report
+    by line number.'
 - file: docs/ROADMAP-PLATFORM.yaml
   action: Modify
   purpose: Flip T4.36 c7 to status met with met_by operator-decision-journal-kind. No other byte of the file changes.
@@ -26,7 +27,9 @@ bundled_recommendations: []
 followon_recs: []
 infrastructure_dependencies: []
 acceptance_criteria:
-- REPORT-w3 lines 1-859 are byte-identical to origin/main and section 9 follows them, equal to the approved text with only DATE filled.
+- REPORT-w3 lines 1-859 are byte-identical to origin/main and section 9 follows them after one blank line; the file equals its base
+  with the block of docs/plans/approved/operator-decision-journal-kind.yaml applied (approved_text verify passes with the plan's
+  digest; DATE is the only variance).
 - Section 9 adds exactly two yaml top-level keys (staged_row_amendments, register_rows_staged); PLAN-w3's hermetic VP 3 and VP 9
   still print their pinned literals.
 - 'staged_row_amendments carries CD.47-r1, CD.47-r2, CD.47-r3, CD.46-r1, CD.46-r2 and CD.51-r1; register_rows_staged carries two
@@ -68,31 +71,34 @@ verification_plan:
   - drift=[]
 - step: 3
   phase: pre-deploy
-  action: 'Parse section 9: verbatim equality with the approved text, key set, entry ids, the field terms of CD.47-r1, the register
-    shape and ASCII.'
-  command: bin/venv-python -c "import re,yaml; F=chr(96)*3; T=open('docs/plans/reports/REPORT-w3-feedback-loop-staging.md',encoding='utf-8').read();
-    i=T.index(chr(10)+'## 9. Reservation ('); tail=T[i+1:]; sep=T[i-1]==chr(10) and T[i-2]!=chr(10); P=yaml.safe_load(open('docs/plans/PLAN-operator-decision-journal-kind.yaml',encoding='utf-8'));
-    v=[s for s in P['execution_steps'] if s.startswith('VERBATIM section 9')][0].split(chr(10),1)[1]; pat=re.escape(v).replace('DATE',r'\d{4}-\d{2}-\d{2}',1);
-    verb=bool(re.fullmatch(pat,tail)); keys=[k for b in re.findall(F+'yaml'+chr(10)+'(.*?)'+F,T,re.S) for k in yaml.safe_load(b)];
-    Y={k:v for b in re.findall(F+'yaml'+chr(10)+'(.*?)'+F,tail,re.S) for k,v in yaml.safe_load(b).items()}; ids=[e['id'] for e in
-    Y['staged_row_amendments']]; reg=[sorted(r) for r in Y['register_rows_staged']]; need=['fork_id','answer_event','source','kind','class','option
+  action: 'Check section 9 against the approved sidecar, read at the base, and its digest; then parse it: separator, key set, entry
+    ids, the field terms of CD.47-r1, the register shape and ASCII.'
+  command: bin/venv-python -m scripts.roadmap.approved_text verify --slug operator-decision-journal-kind --expect 1449253bc8b728ac0b4560265bbf6f7b3dad16abca5990deb6eb667ee1a20300
+    && bin/venv-python -c "import re,yaml; F=chr(96)*3; T=open('docs/plans/reports/REPORT-w3-feedback-loop-staging.md',encoding='utf-8').read();
+    i=T.index(chr(10)+'## 9. Reservation ('); tail=T[i+1:]; sep=T[i-1]==chr(10) and T[i-2]!=chr(10); keys=[k for b in re.findall(F+'yaml'+chr(10)+'(.*?)'+F,T,re.S)
+    for k in yaml.safe_load(b)]; Y={k:v for b in re.findall(F+'yaml'+chr(10)+'(.*?)'+F,tail,re.S) for k,v in yaml.safe_load(b).items()};
+    ids=[e['id'] for e in Y['staged_row_amendments']]; reg=[sorted(r) for r in Y['register_rows_staged']]; need=['fork_id','answer_event','source','kind','class','option
     recommended','option chosen','rationale','decided_by','decided_at','tenant_id','project_id','one row per answer to a fork','never
     a classifier over transcripts','path plus commit SHA','the fork sentence','answer confirms or corrects it']; r1=' '.join([e for
     e in Y['staged_row_amendments'] if e['id']=='CD.47-r1'][0]['text'].split()); miss=[n for n in need if n not in r1]; print('sep=%s
-    verbatim=%s keys=%d new=%s ids=%s reg_rows=%d reg_shape=%s miss=%s ascii=%s' % (sep,verb,len(keys),keys[8:],ids,len(reg),all(r==sorted(['detector','metric','decides','cheap_path','declared_guard','counter','counter_floor','drill','upstream'])
+    keys=%d new=%s ids=%s reg_rows=%d reg_shape=%s miss=%s ascii=%s' % (sep,len(keys),keys[8:],ids,len(reg),all(r==sorted(['detector','metric','decides','cheap_path','declared_guard','counter','counter_floor','drill','upstream'])
     for r in reg),miss,all(ord(c)<128 for c in tail)))"
-  expected: 'One line reporting sep=True (exactly one blank line after line 859), verbatim=True, ten yaml keys of which the two new
-    are staged_row_amendments and register_rows_staged, the six entry ids in order, two register rows in full shape, an empty miss
-    list and ascii=True. Red before: the section marker is absent, so the index lookup raises.'
-  fix_if: Re-copy the approved text verbatim from execution_steps; never edit the assertion or the approved text (any wording change
-    needs Benjamin's new approval).
+  expected: 'APPROVED-TEXT OK with the plan''s digest, then one line reporting sep=True (exactly one blank line after line 859),
+    ten yaml keys of which the two new are staged_row_amendments and register_rows_staged, the six entry ids in order, two register
+    rows in full shape, an empty miss list and ascii=True. Red before: APPROVED-TEXT MISMATCH (section 9 absent from the head words),
+    so the parse line never prints.'
+  fix_if: 'A MISMATCH line means section 9 differs from the sidecar''s approved text: re-copy it from the sidecar''s block. APPROVED-TEXT
+    SIDECAR means the build touched the sidecar: restore it. Never edit the sidecar, the digest or the assertion (any wording change
+    needs Benjamin''s new approval). A `before` that no longer occurs once means main moved: stop and tell the coordinator.'
   hermetic: true
   graduation: waive
   graduation_waiver_reason: The asserted text is pending candidate-decision text that the operator re-drafts at filing (section 3's
-    re-draft rule), so a standing row would block the filing it serves.
+    re-draft rule), so a standing row would block the filing it serves; validate_merge_step's approved-text leg checks the binding
+    on the build PR.
   expected_literals:
-  - sep=True verbatim=True keys=10 new=['staged_row_amendments', 'register_rows_staged'] ids=['CD.47-r1', 'CD.47-r2', 'CD.47-r3',
-    'CD.46-r1', 'CD.46-r2', 'CD.51-r1'] reg_rows=2 reg_shape=True miss=[] ascii=True
+  - APPROVED-TEXT OK 1449253bc8b728ac0b4560265bbf6f7b3dad16abca5990deb6eb667ee1a20300
+  - sep=True keys=10 new=['staged_row_amendments', 'register_rows_staged'] ids=['CD.47-r1', 'CD.47-r2', 'CD.47-r3', 'CD.46-r1', 'CD.46-r2',
+    'CD.51-r1'] reg_rows=2 reg_shape=True miss=[] ascii=True
 - step: 4
   phase: pre-deploy
   action: Assert T4.36 c7 is met by this plan.
@@ -143,23 +149,22 @@ verification_plan:
   graduation: not-applicable
 test_obligations:
 - source: docs/plans/reports/REPORT-w3-feedback-loop-staging.md
-  behavior: Section 9 equals the approved text and leaves sections 0-8 and PLAN-w3's assertions intact.
+  behavior: Section 9 equals the sidecar's approved text and carries the two new keys, the six entry ids and the register shape.
   verification_step: 3
-  command: bin/venv-python -c "import re,yaml; F=chr(96)*3; T=open('docs/plans/reports/REPORT-w3-feedback-loop-staging.md',encoding='utf-8').read();
-    i=T.index(chr(10)+'## 9. Reservation ('); tail=T[i+1:]; sep=T[i-1]==chr(10) and T[i-2]!=chr(10); P=yaml.safe_load(open('docs/plans/PLAN-operator-decision-journal-kind.yaml',encoding='utf-8'));
-    v=[s for s in P['execution_steps'] if s.startswith('VERBATIM section 9')][0].split(chr(10),1)[1]; pat=re.escape(v).replace('DATE',r'\d{4}-\d{2}-\d{2}',1);
-    verb=bool(re.fullmatch(pat,tail)); keys=[k for b in re.findall(F+'yaml'+chr(10)+'(.*?)'+F,T,re.S) for k in yaml.safe_load(b)];
-    Y={k:v for b in re.findall(F+'yaml'+chr(10)+'(.*?)'+F,tail,re.S) for k,v in yaml.safe_load(b).items()}; ids=[e['id'] for e in
-    Y['staged_row_amendments']]; reg=[sorted(r) for r in Y['register_rows_staged']]; need=['fork_id','answer_event','source','kind','class','option
+  command: bin/venv-python -m scripts.roadmap.approved_text verify --slug operator-decision-journal-kind --expect 1449253bc8b728ac0b4560265bbf6f7b3dad16abca5990deb6eb667ee1a20300
+    && bin/venv-python -c "import re,yaml; F=chr(96)*3; T=open('docs/plans/reports/REPORT-w3-feedback-loop-staging.md',encoding='utf-8').read();
+    i=T.index(chr(10)+'## 9. Reservation ('); tail=T[i+1:]; sep=T[i-1]==chr(10) and T[i-2]!=chr(10); keys=[k for b in re.findall(F+'yaml'+chr(10)+'(.*?)'+F,T,re.S)
+    for k in yaml.safe_load(b)]; Y={k:v for b in re.findall(F+'yaml'+chr(10)+'(.*?)'+F,tail,re.S) for k,v in yaml.safe_load(b).items()};
+    ids=[e['id'] for e in Y['staged_row_amendments']]; reg=[sorted(r) for r in Y['register_rows_staged']]; need=['fork_id','answer_event','source','kind','class','option
     recommended','option chosen','rationale','decided_by','decided_at','tenant_id','project_id','one row per answer to a fork','never
     a classifier over transcripts','path plus commit SHA','the fork sentence','answer confirms or corrects it']; r1=' '.join([e for
     e in Y['staged_row_amendments'] if e['id']=='CD.47-r1'][0]['text'].split()); miss=[n for n in need if n not in r1]; print('sep=%s
-    verbatim=%s keys=%d new=%s ids=%s reg_rows=%d reg_shape=%s miss=%s ascii=%s' % (sep,verb,len(keys),keys[8:],ids,len(reg),all(r==sorted(['detector','metric','decides','cheap_path','declared_guard','counter','counter_floor','drill','upstream'])
+    keys=%d new=%s ids=%s reg_rows=%d reg_shape=%s miss=%s ascii=%s' % (sep,len(keys),keys[8:],ids,len(reg),all(r==sorted(['detector','metric','decides','cheap_path','declared_guard','counter','counter_floor','drill','upstream'])
     for r in reg),miss,all(ord(c)<128 for c in tail)))"
-  waiver_reason: Report text with no executable behavior; VP 1-3 assert its shape and no standing test applies to staged, operator-re-drafted
-    text.
+  waiver_reason: Report text with no executable behavior; VP 3 asserts it (VP 1 and VP 2 prove sections 0-8 and PLAN-w3's assertions
+    intact) and no standing test applies to staged, operator-re-drafted text.
 - source: docs/ROADMAP-PLATFORM.yaml
-  behavior: T4.36 c7 flips to met by this plan and nothing else changes.
+  behavior: T4.36 c7 flips to met by this plan (VP 5 proves nothing else changes).
   verification_step: 4
   command: bin/venv-python -c "import yaml; R=yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml',encoding='utf-8')); t=[x for x in
     R['tier_items'] if x['id']=='T4.36'][0]; c=[x for x in t['exit_criteria'] if isinstance(x,dict) and x['id']=='c7'][0]; print('c7
@@ -179,9 +184,11 @@ constraints:
   which that build creates.'
 - 'Section 9 presumes CD.46, CD.47 and CD.51 are still unfiled (pending in REPORT-w3 only). If the operator has filed any candidate
   decision past CD.45, stop: section 9''s re-draft premise needs his word first.'
-- 'Section 9 is v3: v2 is Benjamin-approved verbatim (frozen at /mnt/project-files/operator-decision-journal-kind/approved/v2/ with
-  SHA256SUMS) and the v3 redline (section-9-v3-redline.diff) awaits his approval; this plan PR merges only once the VERBATIM header
-  records it. DATE is the only allowed variance. Any other word needs his new approval in the thread that acts (project rule).'
+- Section 9 is v3, bound by docs/plans/approved/operator-decision-journal-kind.yaml (git-ops.yaml approved_text_binding; digest in
+  VP 3), which lands with this plan PR and which the build never edits. v2 is Benjamin-approved verbatim (frozen at /mnt/project-files/operator-decision-journal-kind/approved/v2/
+  with SHA256SUMS); the v3 redline (section-9-v3-redline.diff) and the sidecar digest await his approval, and this plan PR merges
+  only once the approvals line records it (date and digest; the approving message id stays outside the repository, per approved_text_binding).
+  DATE is the only allowed variance. Any other word needs his new approval in the thread that acts (project rule).
 - No contract edit (overseer-dispatch.yaml untouched), no rec write, no numbered Decision, and no table, verb, writer or check is
   built (Decision 67 IMPLEMENTATION; direction only).
 - No rescue agents or workaround loops (Decision 55).
@@ -190,13 +197,13 @@ context:
   0 CONFLICT, 0 RELATED. CITE: 221, 235, 199, 200, 207, 209, 196, 232, 84, 86, 136. Decisions 236-240 post-date it: no conflict (r5).'
 - 'gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING (see gate_rounds; r1-r4 predate severity tags: blocking = medium or above)'
 - 'Evidence: /mnt/project-files/operator-decision-journal-kind/; red_overlap --plan verdict clear (no reds), 2026-10-31.'
-- 'Approvals (Benjamin): boundaries 2026-10-25 (cmsg_01PCtd8o8287wUrLv1SCjZEuXmAgyKSoCzipaTRYpd9mqQ item 6); Q1-Q3 and ''write the
-  plan'' 2026-10-30 (cmsg_01PCtd8o8287wUrLv1SCjZEu91AP5txow8X8QWSVdtX88N); section 9 v2 2026-10-30 (cmsg_01PCtd8o8287wUrLv1SCjZEuTuzV2TTT3P97PaHSrALZzX);
-  rec-3530 as prerequisite 2026-10-30 (cmsg_01PCtd8o8287wUrLv1SCjZEuV3FZp6mn4Ex3r8DUYcyF9P); section 9 v3 PENDING.'
+- 'Approvals (Benjamin): boundaries 2026-10-25 (cmsg_01PCtd8o8287wUrLv1SCjZEuXmAgyKSoCzipaTRYpd9mqQ item 6); Q1-Q3, write the plan
+  2026-10-30 (cmsg_01PCtd8o8287wUrLv1SCjZEu91AP5txow8X8QWSVdtX88N); section 9 v2 2026-10-30 (cmsg_01PCtd8o8287wUrLv1SCjZEuTuzV2TTT3P97PaHSrALZzX);
+  rec-3530 first 2026-10-30 (cmsg_01PCtd8o8287wUrLv1SCjZEuV3FZp6mn4Ex3r8DUYcyF9P); v3 PENDING (sidecar digest 1449253b...).'
 - 'Coupling: kind from PLAN-decision-serves-kind-grammar (docs/contracts/decision-kind.yaml), cited by the north-star Decision via
   Decision 221 cl.7; fork lines checked by validate_plan_fork_lines (#1772), residual rec-4786.'
-- 'LAMBDA-DEPLOY DEFERRED (CD.16 / Decision 79), data-pipeline: flagged only via docs/ROADMAP-PLATFORM.yaml (manifest asset, c7 bookkeeping,
-  path triggers exclude it); refreshes with its next governed deploy (PLAN-telemetry-production-catalog precedent).'
+- 'LAMBDA-DEPLOY DEFERRED (CD.16 / Decision 79), data-pipeline: docs/ROADMAP-PLATFORM.yaml is a manifest asset its handlers never
+  read (inferred); path triggers exclude it; refreshes at its next governed deploy (PLAN-telemetry-production-catalog precedent).'
 - 'fork: section 9 wording | chosen: approved verbatim (Q1) | class: asked | precedent: none | precedent_kind: none | reversible:
   yes | persisted: REPORT-w3 section 9'
 - 'fork: kind on operator_decision rows | chosen: required, never defaulted, defined by docs/contracts/decision-kind.yaml (Q2 kind
@@ -258,6 +265,11 @@ gate_rounds:
   verdict: REVISE
   blocking: 3
   nits: 7
+- gate: plan-critique
+  round: 6
+  verdict: REVISE
+  blocking: 2
+  nits: 7
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -267,136 +279,14 @@ pre_implementation_checklist:
 - T4.36 present on main (PLAN-north-star-tier-a build merged)
 execution_steps:
 - 'Preconditions on origin/main; if any fails, stop and tell the coordinator: (a) T4.36 exists and its c7 is open and its text names
-  REPORT-w3 section 9 and CD.47; (b) REPORT-w3 is still 859 lines; (c) candidate_decisions'' highest id is CD.45 and none of CD.46-CD.52
-  is present; (d) docs/contracts/decision-kind.yaml exists (PLAN-decision-serves-kind-grammar''s build merged); (e) the VERBATIM
-  section 9 header below names Benjamin''s v3 approval message id and contains no PENDING.'
-- 'Append the VERBATIM section 9 below to docs/plans/reports/REPORT-w3-feedback-loop-staging.md: one blank line after line 859, then
-  the text exactly, with DATE replaced by the build day (YYYY-MM-DD) and nothing else changed. The file ends with one trailing newline.'
-- |
-  VERBATIM section 9 (v3: v1 approved by Benjamin 2026-10-30; v2 redline approved 2026-10-30 18:15Z, cmsg_01PCtd8o8287wUrLv1SCjZEuTuzV2TTT3P97PaHSrALZzX; v3 redline approval PENDING; DATE is the only variance)
-  ## 9. Reservation (DATE): operator_decision kind for CD.47 (direction only)
-
-  Carried by docs/plans/PLAN-operator-decision-journal-kind.yaml on the operator's direction of 2026-10-24.
-  Appended after section 8 so every line that Decision 221 and merged plans cite keeps its number; sections 0-8
-  are unchanged and section 7's boundary binds them only. This section records direction as text, in the same
-  standing as the RULINGS sentences: it ratifies nothing, files no candidate decision, and builds no table,
-  writer, verb or check. Each entry names the staged row it amends by id; the operator files that row together
-  with its entries (section 3's re-draft rule), and an entry binds only at its row's ratification (Decision 221
-  clause 7). Schemas, verbs and writers stay the build's.
-
-  ```yaml
-  staged_row_amendments:
-    - id: CD.47-r1
-      amends: CD.47
-      title: operator_decision record kind
-      text: >-
-        The journal gains a record kind, operator_decision, for forks: questions an agent puts to the operator
-        with options. GRAIN: one row per answer to a fork, append-only on the Decision 199 model. A changed
-        answer, a re-ask after a plan revision or a withdrawal is a new row naming the row it supersedes, never
-        an update, and the current answer is derived at read as the latest row per fork. The grain key is the
-        fork plus the row it supersedes (none on a first answer), so a changed answer is never a Decision 207
-        grain conflict and a retried write is a no-op. IDENTITY: derived at the write boundary from the caller's
-        reference (Decision 199
-        clause 3), never minted by the caller; fork_id is stable across re-asks of one fork. FIELDS: fork_id;
-        the fork sentence (the question asked); answer_event (answered, changed, re_asked or withdrawn) with the row it supersedes; source
-        (alignment_sign_off, filer_mark, consult_point, critique_or_scout_flag, gate or north_star_promotion);
-        kind (required and never defaulted: a value of direction or mechanism with its justification, in the
-        shape and by the rubric of docs/contracts/decision-kind.yaml, the one definition of kind; the asking
-        surface classifies it by that rubric and shows it with the fork, so the operator's answer confirms or
-        corrects it, and an unclear case is classed direction, that contract's tie_break); class (asked
-        or consistency-only, the literals of overseer-dispatch.yaml's
-        record_grammar, decided-with-notice being the notice tier of a consistency-only line); precedent,
-        precedent_kind, reversible and persisted, as record_grammar defines them; the options
-        offered; the option recommended; the option chosen; the consult's position where a consult existed,
-        with its consult point by pointer; the rationale in the operator's own words; decided_by; decided_at;
-        tenant_id and project_id. POINTERS: a plan is referenced by repository path plus commit SHA, and a
-        consult point, rec, Decision or work item by id, never embedded. WRITER: the surface that asks writes
-        the row when the operator answers, through one named write verb: the /plan alignment sign-off, the
-        overseer's gate trampoline, and later the Decision 232 clause 4 gate card; never a classifier over
-        transcripts. The asking surfaces count as one component under the own-kind-only rule above. A
-        gate-sourced row is written after the forge holds the approval and carries the forge identity and
-        approval reference; it records the approval and is never the approval authority (Decision 233 clause
-        4). The plan context[] fork line (overseer-dispatch.yaml record_grammar, checked by validate_plan_fork_lines,
-        judgement residual owner rec-4786) stays the interim record and retires into this kind, with that check,
-        when its writer is built. PARTITION: the answer's event day.
-    - id: CD.47-r2
-      amends: CD.47
-      title: tenant keys on every kind
-      text: >-
-        Every record kind in the journal, operator_decision included, carries tenant_id and project_id NOT
-        NULL: Decision 200's writer-minted ids, resolved at the write boundary as its clause 1 says (tenant_id
-        from the configured constant or the caller's authenticated identity, project_id from a caller-sent
-        project reference) and never supplied by a caller, declared per kind rather than inherited by analogy
-        with Decision 199.
-    - id: CD.47-r3
-      amends: CD.47
-      title: derived at read, never stored
-      text: >-
-        Nothing about operator decisions is stored as a metric. Consult deference rate (the chosen option
-        equals the consult's position, by decision class), standing bias (a class whose answers take the same
-        option in every fork above a minimum count, which proposes codifying a Tier C decision), consult value
-        (forks that followed the consult against those that did not, joined to back-validation overturns on
-        the resulting work, once back-validation runs) and rubber-stamp detection (approval rate per gate beside
-        its register counter) are named read-time verbs (Decision 84 I-3) over this kind joined to what the
-        journal already holds, on Decision 199's derive-at-read model. Convergence of decisions toward an
-        unrecorded intent stays a scheduled persona's judgement over the same verbs, never a register row and
-        never a stored metric.
-    - id: CD.46-r1
-      amends: CD.46
-      title: decision classes as ladder subjects
-      text: >-
-        The ladder's subject widens from a loop component to a loop component or a decision class, a decision
-        class being a (source, kind) pair as operator_decision rows record it, on the same one controller and
-        transition log (Decision 221 clause 7). A direction class is pinned at read_all forever and never earns
-        a rung, whatever its record; the pin binds the class's lane, not the operator_decision kind as a data
-        upstream, so a derivation reading the kind is not capped by it. A mechanism class earns rungs under the
-        same rule family with a per-class minimum fork count before any promotion; the operator approves every
-        promotion and every demotion is automatic. A fork that weakens verification is decided on Decision 235's
-        own lane, which keeps its change-class subject unchanged; a fork that touches that Decision's clause 5
-        floor or falls on overseer-dispatch.yaml's always_ask list stays at read_all in every class. Decision
-        235's cd46-reshaped reversal condition is named here so the operator re-reads clause 2 when filing
-        CD.46.
-    - id: CD.46-r2
-      amends: CD.46
-      title: two register rows
-      text: >-
-        Two rows join the register, staged below under register_rows_staged for #1400 to fold at build. Both
-        gate no rung. The first is the detector of the north star whose failure signal is a gate approved so
-        near-always that it no longer discriminates (Decision 221 clause 1). Neither drill seeds a known-wrong
-        recommendation on a live gate: both run in Decision 231's offline evaluation lane, so the engine never
-        tests the operator through the approval surface itself.
-    - id: CD.51-r1
-      amends: CD.51
-      title: operator_decision egress classes
-      text: >-
-        Egress classes for the operator_decision kind, under #1399 k5 (a): the fork sentence, the options
-        offered, the rationale and every other free-text column are never-crosses under every answer to k1
-        (Decision 209 clause 2(b)). decided_by and every derived id are classed by the operator's answer to k2,
-        and none crosses before that answer is given. Counts and rates derived at read over the closed columns
-        (class, kind, source, answer_event, and whether the chosen option was the recommended one) are eligible
-        to cross only as the operator's answers to k1, k3 and k4 admit. This entry chooses no membership,
-        identifier rule, transport or grain.
-
-  register_rows_staged:
-    - detector: operator-decision-gate-approval
-      metric: 'gate_approval_rate: answers whose chosen option is the recommended one / answers, per gate, rolling 30 days, undefined (never 0) below a minimum answer count'
-      decides: no rung; the gate's discrimination check (the north star failure signal above) and the Decision 232 gate card's evidence
-      cheap_path: 'Rubber-stamp or starve the gate: the operator approves without reading, or the agent folds forks into consistency-only lines or offers one credible option, so what reaches the gate is approved trivially'
-      declared_guard: overseer-dispatch.yaml's always_ask list and credible-alternative rule, caught at the alignment sign-off, where the operator sees every decided-with-notice line (plan-critique has no fork-classification item; /implement's deviation trigger does not read fork lines); none of them reads the rate
-      counter: 'approval_holding_share: 1 - approved answers changed, withdrawn, or whose plan was reverted or needed a red-main repair within 90 days / approved answers; read from the supersede chain, revert PRs and ci_rca recs, never from the gate count'
-      counter_floor: 0.99 (register seed, provisional; the operator sets it)
-      drill: known-wrong recommendations mixed into the Decision 231 offline blind-adjudication stream, unmarked to the adjudicator; recall is read there, never on a live gate
-      upstream: []
-    - detector: operator-decision-standing-bias
-      metric: 'standing_bias: per decision class, the share of the last N answers (N at least the class minimum) that took the recommended option'
-      decides: no rung; the proposal to codify a Tier C decision for the class, and the precondition that a mechanism class's record is sound before its lane reads it
-      cheap_path: 'Recommendation fitting: the agent recommends whatever the operator chose last, so the chosen option equals the recommended one by construction and the class reads as settled without the choice being right; or kind mislabelling: a direction fork shown as mechanism so its class can earn rungs'
-      declared_guard: record_grammar's precedent rule (a decided-with-notice line is never precedent; precedent none is legal only on an asked line), whose shape and pointers validate_plan_fork_lines checks on lines a diff adds or changes, and the operator's confirmation of each row's kind (CD.47-r1); nothing mechanical reads the rate
-      counter: 'class_holding_share: 1 - answers in the class changed, withdrawn, or whose plan was reverted or needed a red-main repair within 90 days / answers in the class; read from the supersede chain, revert PRs and ci_rca recs'
-      counter_floor: 0.99 (register seed, provisional; the operator sets it)
-      drill: a seeded class whose recommended option is planted known-wrong, run through the Decision 231 offline blind-adjudication stream; recall = seeded answers marked wrong / seeded answers
-      upstream: []
-  ```
+  REPORT-w3 section 9 and CD.47; (b) REPORT-w3 is still 859 lines and its line 859 is the `before` of docs/plans/approved/operator-decision-journal-kind.yaml''s
+  one block; (c) candidate_decisions'' highest id is CD.45 and none of CD.46-CD.52 is present; (d) docs/contracts/decision-kind.yaml
+  exists (PLAN-decision-serves-kind-grammar''s build merged); (e) the sidecar is on origin/main and this plan''s approvals line records
+  Benjamin''s section 9 v3 approval with no PENDING.'
+- 'Apply the one block of docs/plans/approved/operator-decision-journal-kind.yaml to docs/plans/reports/REPORT-w3-feedback-loop-staging.md:
+  its `after` is line 859, one blank line, then section 9, so append one blank line after line 859 and then section 9 exactly as
+  the block''s lines, with {{DATE}} replaced by the build day (YYYY-MM-DD) and nothing else changed. The file ends with one trailing
+  newline. Never edit the sidecar (validate_merge_step fails a build PR that changes it).'
 - 'In docs/ROADMAP-PLATFORM.yaml set T4.36 c7 to status: met and met_by: operator-decision-journal-kind, keeping c7''s text and style.'
 - 'Execute VP 1-6: run each step; loop until pass; on an unrecoverable failure stop and RCA (Decision 55). Then commit, fetch and
   rebase onto origin/main, and run VP 7 (full tier, then --verify-head) on the clean committed tree (git-ops.yaml handoff_sequence).'
