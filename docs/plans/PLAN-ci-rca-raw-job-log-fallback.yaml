@@ -1,0 +1,258 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: ci-rca-raw-job-log-fallback
+intent: >-
+  Make CI-RCA diagnose a red main even when GitHub has not finished recording a failed job's steps: read that job's raw
+  log through the existing bounded head+tail window instead of refusing (invalid evidence scope) or publishing a
+  "complete" envelope that silently omits the failing step (rec-4776). Bundles rec-3002 (the head+tail join duplicates
+  bytes), since this plan reuses that join on the fallback path.
+plan_type: IMPLEMENTATION
+implementation_declared: true
+verification_tier: V2
+plan_path: docs/plans/PLAN-ci-rca-raw-job-log-fallback.yaml
+phase: ad_hoc_rec (soft-warn category; no tier_item claimed, so the Tier Item Freshness Gate is skipped). ci_rca forward fix
+  for rec-4776 (High) and rec-3002 (Medium).
+scope:
+- file: scripts/ci_rca/fetch_logs.py
+  action: Modify
+  purpose: >-
+    (1) _step_scope records a step conclusion of "" as null. (2) New helper _unfinalized_job_ids: a failed job is unfinalized
+    when no step has a failure/timed_out/cancelled conclusion or any step's conclusion is "" or null. (3) fetch_run_log skips
+    the --log-failed primary when any failed job is unfinalized and goes straight to the per-job fallback. (4) _fallback_logs
+    fetches an unfinalized job with `gh api repos/<repo>/actions/jobs/<id>/logs` (raw job log) and a finalized job with the
+    unchanged `gh run view --job <id> --log`, and keeps each job's transport tail (per-job bound_text_windowed over
+    stdout + tail within that job's remaining budget) instead of the head alone. (5) rec-3002: _run_log trims the overlap
+    between its head buffer and its rolling tail buffer, so head + tail never repeats bytes. Envelope stays
+    ci-rca-log-evidence/v2; retrieval_path stays "fallback". 354 -> ~395 SLOC (500 limit).
+- file: tests/test_ci_rca_fetch_logs.py
+  action: Modify
+  purpose: >-
+    New class TestUnfinalizedStepMetadata (rec-4776's acceptance selector) and TestRunLogTailOverlap (rec-3002). The four
+    existing fallback tests whose fixture jobs carry no failed step (steps [] or all-success) gain one failed step so they
+    keep exercising the step-split path they were written for; their assertions do not change. The two
+    TestStreamingTransport assertions that pin the old overlapping tail ("bcde", "one\ntwo\nthree") change to the
+    trimmed tail ("e", "three") -- planned-change, acceptance_criteria[4].
+- file: docs/contracts/ci-rca-lifecycle.yaml
+  action: Modify
+  purpose: >-
+    evidence_scope.conclusion_domain and evidence_scope.log_retrieved_derivation gain the operator-approved wording in
+    execution_steps[2]; one amendment_log row. 495 -> 499 effective lines against the 500 contracts limit (Decision 166).
+- file: config/agent/verification_registry/entries/ci-rca-unfinalized-step-raw-log.yaml
+  action: Create
+  purpose: Registry row graduating VP step 1 (test_selector slot), check_id ci-rca-unfinalized-step-raw-log.
+- file: config/agent/verification_registry/entries/ci-rca-run-log-tail-no-overlap.yaml
+  action: Create
+  purpose: Registry row graduating VP step 2 (test_selector slot), check_id ci-rca-run-log-tail-no-overlap.
+bundled_recommendations:
+- rec-4776
+- rec-3002
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+- A failed job whose steps carry conclusion "" (the run 41098287859 shape) publishes a valid envelope; its scope records
+  those steps as null; no --log-failed call is made; the job's log comes from `gh api repos/<repo>/actions/jobs/<id>/logs`.
+- A run mixing a finalized failed job and an unfinalized one queries both in the fallback, the finalized one through the
+  unchanged step-split command, and publishes a valid envelope with log_retrieved true for every step of both.
+- An oversized raw job log, streamed through the real _run_log transport, publishes an envelope whose body keeps the
+  log's tail anchor ("Failed checks:") with complete=false; a raw log that fits publishes complete=true with the whole log.
+- A raw-log fetch that fails or returns nothing fails the attempt (no envelope written, existing retry and refusal
+  annotation), never a complete=true envelope.
+- rec-3002, a planned change to _run_log's tail -- when the stream fits within head plus the tail buffer, stdout + tail equals
+  the stream exactly; when it does not, tail is the last max_bytes bytes, unchanged.
+- Runs whose failed jobs all carry a failed step and no ""/null step keep today's routing (primary first, step-split
+  fallback) -- every existing test in the file passes, with only the fixture and pin changes named in scope.
+- The ci-rca-lifecycle contract carries the approved wording and stays at or under 500 effective lines.
+verification_plan:
+- step: 1
+  phase: pre-deploy
+  action: Unfinalized-metadata routing, normalisation, raw transport, mixed jobs and fail-loud (rec-4776 acceptance).
+  command: bin/venv-python -m pytest tests/test_ci_rca_fetch_logs.py::TestUnfinalizedStepMetadata -q
+  expected: exit 0, every case passes. Before the change the class does not exist (pytest exits 4).
+  expected_literals:
+  - passed
+  fix_if: A case fails -- fix fetch_logs.py, never the case. If the envelope is refused, the "" normalisation is missing; if a
+    --log-failed call appears, the routing check runs too late.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: ci-rca-unfinalized-step-raw-log
+- step: 2
+  phase: pre-deploy
+  action: _run_log head/tail overlap trimmed (rec-3002).
+  command: bin/venv-python -m pytest tests/test_ci_rca_fetch_logs.py::TestRunLogTailOverlap -q
+  expected: exit 0. Before the change the class does not exist.
+  expected_literals:
+  - passed
+  fix_if: stdout + tail repeats bytes, or a gap case lost its last max_bytes -- fix the overlap arithmetic in _run_log.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: ci-rca-run-log-tail-no-overlap
+- step: 3
+  phase: pre-deploy
+  action: Whole fetch_logs, log_evidence and evidence-input suites plus the GAL-01 workflow guard tests stay green.
+  command: bin/venv-python -m pytest tests/test_ci_rca_fetch_logs.py tests/test_ci_rca_log_evidence.py tests/test_ci_rca_evidence_input.py
+    tests/verify_ci_workflow/test_ci_rca_and_canary.py -q
+  expected: exit 0.
+  fix_if: An existing case fails -- if it is one of the fixtures named in scope, give its job a failed step; otherwise the
+    routing changed a finalized run, which acceptance_criteria[5] forbids. Never edit another existing assertion.
+  hermetic: false
+  graduation: not-applicable
+- step: 4
+  phase: pre-deploy
+  action: GAL-01 bounded-retrieval guard still holds on the new source.
+  command: bin/venv-python -c "from scripts.verify_ci_workflow._ci_rca import _check_ci_rca_fetch_classification as c; c(); print('GAL_OK')"
+  expected: Prints GAL_OK.
+  expected_literals: []
+  fix_if: An AssertionError names a missing invariant string -- keep the bounded _run_log calls verbatim (the raw command is
+    assigned to `command`, not a new call shape).
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: Duplicates the standing validate_ci_workflow_guards check, which already runs this function on every
+    tier.
+- step: 5
+  phase: pre-deploy
+  action: Complexity and size stay inside their limits without a waiver or budget raise.
+  command: bin/venv-python -c "import ast; from scripts.checks.sloc._shared import _BRANCH_TYPES, _CC_LIMIT; from scripts.checks.structural._classify
+    import effective_lines; s=open('scripts/ci_rca/fetch_logs.py').read(); t=ast.parse(s); cc={n.name:sum(isinstance(x,_BRANCH_TYPES)
+    for x in ast.walk(n)) for n in ast.walk(t) if isinstance(n,ast.FunctionDef)}; bad={k:v for k,v in cc.items() if v>_CC_LIMIT};
+    f=lambda x:len([l for l in x.splitlines() if l.strip() and not l.strip().startswith('#')]); sl=max(f(s), f(open('tests/test_ci_rca_fetch_logs.py').read())); e=effective_lines(open('docs/contracts/ci-rca-lifecycle.yaml').read());
+    assert not bad and sl<=500 and e<=500 and 'complexity-waiver' not in s, (bad, sl, e); print('LIMITS_OK', max(cc.values()), sl, e)"
+  expected: Prints LIMITS_OK with the largest function's branch count (at most 20), the file's SLOC (at most 500) and the
+    contract's effective lines (at most 500); the SLOC figure is the larger of fetch_logs.py and its test file.
+  expected_literals: []
+  fix_if: fetch_run_log crosses 20 branches -- extract the primary/fallback selection into a helper (do not add a waiver); the
+    contract crosses 500 -- tighten the approved wording only through a plan amendment.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: Duplicates the standing validate_cc_limits, validate_sloc_limits and structural-size checks, which
+    gate every file on every tier.
+- step: 6
+  phase: pre-deploy
+  action: Approved contract wording landed verbatim.
+  command: bin/venv-python -c "import yaml; p=yaml.safe_load(open('docs/plans/PLAN-ci-rca-raw-job-log-fallback.yaml')); c=yaml.safe_load(open('docs/contracts/ci-rca-lifecycle.yaml'));
+    s=c['evidence_scope']; a=' '.join([s['conclusion_domain'], s['log_retrieved_derivation']]); need=['unfinalized by GitHub',
+    'gh api repos/<repo>/actions/jobs/<id>/logs', 'routes the whole run here']; miss=[n for n in need if n not in a]; row=c['amendment_log'][0];
+    assert not miss and 'rec-4776' in row['summary'], miss; print('CONTRACT_OK')"
+  expected: Prints CONTRACT_OK.
+  expected_literals: []
+  fix_if: A phrase is missing -- copy the wording again from execution_steps[2]; never reword it.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: Bound to this plan's approved wording; the contract carries no executable rule for it to guard.
+- step: 7
+  phase: pre-deploy
+  action: Live check that the raw job-log endpoint serves the failing step and the window keeps it (Decision 48), on the
+    incident job 124209654871 while GitHub retains its logs.
+  command: bin/venv-python -c "import subprocess; from scripts.ci_rca.log_evidence import bound_text_windowed, DEFAULT_MAX_BYTES,
+    DEFAULT_MAX_LINES; t=subprocess.run(['curl','-sSL','https://api.github.com/repos/otl-labs/ontheloop/actions/jobs/124209654871/logs'],
+    capture_output=True, text=True, encoding='utf-8', errors='replace').stdout; b,l=bound_text_windowed(t, DEFAULT_MAX_BYTES,
+    DEFAULT_MAX_LINES); tail=b.split('[elided]')[-1]; assert 'Failed checks:' in tail and 'test_historical_plans_all_validate' in tail,
+    len(t); print('RAW_WINDOW_OK', len(t))"
+  expected: Prints RAW_WINDOW_OK and the log size (6,798,475 B when measured on 2026-10-30). If GitHub has expired the log
+    (an empty or error body), record that in the build report instead; the hermetic steps stand.
+  fix_if: The log is present but the tail lacks the failure lines -- stop and report; the window design does not hold for this
+    log shape, which is a plan amendment, not an inline fix.
+  hermetic: false
+  graduation: not-applicable
+- step: 8
+  phase: post-deploy
+  action: Both bundled recs closed by the merge's Resolves trailer.
+  command: AWS_PROFILE=agent_platform bin/venv-python -c "from src.common.ducklake_reader_client import fetch_recs_by_ids, make_reader;
+    rows, missing = fetch_recs_by_ids(make_reader(), ['rec-4776','rec-3002']); print([(r['id'], r['status']) for r in rows], missing)"
+  expected: Both recs show a closed status and none are missing.
+  fix_if: A rec is still open -- check the squash commit carries the Resolves trailer naming both recs and the trailer-closure job's
+    acceptance verdict; never close by hand without the operator.
+  hermetic: false
+test_obligations:
+- source: scripts/ci_rca/fetch_logs.py
+  behavior: An unfinalized failed job routes to the raw job log through the bounded window; "" is recorded as null; a failed
+    raw fetch fails loud; finalized runs keep today's routing.
+  verification_step: 1
+  test_selector: tests/test_ci_rca_fetch_logs.py::TestUnfinalizedStepMetadata
+  red_green_expectation: red before (class absent; the incident shape is refused with "invalid evidence scope step entry"),
+    green after.
+- source: scripts/ci_rca/fetch_logs.py
+  behavior: _run_log's head plus tail never repeats bytes (rec-3002).
+  verification_step: 2
+  test_selector: tests/test_ci_rca_fetch_logs.py::TestRunLogTailOverlap
+  red_green_expectation: red before (class absent; today's tail overlaps the head), green after.
+- source: docs/contracts/ci-rca-lifecycle.yaml
+  behavior: Approved evidence-scope wording present and the amendment row added.
+  verification_step: 6
+  command: docs/contracts/ci-rca-lifecycle.yaml
+  waiver_reason: Prose contract text with no executable rule; VP step 6 checks the approved wording and VP step 5 the size.
+- source: config/agent/verification_registry/entries/ci-rca-unfinalized-step-raw-log.yaml
+  behavior: Registry row names VP step 1's selector as a standing guard.
+  verification_step: 1
+  test_selector: tests/test_ci_rca_fetch_logs.py::TestUnfinalizedStepMetadata
+  waiver_reason: Registry metadata only; the selector it names is the evidence, and the registry checks validate the row shape.
+- source: config/agent/verification_registry/entries/ci-rca-run-log-tail-no-overlap.yaml
+  behavior: Registry row names VP step 2's selector as a standing guard.
+  verification_step: 2
+  test_selector: tests/test_ci_rca_fetch_logs.py::TestRunLogTailOverlap
+  waiver_reason: Registry metadata only; the selector it names is the evidence, and the registry checks validate the row shape.
+constraints:
+- Envelope schema stays ci-rca-log-evidence/v2 -- no new envelope key, no validator change in log_evidence.py, no change to
+  evidence_input.py or the evidence bundle.
+- No "external cause / no rec" CI-RCA outcome (operator ruling 2026-10-30).
+- The bounded transport strings _check_ci_rca_fetch_classification pins stay verbatim; no workflow edit.
+- No complexity waiver, SLOC or structural-size budget raise (Decisions 43, 128, 166) -- decompose instead.
+- Contract wording is operator-approved text; a change to it needs a plan amendment (always-ask, governing contract text).
+- No rescue agents or workaround loops (Decision 55); out-of-scope defects become recs via scripts/ops_data_portal.
+context:
+- "Incident: main CI run 41098287859 and Main Canary run 41099728690; CI RCA runs 41104216026 and 41105095743 refused. GitHub
+  later finalized the metadata (step 9 of job 124209654871 now reads completed/failure), so the state is a transient lag that
+  cannot be reproduced on demand; the tests carry the recorded shape."
+- "Measured 2026-10-30 on job 124209654871: the raw job log is 6,798,475 B / 41,827 lines; bound_text_windowed at the default
+  256 KB / 4000-line cap keeps the 'short test summary', the FAILED line, 'Failed checks:' and the ##[error] line in its tail."
+- "gh api follows the 302 to the log blob (inferred: gh run view --log downloads the same blob store through the same client;
+  not reproducible here, gh is unauthenticated in CC-web). If it ever does not, the empty raw fetch fails the attempt loudly
+  (acceptance_criteria[3]) -- never a false-complete envelope."
+- "Body format: a raw job log has no 'job<TAB>step<TAB>' prefixes; downstream readers (fingerprint.py normalisation, the agent)
+  do not parse them."
+- "fetch_run_log is at 18 of 20 branches today; the routing must land in helpers (VP step 5)."
+- "Not in scope: counts for a primary window whose head and tail do not meet are still derived from the joined text (existing
+  behaviour, not made worse); rec-4678 (no fallback when the RCA agent fails) stays separate."
+- "red_overlap 2026-10-31: {\"verdict\": \"clear\", \"slo_hours\": 4, \"reds\": []}"
+- "Decision-scout verdict FLAGS_FOUND -- Decision 166 WARN (contract at 495/500: in-place rewrites plus a one-line row, 499, VP step 5); Decision 43 NOTE (fetch_run_log and _run_log at 18/20: helpers, no waiver, VP step 5); Decision 72 NOTE (the raw route is mechanism detail, recorded in log_retrieved_derivation, no new Decision); Decision 48 SPIRIT (live check of the raw endpoint, VP step 7; the gh-specific redirect stays inferred). CITE: 55, 128, 132, 176, 181, 189, 201; RELATED 102, 130, 131, 142, 168, 86/127, 186, 226, 163, 100; roadmap T2.54, T4.23 RELATED. Decisions triaged: 191 of 191. Roadmap items intersected: 2; CONFLICT: 0; RELATED: 2"
+- "execution_steps[2] contract wording approved by the operator 2026-10-31T12:22Z ('approved wording, write the plan', cmsg_017w1Kar4nqzb395d2mcyCJJN1aFnBz5tZRwuwjrsJ3jDU), given on /mnt/project-files/plan-ci-rca-raw-log/SIGNOFF.md."
+gate_rounds:
+- {gate: decision-scout, round: 1, verdict: FLAGS_FOUND}
+pre_implementation_checklist:
+- Branch confirmed not on main
+- docs/PROJECT_CONTEXT.md read
+- only the plan-cited decision sections
+- All files in scope located and readable
+- Acceptance criteria understood and verifiable
+execution_steps:
+- scripts/ci_rca/fetch_logs.py -- implement scope row (1)-(5). Keep `_run_log(primary_command, max_bytes, max_lines)`,
+  `_run_log(command, remaining, remaining_lines)` and the remaining/remaining_lines lines verbatim (GAL-01). Keep the name
+  primary_tail, and say in _run_log's docstring that the tail is trimmed so head plus tail never duplicates bytes (rec-3002's
+  acceptance greps for both, Decision 201). Compute the trim with max(), not a new branch. Update the
+  comment above reliable_window -- fallback windows now carry per-job tails, and fallback truncation still reports unknown counts.
+- tests/test_ci_rca_fetch_logs.py -- add TestUnfinalizedStepMetadata (cases for acceptance_criteria[0]-[3]; the oversized case
+  drives the real _run_log through a patched subprocess.Popen as test_end_to_end_oversized_log_retains_tail_anchor_in_published_envelope
+  does) and TestRunLogTailOverlap (acceptance_criteria[4]); adjust only the fixtures and two pins named in scope. The
+  no-failed-step shape those fixtures used to carry is asserted by TestUnfinalizedStepMetadata (Decision 181). The file is
+  348 SLOC today; keep it at or under 500 (Decision 130, VP step 5).
+- |-
+  docs/contracts/ci-rca-lifecycle.yaml -- apply exactly (operator-approved text):
+  (a) In evidence_scope.conclusion_domain replace `null covers a
+      not-started step, routine in a cancelled job (_failed_jobs explicitly selects cancelled jobs).` with
+      `null covers a step with no conclusion: not started (routine in a cancelled job, which _failed_jobs selects)
+      or unfinalized by GitHub (gh emits "", fetch_logs records null).`
+  (b) In evidence_scope.log_retrieved_derivation replace `retrieval_path="fallback" (gh run view --job <id> --log, which returns a queried job's WHOLE
+      log):` with `retrieval_path="fallback" (a queried job's WHOLE log: gh run view --job <id> --log, or the raw
+      job log, gh api repos/<repo>/actions/jobs/<id>/logs, for a job with no failed step or a null
+      conclusion, whose unfinalized step the step-split log drops; such a job routes the whole run
+      here):`
+  (c) Insert as the first amendment_log row, one line:
+      {date: "2026-10-30", semantic_break: false, change_class: governance_note_add, summary: "PLAN-ci-rca-raw-job-log-fallback (rec-4776): conclusion_domain's null also covers a step GitHub left unfinalized (gh's empty string is recorded as null); log_retrieved_derivation names the raw job log the fallback reads for a job with no failed step or a null conclusion."}
+- Create the two verification-registry rows (check_id, primitive_slot test_selector, guard_target scripts/ci_rca/fetch_logs.py,
+  guard_symbol fetch_run_log / _run_log, plan_slug ci-rca-raw-job-log-fallback, node_id the VP step 1 / 2 selector).
+- Execute Verification Plan -- run each pre-deploy step; loop until pass; on unrecoverable failure stop and RCA (Decision 55).
+- Commit with the trailer line Resolves rec-4776, rec-3002 (colon after Resolves) in the squash body; after merge run VP step 8.
+- 'Report: what was implemented, verification results'
+work_areas: []
+rollback: Revert the squash commit; CI-RCA returns to today's routing (an unfinalized job is refused again).
