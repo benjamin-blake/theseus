@@ -101,6 +101,21 @@ ENTRIES: tuple[Entry, ...] = (
         full_segment="full_after_lint",
     ),
     Entry(
+        name="validate_plan_fork_lines",
+        module="scripts.checks.roadmap.validate_plan_fork_lines",
+        attr="validate_plan_fork_lines",
+        pre=True,
+        pre_globs=(
+            "docs/plans/**",
+            "docs/contracts/overseer-dispatch.yaml",
+            "scripts/roadmap/plan_fork_lines.py",
+            "scripts/checks/roadmap/validate_plan_fork_lines.py",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
+        full_segment="full_after_lint",
+    ),
+    Entry(
         name="validate_fallback_reevaluation",
         module="scripts.checks.roadmap.validate_fallback_reevaluation",
         attr="validate_fallback_reevaluation",
